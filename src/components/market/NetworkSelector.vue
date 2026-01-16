@@ -16,7 +16,7 @@
       </div>
       <div class="col-12 col-sm-4">
         <label class="form-label">RPC 节点</label>
-        <input class="form-control" :placeholder="currentRpcUrl" v-model="rpcUrl" readonly />
+        <input class="form-control" :placeholder="currentRpcUrl" v-model="rpcUrl" />
       </div>
     </div>
     <!-- 隐藏的调试信息，功能保留但不显示 -->
