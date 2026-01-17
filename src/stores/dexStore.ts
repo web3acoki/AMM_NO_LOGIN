@@ -23,8 +23,6 @@ export const useDexStore = defineStore('dex', {
         factoryAddress: '0x6725F303b657a9451d8BA641348b6761A6CC7a17', // BSC Testnet PancakeSwap V2 Factory (官方)
         routerAddress: '0xD99D1c33F9fC3444f8101754aBC46c52416550D1', // BSC Testnet PancakeSwap V2 Router
         baseTokens: [
-          '0x4Be45C88db35383F713ABC1adFA816200e0B8B56', // USDT (BSC Testnet) - 真正的测试网 USDT
-          '0x8516Fc284AEEaa0374E66037BD2309349FF728eA', // BUSD (BSC Testnet)
           '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd', // WBNB (BSC Testnet)
         ]
       },
@@ -34,10 +32,7 @@ export const useDexStore = defineStore('dex', {
         factoryAddress: '0xcA143Ce0Fe65960E6Aa4D42C8D3cE161c2B6604f', // BSC Mainnet PancakeSwap V2 Factory
         routerAddress: '0x10ED43C718714eb63d5aA57B78B54704E256024E', // BSC Mainnet PancakeSwap V2 Router
         baseTokens: [
-          '0x55d398326f99059fF775485246999027B3197955', // USDT (BSC Mainnet)
-          '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', // USDC (BSC Mainnet)
           '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', // WBNB (BSC Mainnet)
-          '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82', // CAKE (BSC Mainnet)
         ]
       },
       {
@@ -46,9 +41,7 @@ export const useDexStore = defineStore('dex', {
         factoryAddress: '0x0000000000000000000000000000000000000000', // OKX Chain Factory (待更新)
         routerAddress: '0x0000000000000000000000000000000000000000', // OKX Chain Router (待更新)
         baseTokens: [
-          '0x382bb369d343125bfb2117af9c149795c6c65c50', // USDT (OKX Chain)
-          '0xc946daf81b08146b1c7a8da2a851ddf2b3eaaf85', // USDC (OKX Chain)
-          '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // OKB (OKX Chain)
+          '0x8F8526dbfd6E38E3D8307702cA8469Bae6C56C15', // WOKT (OKX Chain)
         ]
       }
     ] as DexConfig[],

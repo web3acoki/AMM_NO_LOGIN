@@ -74,242 +74,107 @@
         <button type="button" class="btn-close btn-close-white" @click="showTransferPanel = false"></button>
       </div>
       <div class="card-body">
-        <ul class="nav nav-tabs mb-3">
-          <li class="nav-item">
-            <a class="nav-link" :class="{ active: transferMode === 'distribute' }" href="#" @click.prevent="transferMode = 'distribute'">
-              一对多（分发）
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" :class="{ active: transferMode === 'collect' }" href="#" @click.prevent="transferMode = 'collect'">
-              多对一（归集）
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" :class="{ active: transferMode === 'manyToMany' }" href="#" @click.prevent="transferMode = 'manyToMany'">
-              多对多
-            </a>
-          </li>
-        </ul>
-
-        <!-- 一对多（分发）-->
-        <div v-if="transferMode === 'distribute'">
-          <div class="alert alert-info small mb-2">
-            <i class="bi bi-info-circle me-1"></i>
-            <strong>使用说明：</strong>
-            <ol class="mb-0 mt-1 small">
-              <li>先在钱包列表中勾选<strong>一个源钱包</strong>，点击"设置源钱包"</li>
-              <li>重新勾选<strong>目标钱包</strong>（用于接收资金）</li>
-              <li>选择代币类型（{{ currentGovernanceToken }} 或 USDT）</li>
-              <li>设置每个目标的转账金额，点击执行</li>
-            </ol>
+        <!-- 转账模式选择 -->
+        <div class="mb-3">
+          <label class="form-label small fw-bold">转账模式</label>
+          <div class="btn-group w-100" role="group">
+            <input type="radio" class="btn-check" name="transferMode" id="modeOneToMany" value="oneToMany" v-model="transferMode">
+            <label class="btn btn-outline-primary" for="modeOneToMany">一对多</label>
+            <input type="radio" class="btn-check" name="transferMode" id="modeManyToOne" value="manyToOne" v-model="transferMode">
+            <label class="btn btn-outline-primary" for="modeManyToOne">多对一</label>
+            <input type="radio" class="btn-check" name="transferMode" id="modeManyToMany" value="manyToMany" v-model="transferMode">
+            <label class="btn btn-outline-primary" for="modeManyToMany">多对多</label>
           </div>
-          
-          <div class="row g-2 mb-2">
-            <div class="col-12 col-md-6">
-              <div class="d-flex align-items-center gap-2 mb-1">
-                <span class="small"><strong>源钱包：</strong></span>
-                <button 
-                  class="btn btn-outline-secondary btn-sm" 
-                  @click="setDistributeSourceWallet"
-                  :disabled="selectedCount !== 1"
-                >
-                  <i class="bi bi-check-circle me-1"></i>设置源钱包
-                </button>
-                <span v-if="selectedCount !== 1 && !distributeSourceAddress" class="text-warning small">
-                  （请选择1个钱包）
-                </span>
-              </div>
-              <div v-if="distributeSourceAddress" class="small">
-                <span class="badge bg-success me-1">已设置</span>
-                <code>{{ formatAddress(distributeSourceAddress) }}</code>
-              </div>
-            </div>
-            <div class="col-12 col-md-6">
-              <div class="d-flex align-items-center gap-2 mb-1">
-                <span class="small"><strong>目标钱包：</strong>{{ distributeTargetAddresses.length }} 个</span>
-                <button 
-                  class="btn btn-outline-primary btn-sm" 
-                  @click="setDistributeTargetWallets"
-                  :disabled="selectedCount === 0"
-                >
-                  <i class="bi bi-check-circle me-1"></i>设置目标钱包
-                </button>
-              </div>
-              <div v-if="distributeTargetAddresses.length > 0" class="small text-muted">
-                <span v-for="(addr, idx) in distributeTargetAddresses.slice(0, 3)" :key="addr" class="me-2">
-                  {{ formatAddress(addr) }}
-                </span>
-                <span v-if="distributeTargetAddresses.length > 3">...</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="row g-2 align-items-end">
-            <div class="col-auto">
-              <label class="form-label small">代币类型</label>
-              <select class="form-select form-select-sm" v-model="distributeTokenType">
-                <option value="native">{{ currentGovernanceToken }}</option>
-                <option value="usdt">USDT</option>
-              </select>
-            </div>
-            <div class="col-auto" v-if="distributeTokenType === 'usdt'">
-              <label class="form-label small">USDT 合约</label>
-              <input type="text" class="form-control form-control-sm" :value="currentUsdtAddress" disabled style="width: 200px;">
-            </div>
-            <div class="col-auto">
-              <label class="form-label small">每个钱包金额</label>
-              <div class="input-group input-group-sm">
-                <input type="number" class="form-control" v-model.number="distributeAmount" placeholder="0.01" step="0.001" min="0">
-                <span class="input-group-text">{{ distributeTokenType === 'usdt' ? 'USDT' : currentGovernanceToken }}</span>
-              </div>
-            </div>
-            <div class="col-auto">
-              <button 
-                class="btn btn-primary btn-sm" 
-                @click="executeDistribute"
-                :disabled="!distributeSourceAddress || distributeTargetAddresses.length === 0 || !distributeAmount || distributeAmount <= 0 || isTransferring"
-              >
-                {{ isTransferring ? '转账中...' : `分发 (1 → ${distributeTargetAddresses.length})` }}
-              </button>
-            </div>
+          <div class="form-text small mt-1">
+            <span v-if="transferMode === 'oneToMany'">一个源钱包向多个目标钱包转账（源钱包只能填1个）</span>
+            <span v-else-if="transferMode === 'manyToOne'">多个源钱包向一个目标钱包转账（目标钱包只能填1个）</span>
+            <span v-else>源钱包和目标钱包一一对应转账（数量必须相等）</span>
           </div>
         </div>
 
-        <!-- 多对一（归集）-->
-        <div v-if="transferMode === 'collect'">
-          <p class="text-muted small mb-2">
-            从选中的本地钱包各转出指定金额到目标地址。
-            <span v-if="selectedCount === 0" class="text-warning">（请先选择钱包）</span>
-          </p>
-          <div class="row g-2 align-items-end">
-            <div class="col-12 col-md-6">
-              <label class="form-label small">目标地址</label>
-              <input type="text" class="form-control form-control-sm" v-model="collectTargetAddress" placeholder="0x...">
-            </div>
-            <div class="col-auto">
-              <label class="form-label small">代币类型</label>
-              <select class="form-select form-select-sm" v-model="collectTokenType">
-                <option value="native">{{ currentGovernanceToken }}</option>
-                <option value="usdt">USDT</option>
-              </select>
-            </div>
-            <div class="col-auto">
-              <label class="form-label small">每个钱包转出金额</label>
-              <div class="input-group input-group-sm">
-                <input type="number" class="form-control" v-model.number="collectAmount" placeholder="2" step="0.01" min="0">
-                <span class="input-group-text">{{ collectTokenType === 'usdt' ? 'USDT' : currentGovernanceToken }}</span>
+        <!-- 地址输入区域 -->
+        <div class="row g-3 mb-3">
+          <div class="col-12 col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="form-label small fw-bold mb-0">
+                源钱包地址（每行一个）
+                <span class="badge bg-secondary ms-1">{{ sourceAddressCount }} 个</span>
+              </label>
+              <div class="d-flex gap-2">
+                <label class="btn btn-outline-primary btn-sm">
+                  <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
+                  <input type="file" accept=".txt" class="d-none" @change="handleSourceFileImport">
+                </label>
+                <button class="btn btn-outline-danger btn-sm" @click="sourceAddressesText = ''">
+                  <i class="bi bi-trash me-1"></i>清空
+                </button>
               </div>
             </div>
-            <div class="col-auto">
-              <button 
-                class="btn btn-primary btn-sm" 
-                @click="executeCollect"
-                :disabled="selectedCount === 0 || !collectTargetAddress || !collectAmount || collectAmount <= 0 || isTransferring"
-              >
-                {{ isTransferring ? '归集中...' : `从 ${selectedCount} 个钱包归集` }}
-              </button>
+            <textarea
+              class="form-control form-control-sm"
+              v-model="sourceAddressesText"
+              rows="6"
+              placeholder="0x1234...&#10;0x5678...&#10;每行一个钱包地址"
+              :class="{ 'is-invalid': sourceAddressError }"
+            ></textarea>
+            <div v-if="sourceAddressError" class="invalid-feedback">{{ sourceAddressError }}</div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="form-label small fw-bold mb-0">
+                目标钱包地址（每行一个）
+                <span class="badge bg-secondary ms-1">{{ targetAddressCount }} 个</span>
+              </label>
+              <div class="d-flex gap-2">
+                <label class="btn btn-outline-primary btn-sm">
+                  <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
+                  <input type="file" accept=".txt" class="d-none" @change="handleTargetFileImport">
+                </label>
+                <button class="btn btn-outline-danger btn-sm" @click="targetAddressesText = ''">
+                  <i class="bi bi-trash me-1"></i>清空
+                </button>
+              </div>
             </div>
+            <textarea
+              class="form-control form-control-sm"
+              v-model="targetAddressesText"
+              rows="6"
+              placeholder="0xabcd...&#10;0xefgh...&#10;每行一个钱包地址"
+              :class="{ 'is-invalid': targetAddressError }"
+            ></textarea>
+            <div v-if="targetAddressError" class="invalid-feedback">{{ targetAddressError }}</div>
           </div>
         </div>
 
-        <!-- 多对多 -->
-        <div v-if="transferMode === 'manyToMany'">
-          <div class="alert alert-info small mb-2">
-            <i class="bi bi-info-circle me-1"></i>
-            <strong>使用说明：</strong>
-            <ol class="mb-0 mt-1 small">
-              <li>先在钱包列表中勾选<strong>源钱包</strong>（用于发送资金）</li>
-              <li>点击"设置目标钱包"按钮，将当前选中的钱包设置为目标钱包</li>
-              <li>重新勾选源钱包（如果需要不同的源钱包）</li>
-              <li>设置每个目标的转账金额和分配策略</li>
-              <li>点击"执行多对多转账"开始转账</li>
-            </ol>
-          </div>
-          
-          <div class="row g-2 mb-2">
-            <div class="col-12 col-md-6">
-              <div class="d-flex align-items-center gap-2 mb-1">
-                <span class="small"><strong>源钱包：</strong>{{ sourceWalletCount }} 个</span>
-                <button 
-                  class="btn btn-outline-secondary btn-sm" 
-                  @click="setSourceWallets"
-                  :disabled="selectedCount === 0"
-                >
-                  <i class="bi bi-check-circle me-1"></i>设置为源钱包
-                </button>
-              </div>
-              <div v-if="sourceWalletAddresses.length > 0" class="small text-muted">
-                <span v-for="(addr, idx) in sourceWalletAddresses.slice(0, 3)" :key="addr" class="me-2">
-                  {{ formatAddress(addr) }}
-                </span>
-                <span v-if="sourceWalletAddresses.length > 3">...</span>
-                <span class="ms-1">(共 {{ sourceWalletAddresses.length }} 个)</span>
-              </div>
-            </div>
-            <div class="col-12 col-md-6">
-              <div class="d-flex align-items-center gap-2 mb-1">
-                <span class="small"><strong>目标钱包：</strong>{{ targetWalletAddresses.length }} 个</span>
-                <button 
-                  class="btn btn-outline-primary btn-sm" 
-                  @click="setTargetWallets"
-                  :disabled="selectedCount === 0"
-                >
-                  <i class="bi bi-check-circle me-1"></i>设置目标钱包
-                </button>
-              </div>
-              <div v-if="targetWalletAddresses.length > 0" class="small text-muted">
-                <span v-for="(addr, idx) in targetWalletAddresses.slice(0, 3)" :key="addr" class="me-2">
-                  {{ formatAddress(addr) }}
-                </span>
-                <span v-if="targetWalletAddresses.length > 3">...</span>
-                <span class="ms-1">(共 {{ targetWalletAddresses.length }} 个)</span>
-              </div>
+        <!-- 转账参数 -->
+        <div class="row g-2 align-items-end mb-3">
+          <div class="col-auto">
+            <label class="form-label small">转账金额</label>
+            <div class="input-group input-group-sm">
+              <input type="number" class="form-control" v-model.number="transferAmount" placeholder="0.01" step="0.001" min="0">
+              <span class="input-group-text">{{ transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken }}</span>
             </div>
           </div>
-
-          <div v-if="targetWalletAddresses.length > 0" class="alert alert-warning small mb-2">
-            <i class="bi bi-exclamation-triangle me-1"></i>
-            <span v-if="invalidTargetAddresses.length > 0" class="text-danger">
-              检测到 {{ invalidTargetAddresses.length }} 个无效目标地址，已自动过滤。
-            </span>
-            <span v-else>
-              所有目标地址格式正确（共 {{ validTargetAddresses.length }} 个）
-            </span>
+          <div class="col-auto">
+            <label class="form-label small">代币类型</label>
+            <select class="form-select form-select-sm" v-model="transferTokenType">
+              <option value="native">{{ currentGovernanceToken }}</option>
+              <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
+            </select>
           </div>
-
-          <div class="row g-2 align-items-end">
-            <div class="col-auto">
-              <label class="form-label small">代币类型</label>
-              <select class="form-select form-select-sm" v-model="manyToManyTokenType">
-                <option value="native">{{ currentGovernanceToken }}</option>
-                <option value="usdt">USDT</option>
-              </select>
-            </div>
-            <div class="col-auto">
-              <label class="form-label small">每个目标金额</label>
-              <div class="input-group input-group-sm">
-                <input type="number" class="form-control" v-model.number="manyToManyAmount" placeholder="0.01" step="0.001" min="0">
-                <span class="input-group-text">{{ manyToManyTokenType === 'usdt' ? 'USDT' : currentGovernanceToken }}</span>
-              </div>
-            </div>
-            <!-- 分配策略已注释，功能保留但默认使用顺序分配 -->
-            <!-- <div class="col-auto">
-              <label class="form-label small">分配策略</label>
-              <select class="form-select form-select-sm" v-model="manyToManyStrategy">
-                <option value="sequential">顺序分配</option>
-                <option value="random">随机分配</option>
-              </select>
-            </div> -->
-            <div class="col-auto">
-              <button 
-                class="btn btn-primary btn-sm" 
-                @click="executeManyToMany"
-                :disabled="sourceWalletAddresses.length === 0 || validTargetAddresses.length === 0 || !manyToManyAmount || manyToManyAmount <= 0 || isTransferring"
-              >
-                {{ isTransferring ? '转账中...' : `执行多对多转账 (${sourceWalletAddresses.length} → ${validTargetAddresses.length})` }}
-              </button>
-            </div>
+          <div class="col-auto">
+            <button
+              class="btn btn-primary btn-sm"
+              @click="executeTransfer"
+              :disabled="!canExecuteTransfer || isTransferring"
+            >
+              <span v-if="isTransferring">
+                <span class="spinner-border spinner-border-sm me-1"></span>转账中...
+              </span>
+              <span v-else>
+                <i class="bi bi-send me-1"></i>执行转账 ({{ sourceAddressCount }} → {{ targetAddressCount }})
+              </span>
+            </button>
           </div>
         </div>
 
@@ -348,7 +213,7 @@
                     <i class="bi" :class="result.success ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'"></i>
                   </td>
                   <td class="small">
-                    <code class="text-primary">{{ formatAddress(result.wallet || result.source || '-') }}</code>
+                    <code class="text-primary">{{ formatAddress(result.source || '-') }}</code>
                   </td>
                   <td class="text-center">
                     <i class="bi bi-arrow-right text-muted"></i>
@@ -357,8 +222,8 @@
                     <code class="text-info">{{ formatAddress(result.target || '-') }}</code>
                   </td>
                   <td class="small">
-                    <span v-if="result.amount" class="text-success fw-bold">
-                      {{ result.amount }} {{ result.tokenType === 'usdt' ? 'USDT' : currentGovernanceToken }}
+                    <span v-if="result.amount !== undefined" class="text-success fw-bold">
+                      {{ transferAmount }} {{ transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken }}
                     </span>
                     <span v-else class="text-muted">-</span>
                   </td>
@@ -400,7 +265,7 @@
             <th>地址</th>
             <th>私钥</th>
             <th>{{ currentGovernanceToken }} 余额</th>
-            <th>USDT 余额</th>
+            <th>{{ targetToken ? targetToken.symbol : '目标代币' }} 余额</th>
           </tr>
         </thead>
         <tbody>
@@ -429,14 +294,14 @@
             <td class="small text-muted">
               {{ w.createdAt ? new Date(w.createdAt).toLocaleString() : '-' }}
             </td>
-            <td class="text-break small" style="max-width: 180px;">
-              <span class="text-truncate d-inline-block" style="max-width: 180px;" :title="w.address">
+            <td class="text-break" style="min-width: 220px;">
+              <span class="font-monospace" :title="w.address">
                 {{ w.address }}
               </span>
             </td>
-            <td class="text-break small" style="max-width: 120px;">
-              <span class="text-truncate d-inline-block" style="max-width: 120px;" :title="w.encrypted">
-                {{ w.encrypted ? w.encrypted.slice(0, 10) + '...' : '-' }}
+            <td class="text-break small" style="min-width: 140px;">
+              <span class="font-monospace text-muted" :title="w.encrypted">
+                {{ w.encrypted ? w.encrypted.slice(0, 14) + '...' : '-' }}
               </span>
             </td>
             <td>
@@ -444,7 +309,7 @@
               <span v-else class="text-muted">-</span>
             </td>
             <td>
-              <span v-if="w.tokenBalance !== undefined">{{ w.tokenBalance }}</span>
+              <span v-if="targetToken && w.tokenBalance !== undefined">{{ w.tokenBalance }}</span>
               <span v-else class="text-muted">-</span>
             </td>
           </tr>
@@ -467,75 +332,182 @@ import { useChainStore } from '../../stores/chainStore';
 
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
-const { localWallets: wallets, selectedWalletAddresses, selectedCount, isAllSelected } = storeToRefs(walletStore);
+const { localWallets: wallets, selectedWalletAddresses, selectedCount, isAllSelected, targetToken } = storeToRefs(walletStore);
 const { currentGovernanceToken } = storeToRefs(chainStore);
 
 const isRefreshing = ref(false);
 const rangeInput = ref('');
 const showTransferPanel = ref(false);
-const transferMode = ref<'distribute' | 'collect' | 'manyToMany'>('distribute');
 const isTransferring = ref(false);
 const transferResults = ref<any[]>([]);
 
-// 分发参数
-const distributeAmount = ref(0.01);
-const distributeSourceAddress = ref('');
-const distributeTargetAddresses = ref<string[]>([]);
-const distributeTokenType = ref<'native' | 'usdt'>('native');
+// 批量转账参数（基于文本框输入）
+const transferMode = ref<'oneToMany' | 'manyToOne' | 'manyToMany'>('oneToMany');
+const sourceAddressesText = ref('');
+const targetAddressesText = ref('');
+const transferAmount = ref<number>(0.01);
+const transferTokenType = ref<'native' | 'token'>('native');
 
-// 当前网络的 USDT 合约地址
-const currentUsdtAddress = computed(() => {
-  return walletStore.getUsdtContractAddress() || '未配置';
+// 解析地址文本为地址数组
+function parseAddresses(text: string): string[] {
+  if (!text.trim()) return [];
+  return text
+    .split(/[\n,;]/)
+    .map(addr => addr.trim())
+    .filter(addr => addr.length > 0);
+}
+
+// 处理源地址文件导入
+async function handleSourceFileImport(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    // 追加到现有内容，用换行符分隔
+    if (sourceAddressesText.value.trim()) {
+      sourceAddressesText.value += '\n' + lines.join('\n');
+    } else {
+      sourceAddressesText.value = lines.join('\n');
+    }
+  } catch (error) {
+    alert('读取文件失败');
+  }
+
+  // 清空input以便可以再次选择同一文件
+  input.value = '';
+}
+
+// 处理目标地址文件导入
+async function handleTargetFileImport(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    // 追加到现有内容，用换行符分隔
+    if (targetAddressesText.value.trim()) {
+      targetAddressesText.value += '\n' + lines.join('\n');
+    } else {
+      targetAddressesText.value = lines.join('\n');
+    }
+  } catch (error) {
+    alert('读取文件失败');
+  }
+
+  // 清空input以便可以再次选择同一文件
+  input.value = '';
+}
+
+// 源地址列表
+const sourceAddresses = computed(() => parseAddresses(sourceAddressesText.value));
+const targetAddresses = computed(() => parseAddresses(targetAddressesText.value));
+
+// 地址计数
+const sourceAddressCount = computed(() => sourceAddresses.value.length);
+const targetAddressCount = computed(() => targetAddresses.value.length);
+
+// 源地址验证错误
+const sourceAddressError = computed(() => {
+  const addresses = sourceAddresses.value;
+  if (addresses.length === 0) return '';
+
+  // 检查格式
+  const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
+  if (invalidAddrs.length > 0) {
+    return `${invalidAddrs.length} 个地址格式无效`;
+  }
+
+  // 检查是否有私钥
+  const walletsWithKey = addresses.filter(addr => {
+    const wallet = walletStore.localWallets.find(w => w.address.toLowerCase() === addr.toLowerCase());
+    return wallet?.encrypted;
+  });
+
+  if (walletsWithKey.length < addresses.length) {
+    const missingCount = addresses.length - walletsWithKey.length;
+    return `${missingCount} 个地址在本地钱包中不存在或无私钥`;
+  }
+
+  // 一对多模式只能有一个源地址
+  if (transferMode.value === 'oneToMany' && addresses.length > 1) {
+    return '一对多模式只能填写一个源钱包地址';
+  }
+
+  return '';
 });
 
-// 设置分发源钱包（只能选择一个）
-function setDistributeSourceWallet() {
-  if (selectedCount.value !== 1) {
-    alert('请选择且仅选择 1 个钱包作为源钱包');
-    return;
+// 目标地址验证错误
+const targetAddressError = computed(() => {
+  const addresses = targetAddresses.value;
+  if (addresses.length === 0) return '';
+
+  // 检查格式
+  const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
+  if (invalidAddrs.length > 0) {
+    return `${invalidAddrs.length} 个地址格式无效`;
   }
-  const sourceAddr = selectedWalletAddresses.value[0];
-  const sourceWallet = walletStore.localWallets.find(w => w.address === sourceAddr);
-  
-  if (!sourceWallet?.encrypted) {
-    alert('所选钱包没有私钥，无法作为源钱包');
-    return;
+
+  // 多对一模式只能有一个目标地址
+  if (transferMode.value === 'manyToOne' && addresses.length > 1) {
+    return '多对一模式只能填写一个目标钱包地址';
   }
-  
-  distributeSourceAddress.value = sourceAddr;
-  alert(`已设置源钱包：${formatAddress(sourceAddr)}`);
+
+  // 多对多模式数量必须相等
+  if (transferMode.value === 'manyToMany' && sourceAddressCount.value !== addresses.length) {
+    return `多对多模式需要源地址和目标地址数量相等（源: ${sourceAddressCount.value}, 目标: ${addresses.length}）`;
+  }
+
+  return '';
+});
+
+// 是否可以执行转账
+const canExecuteTransfer = computed(() => {
+  if (sourceAddressCount.value === 0) return false;
+  if (targetAddressCount.value === 0) return false;
+  if (!transferAmount.value || transferAmount.value <= 0) return false;
+  if (sourceAddressError.value) return false;
+  if (targetAddressError.value) return false;
+  if (transferTokenType.value === 'token' && !targetToken.value) return false;
+  return true;
+});
+
+// 执行转账
+async function executeTransfer() {
+  if (!canExecuteTransfer.value) return;
+
+  isTransferring.value = true;
+  transferResults.value = [];
+
+  try {
+    const results = await walletStore.batchTransferByAddresses(
+      sourceAddresses.value,
+      targetAddresses.value,
+      transferAmount.value,
+      transferTokenType.value,
+      transferMode.value
+    );
+    transferResults.value = results;
+
+    // 统计结果
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+
+    if (failCount === 0) {
+      alert(`转账完成！成功 ${successCount} 笔`);
+    } else {
+      alert(`转账完成！成功 ${successCount} 笔，失败 ${failCount} 笔`);
+    }
+  } catch (error: any) {
+    alert(error.message || '转账失败');
+  } finally {
+    isTransferring.value = false;
+  }
 }
-
-// 设置分发目标钱包
-function setDistributeTargetWallets() {
-  if (selectedCount.value === 0) {
-    alert('请先选择目标钱包');
-    return;
-  }
-  
-  // 过滤掉源钱包（不能自己给自己转）
-  const targets = selectedWalletAddresses.value.filter(addr => addr !== distributeSourceAddress.value);
-  
-  if (targets.length === 0) {
-    alert('没有有效的目标钱包（目标钱包不能与源钱包相同）');
-    return;
-  }
-  
-  distributeTargetAddresses.value = targets;
-  alert(`已设置 ${targets.length} 个目标钱包`);
-}
-
-// 归集参数
-const collectTargetAddress = ref('');
-const collectTokenType = ref<'native' | 'usdt'>('native');
-const collectAmount = ref<number>(0);
-
-// 多对多参数
-const sourceWalletAddresses = ref<string[]>([]);
-const targetWalletAddresses = ref<string[]>([]);
-const manyToManyAmount = ref(0.01);
-const manyToManyStrategy = ref<'sequential' | 'random'>('sequential');
-const manyToManyTokenType = ref<'native' | 'usdt'>('native');
 
 // 地址校验函数
 function isValidAddress(address: string): boolean {
@@ -566,44 +538,6 @@ function getExplorerTxUrl(hash: string): string {
 function truncateError(error: string): string {
   if (!error) return '';
   return error.length > 30 ? error.slice(0, 30) + '...' : error;
-}
-
-// 计算有效和无效的目标地址
-const validTargetAddresses = computed(() => {
-  return targetWalletAddresses.value.filter(addr => isValidAddress(addr));
-});
-
-const invalidTargetAddresses = computed(() => {
-  return targetWalletAddresses.value.filter(addr => !isValidAddress(addr));
-});
-
-const sourceWalletCount = computed(() => sourceWalletAddresses.value.length);
-
-// 设置源钱包
-function setSourceWallets() {
-  if (selectedCount.value === 0) {
-    alert('请先选择源钱包');
-    return;
-  }
-  sourceWalletAddresses.value = [...selectedWalletAddresses.value];
-  alert(`已设置 ${sourceWalletAddresses.value.length} 个源钱包`);
-}
-
-// 设置目标钱包
-function setTargetWallets() {
-  if (selectedCount.value === 0) {
-    alert('请先选择目标钱包');
-    return;
-  }
-  targetWalletAddresses.value = [...selectedWalletAddresses.value];
-  
-  // 校验目标地址
-  const invalid = invalidTargetAddresses.value;
-  if (invalid.length > 0) {
-    alert(`已设置 ${targetWalletAddresses.value.length} 个目标钱包，但检测到 ${invalid.length} 个无效地址，已自动过滤。`);
-  } else {
-    alert(`已设置 ${targetWalletAddresses.value.length} 个目标钱包`);
-  }
 }
 
 // 检查钱包是否被选中
@@ -680,6 +614,10 @@ async function refreshBalances() {
   isRefreshing.value = true;
   try {
     await walletStore.refreshAllBalances();
+    // 如果设置了目标代币，也刷新目标代币余额
+    if (targetToken.value) {
+      await walletStore.refreshTargetTokenBalance();
+    }
   } finally {
     isRefreshing.value = false;
   }
@@ -691,148 +629,27 @@ function clearAllWallets() {
     walletStore.clearLocalWallets();
   }
 }
-
-
-// 执行分发（一对多）
-async function executeDistribute() {
-  // 检查源钱包
-  if (!distributeSourceAddress.value) {
-    alert('请先设置源钱包');
-    return;
-  }
-  
-  // 检查目标钱包
-  if (distributeTargetAddresses.value.length === 0) {
-    alert('请先设置目标钱包');
-    return;
-  }
-  
-  // 检查金额
-  if (!distributeAmount.value || distributeAmount.value <= 0) {
-    alert('请输入有效的转账金额');
-    return;
-  }
-  
-  // 检查源钱包是否有私钥
-  const sourceWallet = walletStore.localWallets.find(w => w.address === distributeSourceAddress.value);
-  if (!sourceWallet?.encrypted) {
-    alert('源钱包没有私钥，无法执行转账');
-    return;
-  }
-  
-  // 如果选择 USDT，检查合约地址
-  if (distributeTokenType.value === 'usdt' && currentUsdtAddress.value === '未配置') {
-    alert('当前网络未配置 USDT 合约地址');
-    return;
-  }
-  
-  isTransferring.value = true;
-  transferResults.value = [];
-  
-  try {
-    const results = await walletStore.distributeFromSource(
-      distributeSourceAddress.value,
-      distributeTargetAddresses.value,
-      distributeAmount.value,
-      distributeTokenType.value
-    );
-    transferResults.value = results;
-  } catch (error: any) {
-    alert(error.message || '分发失败');
-  } finally {
-    isTransferring.value = false;
-  }
-}
-
-// 执行归集（多对一）
-async function executeCollect() {
-  if (selectedCount.value === 0 || !collectTargetAddress.value || !collectAmount.value || collectAmount.value <= 0) return;
-  
-  isTransferring.value = true;
-  transferResults.value = [];
-  
-  try {
-    const results = await walletStore.collectFromSelected(
-      collectTargetAddress.value,
-      collectAmount.value,
-      collectTokenType.value
-    );
-    transferResults.value = results;
-  } catch (error: any) {
-    alert(error.message || '归集失败');
-  } finally {
-    isTransferring.value = false;
-  }
-}
-
-// 执行多对多
-async function executeManyToMany() {
-  // 检查源钱包
-  if (sourceWalletAddresses.value.length === 0) {
-    alert('请先设置源钱包');
-    return;
-  }
-  
-  // 检查目标钱包
-  if (validTargetAddresses.value.length === 0) {
-    alert('请先设置有效的目标钱包（地址格式必须正确：0x开头，42位长度）');
-    return;
-  }
-  
-  if (!manyToManyAmount.value || manyToManyAmount.value <= 0) {
-    alert('请输入有效的转账金额');
-    return;
-  }
-  
-  // 检查源钱包是否有私钥
-  const sourceWallets = walletStore.localWallets.filter(w => 
-    sourceWalletAddresses.value.includes(w.address)
-  );
-  
-  const walletsWithKey = sourceWallets.filter(w => w.encrypted);
-  if (walletsWithKey.length === 0) {
-    alert('源钱包中没有包含私钥的钱包，无法执行转账');
-    return;
-  }
-  
-  if (walletsWithKey.length < sourceWallets.length) {
-    const missingCount = sourceWallets.length - walletsWithKey.length;
-    if (!confirm(`警告：${missingCount} 个源钱包没有私钥，将被跳过。是否继续？`)) {
-      return;
-    }
-  }
-  
-  isTransferring.value = true;
-  transferResults.value = [];
-  
-  try {
-    const results = await walletStore.manyToManyTransfer(
-      validTargetAddresses.value,
-      manyToManyAmount.value,
-      manyToManyStrategy.value,
-      sourceWalletAddresses.value,
-      manyToManyTokenType.value
-    );
-    transferResults.value = results;
-  } catch (error: any) {
-    alert(error.message || '多对多转账失败');
-  } finally {
-    isTransferring.value = false;
-  }
-}
 </script>
 
 <style scoped>
 .wallet-table-container {
-  font-size: 0.875rem;
+  font-size: 0.95rem;
 }
 
 .table th, .table td {
   vertical-align: middle;
+  padding: 0.75rem 0.5rem;
+}
+
+.table th {
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .form-check-input {
   cursor: pointer;
+  width: 1.2em;
+  height: 1.2em;
 }
 
 .form-check-input:indeterminate {
@@ -841,6 +658,17 @@ async function executeManyToMany() {
 }
 
 .transfer-results-list {
-  font-size: 0.75rem;
+  font-size: 0.8rem;
+}
+
+/* 让地址列更宽 */
+.table td:nth-child(6) {
+  min-width: 200px;
+}
+
+/* 让余额列有固定宽度 */
+.table td:nth-child(8),
+.table td:nth-child(9) {
+  min-width: 120px;
 }
 </style>

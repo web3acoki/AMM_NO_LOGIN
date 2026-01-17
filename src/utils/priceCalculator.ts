@@ -379,12 +379,60 @@ export class PriceCalculator {
       if (bestPath && bestPrice > 0) {
         console.log(`最优路径: ${bestPath.map(p => p.slice(0, 10)).join(' -> ')}, 价格: ${bestPrice}`);
 
+        // 获取直接交易对的池子储备量（用于计算市值）
+        let reserve0 = BigInt(0);
+        let reserve1 = BigInt(0);
+        let pairAddress = this.routerAddress;
+        let token0Addr = normalizedTokenAddress;
+        let token1Addr = normalizedQuoteToken;
+
+        try {
+          // 查找 Token/QuoteToken 的直接交易对
+          const directPairAddress = await this.client.readContract({
+            address: this.factoryAddress as `0x${string}`,
+            abi: factoryAbi,
+            functionName: 'getPair',
+            args: [normalizedTokenAddress as `0x${string}`, normalizedQuoteToken as `0x${string}`]
+          }).catch(() => null);
+
+          if (directPairAddress && directPairAddress !== '0x0000000000000000000000000000000000000000') {
+            pairAddress = directPairAddress as string;
+            // 获取储备量
+            const reserves = await this.client.readContract({
+              address: directPairAddress as `0x${string}`,
+              abi: pairAbi,
+              functionName: 'getReserves'
+            }).catch(() => null) as [bigint, bigint, number] | null;
+
+            if (reserves) {
+              // 获取 token0 地址
+              const t0 = await this.client.readContract({
+                address: directPairAddress as `0x${string}`,
+                abi: pairAbi,
+                functionName: 'token0'
+              }).catch(() => null) as string | null;
+
+              if (t0) {
+                token0Addr = t0;
+                token1Addr = t0.toLowerCase() === normalizedTokenAddress.toLowerCase()
+                  ? normalizedQuoteToken
+                  : normalizedTokenAddress;
+                reserve0 = reserves[0];
+                reserve1 = reserves[1];
+                console.log(`池子储备量: reserve0=${reserve0}, reserve1=${reserve1}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.log('获取池子储备量失败，继续使用价格信息');
+        }
+
         return {
-          pairAddress: this.routerAddress,  // 使用 Router 地址
-          token0: normalizedTokenAddress,
-          token1: normalizedQuoteToken,
-          reserve0: BigInt(0),
-          reserve1: BigInt(0),
+          pairAddress: pairAddress,
+          token0: token0Addr,
+          token1: token1Addr,
+          reserve0: reserve0,
+          reserve1: reserve1,
           price: bestPrice,
           baseToken: normalizedQuoteToken,
           isRouted: isRouted,

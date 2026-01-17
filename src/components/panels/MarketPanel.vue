@@ -3,26 +3,14 @@
     <h1 class="h4 mb-3">市值管理面板</h1>
     <div class="row g-3">
       <div class="col-lg-7">
+        <!-- 网络与代币设置（融合后的板块） -->
         <div class="card shadow-sm">
-          <div class="card-body">
-            <h2 class="h6">连接与设置</h2>
-            <div class="row g-3">
-              <div class="col-12 col-md-6">
-                <NetworkSelector />
-              </div>
-              <div class="col-12 col-md-6">
-                <WalletManager />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card shadow-sm mt-3">
           <div class="card-body">
             <LiquidityPoolQuery />
           </div>
         </div>
 
+        <!-- 钱包导入与列表 -->
         <div class="card shadow-sm mt-3">
           <div class="card-body">
             <h2 class="h6">钱包导入</h2>
@@ -61,8 +49,6 @@
 </template>
 
 <script setup lang="ts">
-import NetworkSelector from '../market/NetworkSelector.vue';
-import WalletManager from '../market/WalletManager.vue';
 import LiquidityPoolQuery from '../market/LiquidityPoolQuery.vue';
 import WalletImportPanel from '../market/WalletImportPanel.vue';
 import WalletTable from '../market/WalletTable.vue';

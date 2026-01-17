@@ -142,6 +142,13 @@ export const useWalletStore = defineStore('wallet', {
     currentChainId: 97 as number, // 默认BSC测试网
     // 钱包选择相关状态
     selectedWalletAddresses: [] as string[], // 选中的钱包地址列表
+    // 全局目标代币（从资金池查询获取）
+    targetToken: null as {
+      address: string;
+      symbol: string;
+      name: string;
+      decimals: number;
+    } | null,
   }),
   getters: {
     // 获取选中的钱包列表
@@ -259,6 +266,44 @@ export const useWalletStore = defineStore('wallet', {
       this.persist();
     },
 
+    // ============ 目标代币相关操作 ============
+
+    // 设置目标代币
+    setTargetToken(token: { address: string; symbol: string; name: string; decimals: number }) {
+      this.targetToken = token;
+    },
+
+    // 清除目标代币
+    clearTargetToken() {
+      this.targetToken = null;
+    },
+
+    // 刷新目标代币余额
+    async refreshTargetTokenBalance() {
+      if (!this.targetToken) return;
+
+      const publicClient = this.getPublicClient();
+      const tokenAddress = this.targetToken.address as `0x${string}`;
+      const decimals = this.targetToken.decimals;
+
+      for (const wallet of this.localWallets) {
+        try {
+          const balance = await publicClient.readContract({
+            address: tokenAddress,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [wallet.address as `0x${string}`]
+          });
+          wallet.tokenBalance = formatUnits(balance as bigint, decimals);
+        } catch (error) {
+          console.error(`Failed to fetch target token balance for ${wallet.address}:`, error);
+          wallet.tokenBalance = '-';
+        }
+      }
+
+      this.persist();
+    },
+
     async connectWallet(walletType: 'metamask' | 'okx' | 'walletconnect') {
       try {
         // 使用新的钱包检测器
@@ -292,25 +337,28 @@ export const useWalletStore = defineStore('wallet', {
       console.log('钱包已断开连接');
     },
 
-    async generateLocalWallets(count: number) {
+    async generateLocalWallets(count: number, options?: { walletType?: 'main' | 'normal', remark?: string }) {
+      const walletType = options?.walletType || 'normal';
+      const remark = options?.remark || '';
+
       for (let i = 0; i < count; i++) {
         // 生成真正的随机私钥
         const random = crypto.getRandomValues(new Uint8Array(32));
         const privateKey = `0x${Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('')}`;
         const account = privateKeyToAccount(privateKey as `0x${string}`);
-        
+
         // 简单验证私钥和地址匹配
         const verifyAccount = privateKeyToAccount(privateKey as `0x${string}`);
         if (verifyAccount.address.toLowerCase() !== account.address.toLowerCase()) {
           console.error('私钥和地址不匹配！');
         }
-        
+
         // 存储真正的私钥（实际应用中应该加密存储）
-        this.localWallets.push({ 
-          address: account.address, 
+        this.localWallets.push({
+          address: account.address,
           encrypted: privateKey, // 直接存储私钥，实际应用中应该加密
-          walletType: 'normal',
-          remark: '',
+          walletType: walletType,
+          remark: remark,
           createdAt: new Date().toISOString(),
         });
       }
@@ -2043,6 +2091,231 @@ export const useWalletStore = defineStore('wallet', {
       }
       
       console.log('代币归集完成:', results);
+      return results;
+    },
+
+    // ============ 新增批量转账方法 ============
+
+    // 通过地址列表进行批量转账
+    async batchTransferByAddresses(
+      sourceAddresses: string[],
+      targetAddresses: string[],
+      amount: number,
+      tokenType: 'native' | 'token',
+      mode: 'oneToMany' | 'manyToOne' | 'manyToMany'
+    ): Promise<{ source: string; target: string; hash?: string; error?: string; success: boolean }[]> {
+      console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}`);
+
+      const results: { source: string; target: string; hash?: string; error?: string; success: boolean }[] = [];
+      const chainConfig = this.getChainConfig();
+      const publicClient = this.getPublicClient();
+      const gasPrice = await publicClient.getGasPrice();
+
+      // 根据模式构建转账任务
+      let tasks: { sourceAddr: string; targetAddr: string }[] = [];
+
+      if (mode === 'oneToMany') {
+        // 一对多：一个源钱包向多个目标钱包转账
+        if (sourceAddresses.length !== 1) {
+          throw new Error('一对多模式下源钱包必须只有1个');
+        }
+        const sourceAddr = sourceAddresses[0];
+        for (const targetAddr of targetAddresses) {
+          tasks.push({ sourceAddr, targetAddr });
+        }
+      } else if (mode === 'manyToOne') {
+        // 多对一：多个源钱包向一个目标钱包转账
+        if (targetAddresses.length !== 1) {
+          throw new Error('多对一模式下目标钱包必须只有1个');
+        }
+        const targetAddr = targetAddresses[0];
+        for (const sourceAddr of sourceAddresses) {
+          tasks.push({ sourceAddr, targetAddr });
+        }
+      } else if (mode === 'manyToMany') {
+        // 多对多：源钱包和目标钱包一一对应
+        if (sourceAddresses.length !== targetAddresses.length) {
+          throw new Error('多对多模式下源钱包和目标钱包数量必须相等');
+        }
+        for (let i = 0; i < sourceAddresses.length; i++) {
+          tasks.push({ sourceAddr: sourceAddresses[i], targetAddr: targetAddresses[i] });
+        }
+      }
+
+      // 执行转账任务
+      for (let i = 0; i < tasks.length; i++) {
+        const { sourceAddr, targetAddr } = tasks[i];
+
+        try {
+          // 查找源钱包的私钥
+          const sourceWallet = this.localWallets.find(w => w.address.toLowerCase() === sourceAddr.toLowerCase());
+          if (!sourceWallet || !sourceWallet.encrypted) {
+            results.push({
+              source: sourceAddr,
+              target: targetAddr,
+              error: '源钱包未找到或没有私钥',
+              success: false
+            });
+            continue;
+          }
+
+          console.log(`转账 ${i + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
+
+          // 创建钱包客户端
+          const account = privateKeyToAccount(sourceWallet.encrypted as `0x${string}`);
+          const walletClient = createWalletClient({
+            account,
+            chain: chainConfig,
+            transport: http(chainConfig.rpcUrls.default.http[0])
+          });
+
+          let txHash: string;
+
+          if (tokenType === 'token' && this.targetToken) {
+            // 目标代币转账
+            const tokenAddress = this.targetToken.address as `0x${string}`;
+            const decimals = this.targetToken.decimals;
+            const amountToSend = parseUnits(amount.toString(), decimals);
+
+            txHash = await walletClient.writeContract({
+              address: tokenAddress,
+              abi: erc20Abi,
+              functionName: 'transfer',
+              args: [targetAddr as `0x${string}`, amountToSend],
+              gas: BigInt(65000),
+              gasPrice: gasPrice,
+            });
+          } else {
+            // 原生代币转账
+            txHash = await walletClient.sendTransaction({
+              to: targetAddr as `0x${string}`,
+              value: parseEther(amount.toString()),
+              gas: BigInt(21000),
+              gasPrice: gasPrice,
+            });
+          }
+
+          console.log(`转账成功: ${txHash}`);
+          results.push({
+            source: sourceAddr,
+            target: targetAddr,
+            hash: txHash,
+            success: true
+          });
+
+          // 添加延迟
+          if (i < tasks.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+          }
+
+        } catch (error: any) {
+          console.error(`转账失败: ${sourceAddr} -> ${targetAddr}`, error);
+          results.push({
+            source: sourceAddr,
+            target: targetAddr,
+            error: error.message || String(error),
+            success: false
+          });
+        }
+      }
+
+      console.log('批量转账完成:', results);
+      return results;
+    },
+
+    // 批量卖出代币
+    async batchSellToken(
+      walletAddresses: string[],
+      mode: 'fixed' | 'range',
+      fixedPercent?: number,
+      minPercent?: number,
+      maxPercent?: number
+    ): Promise<{ wallet: string; percent: number; hash?: string; error?: string; success: boolean }[]> {
+      console.log(`开始批量卖出，模式: ${mode}`);
+
+      if (!this.targetToken) {
+        throw new Error('请先设置目标代币');
+      }
+
+      const results: { wallet: string; percent: number; hash?: string; error?: string; success: boolean }[] = [];
+      const chainConfig = this.getChainConfig();
+      const publicClient = this.getPublicClient();
+      const gasPrice = await publicClient.getGasPrice();
+      const tokenAddress = this.targetToken.address as `0x${string}`;
+      const decimals = this.targetToken.decimals;
+
+      // 需要导入 tradingService 或使用 router 来卖出
+      // 这里暂时返回模拟结果，实际实现需要调用 DEX router
+      for (let i = 0; i < walletAddresses.length; i++) {
+        const walletAddr = walletAddresses[i];
+
+        try {
+          // 计算卖出百分比
+          let percent: number;
+          if (mode === 'fixed') {
+            percent = fixedPercent || 100;
+          } else {
+            const min = minPercent || 10;
+            const max = maxPercent || 100;
+            percent = Math.random() * (max - min) + min;
+          }
+
+          // 查找钱包私钥
+          const wallet = this.localWallets.find(w => w.address.toLowerCase() === walletAddr.toLowerCase());
+          if (!wallet || !wallet.encrypted) {
+            results.push({
+              wallet: walletAddr,
+              percent,
+              error: '钱包未找到或没有私钥',
+              success: false
+            });
+            continue;
+          }
+
+          // 获取代币余额
+          const balance = await publicClient.readContract({
+            address: tokenAddress,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [walletAddr as `0x${string}`]
+          }) as bigint;
+
+          if (balance <= BigInt(0)) {
+            results.push({
+              wallet: walletAddr,
+              percent,
+              error: '代币余额为0',
+              success: false
+            });
+            continue;
+          }
+
+          // 计算卖出数量
+          const sellAmount = (balance * BigInt(Math.floor(percent))) / BigInt(100);
+
+          console.log(`钱包 ${walletAddr} 卖出 ${percent}% 的代币，数量: ${formatUnits(sellAmount, decimals)}`);
+
+          // 注意：实际卖出需要调用 DEX router，这里只是示例
+          // 需要在 tradingService 中实现卖出逻辑
+          results.push({
+            wallet: walletAddr,
+            percent,
+            error: '卖出功能需要通过任务系统执行',
+            success: false
+          });
+
+        } catch (error: any) {
+          console.error(`处理钱包 ${walletAddr} 失败:`, error);
+          results.push({
+            wallet: walletAddr,
+            percent: 0,
+            error: error.message || String(error),
+            success: false
+          });
+        }
+      }
+
+      console.log('批量卖出完成:', results);
       return results;
     },
 

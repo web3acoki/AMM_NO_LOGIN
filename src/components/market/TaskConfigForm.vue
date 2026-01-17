@@ -22,26 +22,38 @@
 
       <!-- 代币合约地址 -->
       <div class="mb-3">
-        <label class="form-label small">代币合约地址</label>
-        <input type="text" class="form-control form-control-sm" v-model="tokenContract" placeholder="0x...">
+        <label class="form-label small">
+          代币合约地址
+          <span v-if="targetToken" class="badge bg-success ms-1">已自动填入</span>
+        </label>
+        <input
+          type="text"
+          class="form-control form-control-sm"
+          :value="tokenContract"
+          @input="tokenContract = ($event.target as HTMLInputElement).value"
+          :disabled="!!targetToken"
+          :placeholder="targetToken ? '' : '请先在资金池查询中设置目标代币'"
+        >
+        <div v-if="targetToken" class="form-text small text-success">
+          <i class="bi bi-check-circle me-1"></i>{{ targetToken.symbol }} ({{ targetToken.name }})
+        </div>
+        <div v-else class="form-text small text-warning">
+          <i class="bi bi-exclamation-triangle me-1"></i>请先在资金池查询中设置目标代币
+        </div>
       </div>
 
       <!-- 池子类型和交易代币 -->
       <div class="row g-2 mb-3">
         <div class="col-6">
           <label class="form-label small">池子类型</label>
-          <select class="form-select form-select-sm" v-model="poolType">
+          <select class="form-select form-select-sm" v-model="poolType" disabled>
             <option :value="currentGovernanceToken">{{ currentGovernanceToken }}</option>
-            <option value="USDT">USDT</option>
-            <option value="USDC">USDC</option>
           </select>
         </div>
         <div class="col-6">
           <label class="form-label small">{{ mode === 'pump' ? '花费代币' : '换成代币' }}</label>
-          <select class="form-select form-select-sm" v-model="spendToken">
+          <select class="form-select form-select-sm" v-model="spendToken" disabled>
             <option :value="currentGovernanceToken">{{ currentGovernanceToken }}</option>
-            <option value="USDT">USDT</option>
-            <option value="USDC">USDC</option>
           </select>
         </div>
       </div>
@@ -51,7 +63,7 @@
         <label class="form-label small">目标价格（可选）</label>
         <div class="input-group input-group-sm">
           <input type="number" class="form-control" v-model.number="targetPrice" step="0.000001" placeholder="0.001">
-          <span class="input-group-text">USDT</span>
+          <span class="input-group-text">{{ currentGovernanceToken }}</span>
         </div>
         <div class="form-text small">仅在停止条件选择"达到目标价格"时生效</div>
       </div>
@@ -212,7 +224,7 @@ const walletStore = useWalletStore();
 const chainStore = useChainStore();
 
 const { currentGovernanceToken } = storeToRefs(chainStore);
-const { selectedWalletAddresses, selectedCount } = storeToRefs(walletStore);
+const { selectedWalletAddresses, selectedCount, targetToken } = storeToRefs(walletStore);
 
 // 表单数据
 const taskName = ref('');
@@ -236,6 +248,13 @@ const balancePercent = ref<number>(100);
 watch(currentGovernanceToken, (newToken) => {
   poolType.value = newToken;
   spendToken.value = newToken;
+}, { immediate: true });
+
+// 监听目标代币变化，自动填入代币合约地址
+watch(targetToken, (token) => {
+  if (token) {
+    tokenContract.value = token.address;
+  }
 }, { immediate: true });
 
 // 自动生成任务名称
@@ -290,8 +309,8 @@ const stopTypeUnit = computed(() => {
     case 'count': return '次';
     case 'amount': return spendToken.value;
     case 'time': return '秒';
-    case 'price': return 'USDT';
-    case 'marketcap': return 'BNB';
+    case 'price': return currentGovernanceToken.value;
+    case 'marketcap': return currentGovernanceToken.value;
     default: return '';
   }
 });

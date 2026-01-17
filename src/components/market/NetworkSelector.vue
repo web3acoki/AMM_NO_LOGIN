@@ -16,7 +16,11 @@
       </div>
       <div class="col-12 col-sm-4">
         <label class="form-label">RPC 节点</label>
-        <input class="form-control" :placeholder="currentRpcUrl" v-model="rpcUrl" />
+        <select class="form-select" v-model="rpcUrl" @change="onRpcChange">
+          <option v-for="opt in currentRpcOptions" :key="opt.url" :value="opt.url">
+            {{ opt.name }} - {{ formatUrl(opt.url) }}
+          </option>
+        </select>
       </div>
     </div>
     <!-- 隐藏的调试信息，功能保留但不显示 -->
@@ -78,15 +82,38 @@ const currentRpcUrl = computed(() => {
   return chain?.rpc || '';
 });
 
-function onChainChange() {
-  // 更新RPC URL
+// 获取当前链的RPC选项
+const currentRpcOptions = computed(() => {
   const chain = chains.value.find(c => c.id === selectedChainId.value);
-  if (chain) {
+  return chain?.rpcOptions || [];
+});
+
+// 格式化URL显示（截取域名部分）
+function formatUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch {
+    return url;
+  }
+}
+
+function onChainChange() {
+  // 更新RPC URL（选择第一个RPC选项）
+  const chain = chains.value.find(c => c.id === selectedChainId.value);
+  if (chain && chain.rpcOptions && chain.rpcOptions.length > 0) {
+    rpcUrl.value = chain.rpcOptions[0].url;
+  } else if (chain) {
     rpcUrl.value = chain.rpc;
   }
-  
+
   // 自动选择对应的DEX
   dexStore.setDexByChainId(selectedChainId.value);
+}
+
+function onRpcChange() {
+  // RPC变化时的处理
+  console.log('RPC切换到:', rpcUrl.value);
 }
 
 function onDexChange() {

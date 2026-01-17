@@ -1,8 +1,14 @@
 <template>
   <LoginView v-if="requireLogin && (!ready || !isAuthenticated)" @logged-in="handleLoggedIn" />
   <div v-else class="app-layout">
-    <Sidebar :items="sidebarItems" :active-key="activePanel" @select="handleSelect" />
-    <main class="flex-grow-1">
+    <Sidebar
+      :items="sidebarItems"
+      :active-key="activePanel"
+      :collapsed="sidebarCollapsed"
+      @select="handleSelect"
+      @toggle-collapse="sidebarCollapsed = !sidebarCollapsed"
+    />
+    <main class="main-content">
       <header class="d-flex align-items-center justify-content-between px-4 py-3 border-bottom bg-white">
         <div>
           <div class="fw-semibold">{{ currentTitle }}</div>
@@ -12,9 +18,9 @@
       </header>
 
       <section class="content-area">
-        <MarketPanel v-if="activePanel === 'market'" />
-        <UserManagement v-else-if="activePanel === 'users'" />
-        <AnalysisPanel v-else />
+        <keep-alive include="WalletManagePanel,TaskManagePanel">
+          <component :is="currentComponent" />
+        </keep-alive>
       </section>
     </main>
   </div>
@@ -26,13 +32,15 @@ import { apiRequest } from './api';
 import { ENABLE_LOGIN, DEFAULT_USERNAME } from './config';
 import LoginView from './components/auth/LoginView.vue';
 import Sidebar from './components/layout/Sidebar.vue';
-import MarketPanel from './components/panels/MarketPanel.vue';
+import WalletManagePanel from './components/panels/WalletManagePanel.vue';
+import TaskManagePanel from './components/panels/TaskManagePanel.vue';
 import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 
 const requireLogin = ENABLE_LOGIN;
 
-const activePanel = ref<'users' | 'market' | 'analysis'>('market');
+const activePanel = ref<'users' | 'wallet' | 'task' | 'analysis'>('wallet');
+const sidebarCollapsed = ref(false);
 const currentUser = ref<any>(null);
 const isAuthenticated = ref(false);
 const ready = ref(false);
@@ -43,8 +51,9 @@ const displayUsername = computed(() => {
 });
 
 const sidebarItems = [
+  { key: 'wallet', label: '钱包管理', icon: '💰' },
+  { key: 'task', label: '任务管理', icon: '📋' },
   { key: 'users', label: '用户管理', icon: '👥' },
-  { key: 'market', label: '市值面板', icon: '📊' },
   { key: 'analysis', label: '分析面板', icon: '📈' }
 ];
 
@@ -53,8 +62,18 @@ const currentTitle = computed(() => {
   return item ? item.label : '面板';
 });
 
+const currentComponent = computed(() => {
+  switch (activePanel.value) {
+    case 'wallet': return WalletManagePanel;
+    case 'task': return TaskManagePanel;
+    case 'users': return UserManagement;
+    case 'analysis': return AnalysisPanel;
+    default: return WalletManagePanel;
+  }
+});
+
 const handleSelect = (key: string) => {
-  activePanel.value = key as 'users' | 'market' | 'analysis';
+  activePanel.value = key as 'users' | 'wallet' | 'task' | 'analysis';
 };
 
 const loadSession = async () => {
@@ -104,6 +123,7 @@ onMounted(loadSession);
 <style>
 body {
   background-color: #f8fafc;
+  overflow-x: hidden;
 }
 
 .app-layout {
@@ -112,8 +132,18 @@ body {
   background: #f8fafc;
 }
 
+.main-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+
 .content-area {
+  flex: 1;
   min-height: calc(100vh - 64px);
   background: #f8fafc;
+  overflow-x: auto;
 }
 </style>

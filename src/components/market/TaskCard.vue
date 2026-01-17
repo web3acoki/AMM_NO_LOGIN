@@ -1,8 +1,14 @@
 <template>
-  <div class="task-card border rounded p-2 mb-2" :class="statusClass">
+  <div class="task-card border rounded p-2 mb-2" :class="[statusClass, { 'border-info border-2': selected }]">
     <!-- 任务头部 -->
     <div class="d-flex justify-content-between align-items-center mb-2">
       <div class="d-flex align-items-center gap-2">
+        <input
+          type="checkbox"
+          class="form-check-input"
+          :checked="selected"
+          @change="$emit('toggle-select')"
+        >
         <span class="badge" :class="modeBadgeClass">
           {{ task.mode === 'pump' ? '拉盘' : '砸盘' }}
         </span>
@@ -100,6 +106,11 @@ import { storeToRefs } from 'pinia';
 
 const props = defineProps<{
   task: Task;
+  selected?: boolean;
+}>();
+
+defineEmits<{
+  (e: 'toggle-select'): void;
 }>();
 
 const taskStore = useTaskStore();

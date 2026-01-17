@@ -34,6 +34,7 @@ export interface TaskConfig {
   gasLimit?: number;          // 自定义Gas上限
   sellThreshold: number;      // 卖出阈值
   walletMode: 'sequential' | 'parallel';  // 钱包使用方式：顺序/同时
+  balancePercent?: number;    // 余额使用百分比 (1-100)
 }
 
 // 任务统计接口
@@ -190,7 +191,7 @@ export const useTaskStore = defineStore('task', () => {
       
       // 创建交易服务
       const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
-      
+
       // 构建交易参数（滑点固定30%）
       const tradeParams: TradeParams = {
         chainId,
@@ -206,6 +207,7 @@ export const useTaskStore = defineStore('task', () => {
         slippage: 30,
         gasPrice: task.config.gasPrice,
         gasLimit: task.config.gasLimit,
+        balancePercent: task.config.balancePercent,
       };
       
       // 执行交易

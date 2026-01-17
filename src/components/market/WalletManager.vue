@@ -146,8 +146,21 @@
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
-            <label class="form-label">数量</label>
-            <input type="number" min="1" class="form-control" v-model.number="generateCount" />
+            <div class="mb-3">
+              <label class="form-label">生成数量</label>
+              <input type="number" min="1" class="form-control" v-model.number="generateCount" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">钱包类型</label>
+              <select class="form-select" v-model="generateWalletType">
+                <option value="main">主钱包</option>
+                <option value="normal">普通钱包</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">备注（可选）</label>
+              <input type="text" class="form-control" v-model="generateRemark" placeholder="批量备注" />
+            </div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -221,6 +234,8 @@ const selectedChainName = computed(() => {
 });
 
 const generateCount = ref<number>(5);
+const generateWalletType = ref<'main' | 'normal'>('normal');
+const generateRemark = ref<string>('');
 const transferAmount = ref<number>(0);
 let modal: any = null;
 let walletModal: any = null;
@@ -455,8 +470,70 @@ async function switchToSelectedNetwork() {
 }
 
 async function generateWallets() {
-  await walletStore.generateLocalWallets(generateCount.value);
+  const countBefore = localWallets.value?.length || 0;
+
+  await walletStore.generateLocalWallets(generateCount.value, {
+    walletType: generateWalletType.value,
+    remark: generateRemark.value
+  });
+
+  // 获取新生成的钱包
+  const newWallets = localWallets.value?.slice(countBefore) || [];
+
+  // 自动下载Excel
+  if (newWallets.length > 0) {
+    downloadWalletsExcel(newWallets);
+  }
+
+  // 重置表单
+  generateWalletType.value = 'normal';
+  generateRemark.value = '';
+
   modal?.hide();
+}
+
+// 下载钱包信息为Excel文件
+function downloadWalletsExcel(wallets: any[]) {
+  // 生成CSV内容（Excel兼容）
+  const BOM = '\uFEFF'; // UTF-8 BOM for Excel compatibility
+  const headers = ['序号', '钱包地址', '私钥', '备注', '钱包类型', '创建时间'];
+
+  const rows = wallets.map((wallet, index) => {
+    return [
+      index + 1,
+      wallet.address,
+      wallet.encrypted || '', // 私钥
+      wallet.remark || '',
+      wallet.walletType === 'main' ? '主钱包' : '普通钱包',
+      wallet.createdAt ? new Date(wallet.createdAt).toLocaleString() : ''
+    ].map(cell => {
+      // 处理CSV特殊字符
+      const str = String(cell);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    }).join(',');
+  });
+
+  const csvContent = BOM + [headers.join(','), ...rows].join('\n');
+
+  // 创建Blob并下载
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+
+  // 生成文件名
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  link.download = `钱包信息_${timestamp}.csv`;
+
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  console.log(`已下载 ${wallets.length} 个钱包信息到Excel文件`);
 }
 
 
