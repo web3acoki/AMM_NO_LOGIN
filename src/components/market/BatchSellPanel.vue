@@ -91,6 +91,44 @@
         <div class="form-text">每个钱包将在此区间内随机选择卖出比例</div>
       </div>
 
+      <!-- 并发控制 -->
+      <div class="mb-3">
+        <label class="form-label">并发控制</label>
+        <div class="row g-2">
+          <div class="col">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">线程数</span>
+              <input
+                type="number"
+                class="form-control"
+                v-model.number="concurrency"
+                min="1"
+                max="20"
+                placeholder="5"
+              >
+            </div>
+          </div>
+          <div class="col">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">间隔</span>
+              <input
+                type="number"
+                class="form-control"
+                v-model.number="batchInterval"
+                min="100"
+                max="10000"
+                step="100"
+                placeholder="1000"
+              >
+              <span class="input-group-text">ms</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-text">
+          每批 {{ concurrency }} 个钱包并发执行，批次间隔 {{ batchInterval }}ms，预估完成时间：<strong>{{ estimatedTime }}</strong>
+        </div>
+      </div>
+
       <!-- 选中钱包信息 -->
       <div class="alert alert-info mb-3">
         <div class="d-flex justify-content-between align-items-center">
@@ -208,6 +246,21 @@ const maxPercent = ref(100);
 const isSelling = ref(false);
 const isRefreshing = ref(false);
 const sellResults = ref<any[]>([]);
+// 并发控制参数
+const concurrency = ref(5);
+const batchInterval = ref(1000);
+
+// 预估完成时间
+const estimatedTime = computed(() => {
+  if (selectedCount.value === 0) return '0秒';
+  const batches = Math.ceil(selectedCount.value / concurrency.value);
+  const totalMs = (batches - 1) * batchInterval.value; // 最后一批不需要等待
+  const totalSeconds = Math.ceil(totalMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}分${seconds}秒`;
+});
 
 // 是否可以执行
 const canExecute = computed(() => {
@@ -244,48 +297,80 @@ async function executeBatchSell() {
   sellResults.value = [];
 
   try {
-    // 为每个选中的钱包创建一个砸盘任务
     const walletAddresses = selectedWalletAddresses.value;
     const tokenAddress = targetToken.value!.address;
 
-    // 使用任务系统执行卖出
-    for (const walletAddr of walletAddresses) {
-      let percent: number;
-      if (sellMode.value === 'fixed') {
-        percent = fixedPercent.value;
-      } else {
-        percent = Math.random() * (maxPercent.value - minPercent.value) + minPercent.value;
-      }
+    // 将钱包分成多个批次
+    const batches: string[][] = [];
+    for (let i = 0; i < walletAddresses.length; i += concurrency.value) {
+      batches.push(walletAddresses.slice(i, i + concurrency.value));
+    }
 
-      // 创建砸盘任务
-      const task = taskStore.createTask(
-        `批量卖出 ${targetToken.value!.symbol}`,
-        'dump',
-        {
-          tokenContract: tokenAddress,
-          poolType: chainStore.currentGovernanceToken,
-          spendToken: chainStore.currentGovernanceToken,
-          targetPrice: 0,
-          amountType: 'quantity',
-          amount: 0,
-          stopType: 'count',
-          stopValue: 1,
-          interval: 1,
-          sellThreshold: percent,
-          walletMode: 'sequential',
-        },
-        [walletAddr]
-      );
+    console.log(`批量卖出：共 ${walletAddresses.length} 个钱包，分 ${batches.length} 批执行，每批 ${concurrency.value} 个`);
 
-      // 启动任务
-      taskStore.startTask(task.id);
+    // 按批次执行
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      console.log(`执行第 ${batchIndex + 1}/${batches.length} 批，包含 ${batch.length} 个钱包`);
 
-      sellResults.value.push({
-        wallet: walletAddr,
-        percent,
-        success: true,
-        error: null
+      // 并发执行当前批次的所有钱包
+      const batchPromises = batch.map(async (walletAddr) => {
+        let percent: number;
+        if (sellMode.value === 'fixed') {
+          percent = fixedPercent.value;
+        } else {
+          percent = Math.random() * (maxPercent.value - minPercent.value) + minPercent.value;
+        }
+
+        try {
+          // 创建砸盘任务
+          const task = taskStore.createTask(
+            `批量卖出 ${targetToken.value!.symbol}`,
+            'dump',
+            {
+              tokenContract: tokenAddress,
+              poolType: chainStore.currentGovernanceToken,
+              spendToken: chainStore.currentGovernanceToken,
+              targetPrice: 0,
+              amountType: 'quantity',
+              amount: 0,
+              stopType: 'count',
+              stopValue: 1,
+              interval: 1,
+              sellThreshold: percent,
+              walletMode: 'sequential',
+            },
+            [walletAddr]
+          );
+
+          // 启动任务
+          taskStore.startTask(task.id);
+
+          return {
+            wallet: walletAddr,
+            percent,
+            success: true,
+            error: null
+          };
+        } catch (error: any) {
+          return {
+            wallet: walletAddr,
+            percent,
+            success: false,
+            error: error.message || '创建任务失败'
+          };
+        }
       });
+
+      // 等待当前批次完成
+      const batchResults = await Promise.all(batchPromises);
+      sellResults.value.push(...batchResults);
+
+      // 如果不是最后一批，等待间隔时间
+      if (batchIndex < batches.length - 1) {
+        console.log(`等待 ${batchInterval.value}ms 后执行下一批...`);
+        await new Promise(resolve => setTimeout(resolve, batchInterval.value));
+      }
     }
 
     alert(`已为 ${walletAddresses.length} 个钱包创建卖出任务，请在任务列表中查看执行情况`);

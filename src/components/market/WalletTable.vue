@@ -7,6 +7,13 @@
         <span v-if="selectedCount > 0" class="badge bg-primary">
           已选 {{ selectedCount }} / {{ wallets.length }}
         </span>
+        <!-- 余额统计 -->
+        <span v-if="selectedCount > 0" class="badge bg-warning text-dark">
+          {{ selectedBalanceStats.totalNative }} {{ currentGovernanceToken }}
+        </span>
+        <span v-if="selectedCount > 0 && targetToken" class="badge bg-success">
+          {{ selectedBalanceStats.totalToken }} {{ targetToken.symbol }}
+        </span>
       </div>
       <div class="d-flex gap-2 flex-wrap">
         <button class="btn btn-outline-secondary btn-sm" @click="toggleSelectAll">
@@ -57,10 +64,9 @@
         </button>
       </div>
       <div class="d-flex gap-2 flex-wrap">
-        <button 
-          class="btn btn-outline-success btn-sm" 
+        <button
+          class="btn btn-outline-success btn-sm"
           @click="showTransferPanel = !showTransferPanel"
-          :disabled="wallets.length === 0"
         >
           <i class="bi bi-send me-1"></i>批量转账
         </button>
@@ -95,6 +101,16 @@
         <!-- 地址输入区域 -->
         <div class="row g-3 mb-3">
           <div class="col-12 col-md-6">
+            <!-- 批次选择 -->
+            <div class="mb-2" v-if="walletBatches.length > 0">
+              <label class="form-label small text-muted mb-1">从批次填充源地址</label>
+              <select class="form-select form-select-sm" v-model="selectedSourceBatchId">
+                <option value="">-- 选择批次 --</option>
+                <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+                  {{ batch.remark }} ({{ batch.wallets.length }} 个)
+                </option>
+              </select>
+            </div>
             <div class="d-flex justify-content-between align-items-center mb-1">
               <label class="form-label small fw-bold mb-0">
                 源钱包地址（每行一个）
@@ -105,7 +121,7 @@
                   <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
                   <input type="file" accept=".txt" class="d-none" @change="handleSourceFileImport">
                 </label>
-                <button class="btn btn-outline-danger btn-sm" @click="sourceAddressesText = ''">
+                <button class="btn btn-outline-danger btn-sm" @click="sourceAddressesText = ''; selectedSourceBatchId = ''">
                   <i class="bi bi-trash me-1"></i>清空
                 </button>
               </div>
@@ -120,6 +136,16 @@
             <div v-if="sourceAddressError" class="invalid-feedback">{{ sourceAddressError }}</div>
           </div>
           <div class="col-12 col-md-6">
+            <!-- 批次选择 -->
+            <div class="mb-2" v-if="walletBatches.length > 0">
+              <label class="form-label small text-muted mb-1">从批次填充目标地址</label>
+              <select class="form-select form-select-sm" v-model="selectedTargetBatchId">
+                <option value="">-- 选择批次 --</option>
+                <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+                  {{ batch.remark }} ({{ batch.wallets.length }} 个)
+                </option>
+              </select>
+            </div>
             <div class="d-flex justify-content-between align-items-center mb-1">
               <label class="form-label small fw-bold mb-0">
                 目标钱包地址（每行一个）
@@ -130,7 +156,7 @@
                   <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
                   <input type="file" accept=".txt" class="d-none" @change="handleTargetFileImport">
                 </label>
-                <button class="btn btn-outline-danger btn-sm" @click="targetAddressesText = ''">
+                <button class="btn btn-outline-danger btn-sm" @click="targetAddressesText = ''; selectedTargetBatchId = ''">
                   <i class="bi bi-trash me-1"></i>清空
                 </button>
               </div>
@@ -151,7 +177,15 @@
           <div class="col-auto">
             <label class="form-label small">转账金额</label>
             <div class="input-group input-group-sm">
-              <input type="number" class="form-control" v-model.number="transferAmount" placeholder="0.01" step="0.001" min="0">
+              <input
+                type="number"
+                class="form-control"
+                v-model.number="transferAmount"
+                placeholder="0.01"
+                step="0.001"
+                min="0"
+                :disabled="transferAllBalance"
+              >
               <span class="input-group-text">{{ transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken }}</span>
             </div>
           </div>
@@ -161,6 +195,21 @@
               <option value="native">{{ currentGovernanceToken }}</option>
               <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
             </select>
+          </div>
+          <!-- 多转一和多转多模式显示"转全部余额"选项 -->
+          <div v-if="transferMode === 'manyToMany' || transferMode === 'manyToOne'" class="col-auto">
+            <div class="form-check">
+              <input
+                type="checkbox"
+                class="form-check-input"
+                id="transferAllBalance"
+                v-model="transferAllBalance"
+              >
+              <label class="form-check-label small" for="transferAllBalance">
+                转全部余额
+                <small class="text-muted d-block">(转出全部，仅扣除实际gas费)</small>
+              </label>
+            </div>
           </div>
           <div class="col-auto">
             <button
@@ -325,14 +374,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useWalletStore } from '../../stores/walletStore';
 import { useChainStore } from '../../stores/chainStore';
+import { privateKeyToAccount } from 'viem/accounts';
+
+// 私钥正则表达式
+const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
 
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
-const { localWallets: wallets, selectedWalletAddresses, selectedCount, isAllSelected, targetToken } = storeToRefs(walletStore);
+const { localWallets: wallets, selectedWalletAddresses, selectedCount, isAllSelected, targetToken, walletBatches } = storeToRefs(walletStore);
 const { currentGovernanceToken } = storeToRefs(chainStore);
 
 const isRefreshing = ref(false);
@@ -347,6 +400,77 @@ const sourceAddressesText = ref('');
 const targetAddressesText = ref('');
 const transferAmount = ref<number>(0.01);
 const transferTokenType = ref<'native' | 'token'>('native');
+const transferAllBalance = ref(false);
+
+// 批次选择
+const selectedSourceBatchId = ref('');
+const selectedTargetBatchId = ref('');
+
+// 计算已选钱包的余额统计
+const selectedBalanceStats = computed(() => {
+  const selectedWallets = wallets.value.filter(w => selectedWalletAddresses.value.includes(w.address));
+  let totalNative = 0;
+  let totalToken = 0;
+
+  for (const wallet of selectedWallets) {
+    if (wallet.nativeBalance && wallet.nativeBalance !== '-' && wallet.nativeBalance !== 'Error') {
+      totalNative += parseFloat(wallet.nativeBalance) || 0;
+    }
+    if (wallet.tokenBalance && wallet.tokenBalance !== '-' && wallet.tokenBalance !== 'Error') {
+      totalToken += parseFloat(wallet.tokenBalance) || 0;
+    }
+  }
+
+  return {
+    totalNative: totalNative.toFixed(6),
+    totalToken: totalToken.toFixed(6),
+  };
+});
+
+// 当切换到多转多或多转一模式时，默认勾选"转全部余额"
+watch(transferMode, (newMode) => {
+  if (newMode === 'manyToMany' || newMode === 'manyToOne') {
+    transferAllBalance.value = true;
+  } else {
+    transferAllBalance.value = false;
+  }
+});
+
+// 当选择批次时，填充地址
+watch(selectedSourceBatchId, (batchId) => {
+  if (batchId) {
+    const batch = walletBatches.value.find(b => b.id === batchId);
+    if (batch) {
+      sourceAddressesText.value = batch.wallets.map(w => w.address).join('\n');
+    }
+  }
+});
+
+watch(selectedTargetBatchId, (batchId) => {
+  if (batchId) {
+    const batch = walletBatches.value.find(b => b.id === batchId);
+    if (batch) {
+      targetAddressesText.value = batch.wallets.map(w => w.address).join('\n');
+    }
+  }
+});
+
+// 获取批次的私钥映射（合并所有选中批次）
+const batchPrivateKeyMap = computed(() => {
+  const map: Record<string, string> = {};
+
+  // 源批次的私钥
+  if (selectedSourceBatchId.value) {
+    const batch = walletBatches.value.find(b => b.id === selectedSourceBatchId.value);
+    if (batch) {
+      for (const wallet of batch.wallets) {
+        map[wallet.address.toLowerCase()] = wallet.privateKey;
+      }
+    }
+  }
+
+  return map;
+});
 
 // 解析地址文本为地址数组
 function parseAddresses(text: string): string[] {
@@ -355,6 +479,37 @@ function parseAddresses(text: string): string[] {
     .split(/[\n,;]/)
     .map(addr => addr.trim())
     .filter(addr => addr.length > 0);
+}
+
+// 解析源地址（支持私钥输入，仅多转多模式）
+function parseSourceAddressesWithPrivateKey(text: string): { addresses: string[]; privateKeyMap: Record<string, string> } {
+  const addresses: string[] = [];
+  const privateKeyMap: Record<string, string> = {};
+
+  if (!text.trim()) return { addresses, privateKeyMap };
+
+  const lines = text.split(/[\n,;]/).map(line => line.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // 检查是否为私钥格式
+    if (PRIVATE_KEY_REGEX.test(line)) {
+      try {
+        // 标准化私钥格式
+        const normalizedKey = line.startsWith('0x') ? line : `0x${line}`;
+        const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+        addresses.push(account.address);
+        privateKeyMap[account.address.toLowerCase()] = normalizedKey;
+      } catch (e) {
+        // 私钥无效，跳过
+        console.warn('无效的私钥:', line.slice(0, 10) + '...');
+      }
+    } else if (/^0x[0-9a-fA-F]{40}$/.test(line)) {
+      // 标准地址格式
+      addresses.push(line);
+    }
+  }
+
+  return { addresses, privateKeyMap };
 }
 
 // 处理源地址文件导入
@@ -403,9 +558,22 @@ async function handleTargetFileImport(event: Event) {
   input.value = '';
 }
 
-// 源地址列表
-const sourceAddresses = computed(() => parseAddresses(sourceAddressesText.value));
+// 源地址列表（多转多模式支持私钥解析）
+const sourceAddresses = computed(() => {
+  if (transferMode.value === 'manyToMany') {
+    return parseSourceAddressesWithPrivateKey(sourceAddressesText.value).addresses;
+  }
+  return parseAddresses(sourceAddressesText.value);
+});
 const targetAddresses = computed(() => parseAddresses(targetAddressesText.value));
+
+// 获取私钥映射（多转多模式）
+const sourcePrivateKeyMap = computed(() => {
+  if (transferMode.value === 'manyToMany') {
+    return parseSourceAddressesWithPrivateKey(sourceAddressesText.value).privateKeyMap;
+  }
+  return {};
+});
 
 // 地址计数
 const sourceAddressCount = computed(() => sourceAddresses.value.length);
@@ -416,14 +584,48 @@ const sourceAddressError = computed(() => {
   const addresses = sourceAddresses.value;
   if (addresses.length === 0) return '';
 
-  // 检查格式
+  // 多转多模式特殊处理
+  if (transferMode.value === 'manyToMany') {
+    // 检查每行是否为有效的地址或私钥
+    const lines = sourceAddressesText.value.split(/[\n,;]/).map(line => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const isAddress = /^0x[0-9a-fA-F]{40}$/.test(line);
+      const isPrivateKey = PRIVATE_KEY_REGEX.test(line);
+      if (!isAddress && !isPrivateKey) {
+        return '存在无效的地址或私钥格式';
+      }
+    }
+
+    // 多转多模式：检查是否有私钥（从批次私钥、手动输入私钥或本地钱包获取）
+    const walletsWithKey = addresses.filter(addr => {
+      // 优先检查批次私钥映射
+      if (batchPrivateKeyMap.value[addr.toLowerCase()]) return true;
+      // 其次检查手动输入的私钥映射
+      if (sourcePrivateKeyMap.value[addr.toLowerCase()]) return true;
+      // 最后检查本地钱包
+      const wallet = walletStore.localWallets.find(w => w.address.toLowerCase() === addr.toLowerCase());
+      return wallet?.encrypted;
+    });
+
+    if (walletsWithKey.length < addresses.length) {
+      const missingCount = addresses.length - walletsWithKey.length;
+      return `${missingCount} 个地址没有私钥（可直接输入私钥或确保地址在本地钱包中）`;
+    }
+
+    return '';
+  }
+
+  // 其他模式：检查格式
   const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
   if (invalidAddrs.length > 0) {
     return `${invalidAddrs.length} 个地址格式无效`;
   }
 
-  // 检查是否有私钥
+  // 检查是否有私钥（包括批次私钥和本地钱包）
   const walletsWithKey = addresses.filter(addr => {
+    // 优先检查批次私钥映射
+    if (batchPrivateKeyMap.value[addr.toLowerCase()]) return true;
+    // 其次检查本地钱包
     const wallet = walletStore.localWallets.find(w => w.address.toLowerCase() === addr.toLowerCase());
     return wallet?.encrypted;
   });
@@ -469,7 +671,8 @@ const targetAddressError = computed(() => {
 const canExecuteTransfer = computed(() => {
   if (sourceAddressCount.value === 0) return false;
   if (targetAddressCount.value === 0) return false;
-  if (!transferAmount.value || transferAmount.value <= 0) return false;
+  // 转全部余额模式不需要检查金额
+  if (!transferAllBalance.value && (!transferAmount.value || transferAmount.value <= 0)) return false;
   if (sourceAddressError.value) return false;
   if (targetAddressError.value) return false;
   if (transferTokenType.value === 'token' && !targetToken.value) return false;
@@ -480,16 +683,33 @@ const canExecuteTransfer = computed(() => {
 async function executeTransfer() {
   if (!canExecuteTransfer.value) return;
 
+  // 验证钱包类型
+  const walletTypeError = validateWalletTypes();
+  if (walletTypeError) {
+    alert(walletTypeError);
+    return;
+  }
+
   isTransferring.value = true;
   transferResults.value = [];
 
   try {
+    // 合并私钥映射：批次私钥 + 手动输入的私钥
+    const mergedPrivateKeyMap = {
+      ...batchPrivateKeyMap.value,
+      ...sourcePrivateKeyMap.value
+    };
+
     const results = await walletStore.batchTransferByAddresses(
       sourceAddresses.value,
       targetAddresses.value,
-      transferAmount.value,
+      transferAllBalance.value ? 0 : transferAmount.value,
       transferTokenType.value,
-      transferMode.value
+      transferMode.value,
+      {
+        privateKeyMap: mergedPrivateKeyMap,
+        transferAllBalance: transferAllBalance.value
+      }
     );
     transferResults.value = results;
 
@@ -515,6 +735,35 @@ function isValidAddress(address: string): boolean {
   const trimmed = address.trim();
   // 必须是 0x 开头，总长度 42 位，后面 40 位是十六进制字符
   return /^0x[0-9a-fA-F]{40}$/.test(trimmed);
+}
+
+// 检查钱包是否为主钱包（包括本地钱包和批次钱包）
+function isMainWallet(address: string): boolean {
+  const walletType = walletStore.getWalletTypeByAddress(address);
+  return walletType === 'main';
+}
+
+// 检查地址是否来自批次（批次钱包不需要主钱包验证）
+function isFromBatch(address: string): boolean {
+  return !!batchPrivateKeyMap.value[address.toLowerCase()];
+}
+
+// 验证钱包类型
+function validateWalletTypes(): string | null {
+  if (transferMode.value === 'oneToMany') {
+    // 一转多: 源钱包必须是主钱包
+    const sourceAddr = sourceAddresses.value[0];
+    if (sourceAddr && !isMainWallet(sourceAddr)) {
+      return '一转多模式下，源钱包必须是主钱包';
+    }
+  } else if (transferMode.value === 'manyToOne') {
+    // 多转一: 目标钱包必须是主钱包
+    const targetAddr = targetAddresses.value[0];
+    if (targetAddr && !isMainWallet(targetAddr)) {
+      return '多转一模式下，目标钱包必须是主钱包';
+    }
+  }
+  return null;
 }
 
 // 格式化地址显示

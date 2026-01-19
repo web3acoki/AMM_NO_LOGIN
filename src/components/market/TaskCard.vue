@@ -51,50 +51,68 @@
     </div>
 
     <!-- 操作按钮 -->
-    <div class="d-flex gap-1">
-      <button 
-        v-if="task.status === 'stopped' || task.status === 'paused'"
-        class="btn btn-success btn-sm flex-fill"
-        @click="handleStart"
-      >
-        <i class="bi bi-play-fill me-1"></i>
-        {{ task.status === 'paused' ? '继续' : '开始' }}
-      </button>
-      
-      <button 
-        v-if="task.status === 'running'"
-        class="btn btn-warning btn-sm flex-fill"
-        @click="handlePause"
-      >
-        <i class="bi bi-pause-fill me-1"></i>暂停
-      </button>
-      
-      <button 
-        v-if="task.status === 'running' || task.status === 'paused'"
-        class="btn btn-danger btn-sm"
-        @click="handleStop"
-        title="停止任务"
-      >
-        <i class="bi bi-stop-fill"></i>
-      </button>
-      
-      <button 
-        class="btn btn-outline-secondary btn-sm"
-        @click="handleViewLogs"
-        title="查看日志"
-        :class="{ 'active': isActiveLog }"
-      >
-        <i class="bi bi-journal-text"></i>
-      </button>
-      
-      <button 
-        v-if="task.status === 'stopped'"
-        class="btn btn-outline-danger btn-sm"
-        @click="handleDelete"
-        title="删除任务"
-      >
-        <i class="bi bi-trash"></i>
-      </button>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+      <!-- 主操作按钮 -->
+      <div class="d-flex gap-1">
+        <button
+          v-if="task.status === 'stopped' || task.status === 'paused'"
+          class="btn btn-success btn-sm"
+          @click="handleStart"
+        >
+          <i class="bi bi-play-fill me-1"></i>
+          {{ task.status === 'paused' ? '继续' : '开始' }}
+        </button>
+
+        <button
+          v-if="task.status === 'running'"
+          class="btn btn-warning btn-sm"
+          @click="handlePause"
+        >
+          <i class="bi bi-pause-fill me-1"></i>暂停
+        </button>
+
+        <button
+          v-if="task.status === 'running' || task.status === 'paused'"
+          class="btn btn-danger btn-sm"
+          @click="handleStop"
+          title="停止任务"
+        >
+          <i class="bi bi-stop-fill me-1"></i>停止
+        </button>
+      </div>
+
+      <!-- 分隔 -->
+      <div class="flex-grow-1"></div>
+
+      <!-- 辅助操作按钮 -->
+      <div class="d-flex gap-2">
+        <button
+          class="btn btn-outline-secondary btn-sm"
+          @click="handleViewLogs"
+          title="查看日志"
+          :class="{ 'active': isActiveLog }"
+        >
+          <i class="bi bi-journal-text me-1"></i>日志
+        </button>
+
+        <button
+          v-if="task.status === 'paused' || task.status === 'stopped'"
+          class="btn btn-outline-primary btn-sm"
+          @click="handleEdit"
+          title="编辑任务"
+        >
+          <i class="bi bi-pencil me-1"></i>编辑
+        </button>
+
+        <button
+          v-if="task.status === 'stopped'"
+          class="btn btn-outline-danger btn-sm"
+          @click="handleDelete"
+          title="删除任务"
+        >
+          <i class="bi bi-trash me-1"></i>删除
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -109,8 +127,9 @@ const props = defineProps<{
   selected?: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   (e: 'toggle-select'): void;
+  (e: 'edit', task: Task): void;
 }>();
 
 const taskStore = useTaskStore();
@@ -203,6 +222,10 @@ function handleDelete() {
 
 function handleViewLogs() {
   taskStore.setActiveLogTask(props.task.id);
+}
+
+function handleEdit() {
+  emit('edit', props.task);
 }
 </script>
 

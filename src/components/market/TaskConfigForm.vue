@@ -104,7 +104,7 @@
         <div class="col-7">
           <label class="form-label small">{{ stopTypeLabel }}</label>
           <div class="input-group input-group-sm">
-            <input type="number" class="form-control" v-model.number="stopValue" :placeholder="stopTypePlaceholder">
+            <input type="number" class="form-control" v-model.number="stopValue" :placeholder="stopTypePlaceholder" step="any">
             <span class="input-group-text">{{ stopTypeUnit }}</span>
           </div>
         </div>
@@ -183,18 +183,56 @@
       <!-- 选中的钱包 -->
       <div class="mb-3">
         <label class="form-label small">
-          选中的钱包
-          <span class="badge bg-primary ms-1">{{ selectedCount }}</span>
+          参与钱包
+          <span class="badge bg-primary ms-1">{{ totalWalletCount }} 个</span>
         </label>
-        <div v-if="selectedCount === 0" class="alert alert-warning small py-2 mb-0">
+
+        <!-- 钱包来源选择 -->
+        <div class="mb-2">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" id="useLocalWallets" v-model="useLocalWallets">
+            <label class="form-check-label small" for="useLocalWallets">
+              本地钱包列表 ({{ selectedCount }})
+            </label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" id="useBatchWallets" v-model="useBatchWallets">
+            <label class="form-check-label small" for="useBatchWallets">
+              钱包批次
+            </label>
+          </div>
+        </div>
+
+        <!-- 批次选择下拉框 -->
+        <div v-if="useBatchWallets" class="mb-2">
+          <select class="form-select form-select-sm" v-model="selectedBatchIds" multiple style="height: 80px;">
+            <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+              {{ batch.remark }} ({{ batch.wallets.length }}个 - {{ batch.walletType === 'main' ? '主钱包' : '普通钱包' }})
+            </option>
+          </select>
+          <div class="form-text small">按住Ctrl可多选批次</div>
+        </div>
+
+        <!-- 钱包预览 -->
+        <div v-if="totalWalletCount === 0" class="alert alert-warning small py-2 mb-0">
           <i class="bi bi-exclamation-triangle me-1"></i>
-          请在左侧钱包列表中勾选要参与任务的钱包
+          请选择钱包来源：勾选本地钱包列表或选择钱包批次
         </div>
         <div v-else class="small text-muted">
-          <span v-for="(addr, idx) in selectedAddressesPreview" :key="addr" class="me-2">
-            {{ formatAddress(addr) }}
-          </span>
-          <span v-if="selectedCount > 5">... 共 {{ selectedCount }} 个</span>
+          <div v-if="useLocalWallets && selectedCount > 0" class="mb-1">
+            <span class="badge bg-secondary me-1">本地</span>
+            <span v-for="(addr, idx) in selectedAddressesPreview" :key="addr" class="me-1">
+              {{ formatAddress(addr) }}
+            </span>
+            <span v-if="selectedCount > 3">... 共 {{ selectedCount }} 个</span>
+          </div>
+          <div v-if="useBatchWallets && batchWalletCount > 0">
+            <span class="badge bg-info me-1">批次</span>
+            <span v-for="batch in selectedBatchesPreview" :key="batch.id" class="me-1">
+              {{ batch.remark }}({{ batch.wallets.length }})
+            </span>
+            <span v-if="selectedBatchIds.length > 2">... 共 {{ batchWalletCount }} 个</span>
+          </div>
         </div>
       </div>
 
@@ -224,7 +262,7 @@ const walletStore = useWalletStore();
 const chainStore = useChainStore();
 
 const { currentGovernanceToken } = storeToRefs(chainStore);
-const { selectedWalletAddresses, selectedCount, targetToken } = storeToRefs(walletStore);
+const { selectedWalletAddresses, selectedCount, targetToken, walletBatches } = storeToRefs(walletStore);
 
 // 表单数据
 const taskName = ref('');
@@ -240,9 +278,14 @@ const stopValue = ref<number>(10);
 const interval = ref<number>(1);
 const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
-const sellThreshold = ref<number>(0.001);
+const sellThreshold = ref<number>(0);
 const walletMode = ref<'sequential' | 'parallel'>('sequential');
 const balancePercent = ref<number>(100);
+
+// 钱包来源选择
+const useLocalWallets = ref(true);
+const useBatchWallets = ref(false);
+const selectedBatchIds = ref<string[]>([]);
 
 // 监听治理代币变化，更新默认值
 watch(currentGovernanceToken, (newToken) => {
@@ -266,7 +309,53 @@ watch(() => taskStore.taskCount, (count) => {
 
 // 计算属性
 const selectedAddressesPreview = computed(() => {
-  return selectedWalletAddresses.value.slice(0, 5);
+  return selectedWalletAddresses.value.slice(0, 3);
+});
+
+// 选中的批次
+const selectedBatches = computed(() => {
+  return walletBatches.value.filter(b => selectedBatchIds.value.includes(b.id));
+});
+
+// 选中批次预览
+const selectedBatchesPreview = computed(() => {
+  return selectedBatches.value.slice(0, 2);
+});
+
+// 批次钱包数量
+const batchWalletCount = computed(() => {
+  return selectedBatches.value.reduce((sum, batch) => sum + batch.wallets.length, 0);
+});
+
+// 总钱包数量
+const totalWalletCount = computed(() => {
+  let count = 0;
+  if (useLocalWallets.value) {
+    count += selectedCount.value;
+  }
+  if (useBatchWallets.value) {
+    count += batchWalletCount.value;
+  }
+  return count;
+});
+
+// 最终的钱包地址列表（去重）
+const finalWalletAddresses = computed(() => {
+  const addressSet = new Set<string>();
+
+  // 添加本地钱包
+  if (useLocalWallets.value) {
+    selectedWalletAddresses.value.forEach(addr => addressSet.add(addr.toLowerCase()));
+  }
+
+  // 添加批次钱包
+  if (useBatchWallets.value) {
+    selectedBatches.value.forEach(batch => {
+      batch.wallets.forEach(w => addressSet.add(w.address.toLowerCase()));
+    });
+  }
+
+  return Array.from(addressSet);
 });
 
 const canCreate = computed(() => {
@@ -278,7 +367,7 @@ const canCreate = computed(() => {
     amount.value > 0 &&
     stopValue.value > 0 &&
     interval.value > 0 &&
-    selectedCount.value > 0
+    totalWalletCount.value > 0
   );
 });
 
@@ -365,18 +454,20 @@ function handleCreateTask() {
     balancePercent: balancePercent.value,
   };
 
+  // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
   const task = taskStore.createTask(
     taskName.value,
     mode.value,
     config,
-    [...selectedWalletAddresses.value]
+    [...finalWalletAddresses.value]
   );
 
   // 重置表单（保留部分设置）
   taskName.value = `任务${taskStore.taskCount + 1}`;
-  
+  selectedBatchIds.value = [];
+
   // 显示成功提示
-  alert(`任务 "${task.name}" 创建成功！\n\n点击任务卡片上的"开始"按钮启动任务。`);
+  alert(`任务 "${task.name}" 创建成功！\n\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
 }
 </script>
 

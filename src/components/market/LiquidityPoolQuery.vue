@@ -134,12 +134,17 @@
         </div>
       </div>
 
-      <!-- 目标代币显示 -->
-      <div v-if="targetToken && !currentPrice" class="col-12">
-        <div class="alert alert-success py-2 mb-0 small">
-          <i class="bi bi-crosshair me-1"></i>
-          当前目标代币: <strong>{{ targetToken.symbol }}</strong> ({{ targetToken.name }})
-          <button class="btn btn-link btn-sm p-0 ms-2" @click="clearTargetToken">清除</button>
+      <!-- 目标代币显示（始终显示，不受查询状态影响） -->
+      <div v-if="targetToken" class="col-12">
+        <div class="alert alert-success py-2 mb-0 small d-flex justify-content-between align-items-center">
+          <span>
+            <i class="bi bi-crosshair me-1"></i>
+            当前目标代币: <strong>{{ targetToken.symbol }}</strong> ({{ targetToken.name }})
+            <code class="ms-2 text-muted">{{ formatAddress(targetToken.address) }}</code>
+          </span>
+          <button class="btn btn-outline-danger btn-sm" @click="clearTargetToken">
+            <i class="bi bi-x-lg me-1"></i>清除
+          </button>
         </div>
       </div>
 
@@ -154,7 +159,7 @@
     </div>
 
     <!-- 生成钱包 Modal -->
-    <div class="modal fade" id="genModalInQuery" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" :id="modalId" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
@@ -206,7 +211,7 @@ const dexStore = useDexStore();
 const walletStore = useWalletStore();
 
 const { chains, rpcUrl } = storeToRefs(chainStore);
-const { localWallets, targetToken } = storeToRefs(walletStore);
+const { localWallets, targetToken, poolQueryState } = storeToRefs(walletStore);
 const {
   currentDex,
   currentDexName,
@@ -217,32 +222,74 @@ const {
   allDexConfigs
 } = storeToRefs(dexStore);
 
-// 状态
+// 状态 - 链和DEX相关（本地状态）
 const selectedChainId = ref<number>(chainStore.selectedChainId);
 const selectedRpcUrl = ref<string>(rpcUrl.value);
 const selectedDexIdLocal = ref<string>(selectedDexId.value);
-const selectedQuoteToken = ref<string>('');
-const tokenAddress = ref<string>('');
-const currentPrice = ref<number | null>(null);
-const priceDisplay = ref<string>('');
+
+// 使用全局状态的计算属性
+const currentPrice = computed({
+  get: () => poolQueryState.value.currentPrice,
+  set: (val) => walletStore.updatePoolQueryState({ currentPrice: val })
+});
+const marketCap = computed({
+  get: () => poolQueryState.value.marketCap,
+  set: (val) => walletStore.updatePoolQueryState({ marketCap: val })
+});
+const priceDisplay = computed({
+  get: () => poolQueryState.value.priceDisplay,
+  set: (val) => walletStore.updatePoolQueryState({ priceDisplay: val })
+});
+const isUpdating = computed({
+  get: () => poolQueryState.value.isUpdating,
+  set: (val) => walletStore.updatePoolQueryState({ isUpdating: val })
+});
+const lastUpdateTime = computed({
+  get: () => poolQueryState.value.lastUpdateTime,
+  set: (val) => walletStore.updatePoolQueryState({ lastUpdateTime: val })
+});
+const isRoutedPrice = computed({
+  get: () => poolQueryState.value.isRoutedPrice,
+  set: (val) => walletStore.updatePoolQueryState({ isRoutedPrice: val })
+});
+const quoteTokenSymbol = computed({
+  get: () => poolQueryState.value.quoteTokenSymbol,
+  set: (val) => walletStore.updatePoolQueryState({ quoteTokenSymbol: val })
+});
+const selectedQuoteToken = computed({
+  get: () => poolQueryState.value.selectedQuoteToken,
+  set: (val) => walletStore.updatePoolQueryState({ selectedQuoteToken: val })
+});
+const tokenAddress = computed({
+  get: () => poolQueryState.value.tokenAddress,
+  set: (val) => walletStore.updatePoolQueryState({ tokenAddress: val })
+});
+const tokenSymbol = computed({
+  get: () => poolQueryState.value.tokenSymbol,
+  set: (val) => walletStore.updatePoolQueryState({ tokenSymbol: val })
+});
+const tokenName = computed({
+  get: () => poolQueryState.value.tokenName,
+  set: (val) => walletStore.updatePoolQueryState({ tokenName: val })
+});
+const tokenDecimals = computed({
+  get: () => poolQueryState.value.tokenDecimals,
+  set: (val) => walletStore.updatePoolQueryState({ tokenDecimals: val })
+});
+
+// 本地状态（不需要跨页面共享）
 const isQuerying = ref<boolean>(false);
-const isUpdating = ref<boolean>(false);
 const errorMessage = ref<string>('');
-const lastUpdateTime = ref<string>('');
-const isRoutedPrice = ref<boolean>(false);
 const routePathDisplay = ref<string[]>([]);
 const updateInterval = ref<number | null>(null);
-const tokenSymbol = ref<string>('');
-const tokenName = ref<string>('');
-const tokenDecimals = ref<number>(18);
-const marketCap = ref<number | null>(null);  // 市值（基于池子流动性）
-const quoteTokenSymbol = ref<string>('');
 
 // 钱包生成相关
 const generateCount = ref<number>(5);
 const generateWalletType = ref<'main' | 'normal'>('normal');
 const generateRemark = ref<string>('');
 let genModal: any = null;
+// 生成唯一的 Modal ID，避免多个组件实例冲突
+const modalId = `genModal_${Math.random().toString(36).substr(2, 9)}`;
 
 // 自定义RPC相关
 const useCustomRpc = ref<boolean>(false);
@@ -863,7 +910,7 @@ function stopUpdate() {
 
 // 钱包生成相关函数
 function openGenerateModal() {
-  const el = document.getElementById('genModalInQuery');
+  const el = document.getElementById(modalId);
   if (!el) return;
   if (genModal) {
     genModal.show();
@@ -958,18 +1005,44 @@ onMounted(async () => {
 
   // 初始化Modal
   if (typeof window !== 'undefined' && (window as any).bootstrap) {
-    const el = document.getElementById('genModalInQuery');
+    const el = document.getElementById(modalId);
     if (el) {
       genModal = new (window as any).bootstrap.Modal(el);
+    }
+  }
+
+  // 全局状态已有数据时，不需要再初始化，直接使用
+  // 如果有价格数据且没有在更新中，启动实时更新
+  if (currentPrice.value !== null && tokenAddress.value && !isUpdating.value) {
+    const chain = chains.value.find(c => c.id === selectedChainId.value);
+    if (chain) {
+      const calculator = new PriceCalculator(
+        selectedRpcUrl.value || chain.rpc,
+        currentFactoryAddress.value,
+        currentBaseTokens.value,
+        currentRouterAddress.value,
+        selectedChainId.value
+      );
+      startRealTimeUpdate(calculator, tokenAddress.value);
     }
   }
 });
 
 // 当组件从 keep-alive 缓存中恢复时触发
 onActivated(async () => {
-  // 如果有目标代币且当前没有在更新，则恢复价格查询
-  if (targetToken.value && tokenAddress.value && !isUpdating.value) {
-    await queryPool();
+  // 如果有价格数据且当前没有在更新中，恢复实时更新
+  if (currentPrice.value !== null && tokenAddress.value && !isUpdating.value) {
+    const chain = chains.value.find(c => c.id === selectedChainId.value);
+    if (chain) {
+      const calculator = new PriceCalculator(
+        selectedRpcUrl.value || chain.rpc,
+        currentFactoryAddress.value,
+        currentBaseTokens.value,
+        currentRouterAddress.value,
+        selectedChainId.value
+      );
+      startRealTimeUpdate(calculator, tokenAddress.value);
+    }
   }
 });
 

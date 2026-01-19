@@ -47,6 +47,7 @@
           :task="task"
           :selected="selectedTaskIds.includes(task.id)"
           @toggle-select="toggleTaskSelect(task.id)"
+          @edit="handleEditTask"
         />
       </div>
     </div>
@@ -61,20 +62,29 @@
 
     <!-- 新建任务表单 -->
     <TaskConfigForm />
+
+    <!-- 任务编辑弹窗 -->
+    <TaskEditModal
+      v-if="editingTask"
+      :task="editingTask"
+      @close="handleEditClose"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { useTaskStore } from '../../stores/taskStore';
+import { useTaskStore, type Task } from '../../stores/taskStore';
 import { storeToRefs } from 'pinia';
 import TaskCard from './TaskCard.vue';
 import TaskConfigForm from './TaskConfigForm.vue';
+import TaskEditModal from './TaskEditModal.vue';
 
 const taskStore = useTaskStore();
 const { tasks, runningTasks } = storeToRefs(taskStore);
 
 const selectedTaskIds = ref<string[]>([]);
+const editingTask = ref<Task | null>(null);
 const runningCount = computed(() => runningTasks.value.length);
 
 // 已停止的任务
@@ -161,6 +171,16 @@ function stopSelectedTasks() {
   for (const task of tasksToStop) {
     taskStore.stopTask(task.id);
   }
+}
+
+// 编辑任务
+function handleEditTask(task: Task) {
+  editingTask.value = task;
+}
+
+// 关闭编辑弹窗
+function handleEditClose() {
+  editingTask.value = null;
 }
 </script>
 

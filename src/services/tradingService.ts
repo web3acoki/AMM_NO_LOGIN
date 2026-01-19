@@ -63,6 +63,39 @@ export interface TradeResult {
   error?: string;
 }
 
+// 全局nonce管理器（追踪每个钱包的pending nonce）
+const nonceManager: Map<string, number> = new Map();
+
+// 获取并递增nonce（线程安全）
+async function getAndIncrementNonce(
+  publicClient: any,
+  address: `0x${string}`
+): Promise<number> {
+  const key = address.toLowerCase();
+
+  // 获取链上的pending nonce
+  const chainNonce = await publicClient.getTransactionCount({
+    address,
+    blockTag: 'pending'
+  });
+
+  // 获取本地追踪的nonce
+  const localNonce = nonceManager.get(key) || 0;
+
+  // 使用两者中较大的值
+  const nonce = Math.max(chainNonce, localNonce);
+
+  // 更新本地追踪的nonce
+  nonceManager.set(key, nonce + 1);
+
+  return nonce;
+}
+
+// 重置钱包的nonce追踪（交易失败时调用）
+export function resetNonceForAddress(address: string) {
+  nonceManager.delete(address.toLowerCase());
+}
+
 // 交易服务类
 export class TradingService {
   private chainId: number;
@@ -107,11 +140,10 @@ export class TradingService {
     return null;
   }
 
-  // 获取最新的 nonce
+  // 获取最新的 nonce（使用全局nonce管理器）
   private async getLatestNonce(address: `0x${string}`): Promise<number> {
     try {
-      const nonce = await this.publicClient.getTransactionCount({ address });
-      return nonce;
+      return await getAndIncrementNonce(this.publicClient, address);
     } catch (error) {
       console.warn('获取 nonce 失败，使用默认值:', error);
       return 0;

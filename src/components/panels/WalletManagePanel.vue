@@ -21,6 +21,15 @@
         </div>
       </div>
 
+      <!-- 钱包批次管理 -->
+      <div class="col-12">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <WalletBatchPanel />
+          </div>
+        </div>
+      </div>
+
       <!-- 批量卖出 -->
       <div class="col-12">
         <div class="card shadow-sm">
@@ -56,6 +65,7 @@
 import { ref } from 'vue';
 import LiquidityPoolQuery from '../market/LiquidityPoolQuery.vue';
 import WalletImportPanel from '../market/WalletImportPanel.vue';
+import WalletBatchPanel from '../market/WalletBatchPanel.vue';
 import WalletTable from '../market/WalletTable.vue';
 import BatchSellPanel from '../market/BatchSellPanel.vue';
 

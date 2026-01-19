@@ -13,6 +13,13 @@
 
       <!-- 右侧：DEX面板和任务日志 -->
       <div class="col-lg-5">
+        <!-- 查询底池 -->
+        <div class="card shadow-sm mb-3">
+          <div class="card-body">
+            <LiquidityPoolQuery />
+          </div>
+        </div>
+
         <!-- DEX 面板 -->
         <div class="card shadow-sm mb-3">
           <div class="card-body">
@@ -35,6 +42,7 @@
 import DexPanel from '../market/DexPanel.vue';
 import TaskList from '../market/TaskList.vue';
 import TaskLogPanel from '../market/TaskLogPanel.vue';
+import LiquidityPoolQuery from '../market/LiquidityPoolQuery.vue';
 
 defineOptions({
   name: 'TaskManagePanel'

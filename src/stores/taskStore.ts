@@ -157,11 +157,37 @@ export const useTaskStore = defineStore('task', () => {
         }
       case 'marketcap':
         if (currentMarketCap === undefined) return false;
-        // 达到目标市值时停止
-        return currentMarketCap >= stopValue;
+        if (task.mode === 'pump') {
+          return currentMarketCap >= stopValue;  // 拉盘：市值涨到目标
+        } else {
+          return currentMarketCap <= stopValue;  // 砸盘：市值跌到目标
+        }
       default:
         return false;
     }
+  }
+
+  // 获取钱包私钥（优先本地钱包，其次批次钱包）
+  function getWalletPrivateKey(walletStore: ReturnType<typeof useWalletStore>, walletAddress: string): string | null {
+    // 1. 首先检查本地钱包
+    const localWallet = walletStore.localWallets.find(
+      w => w.address.toLowerCase() === walletAddress.toLowerCase()
+    );
+    if (localWallet?.encrypted) {
+      return localWallet.encrypted;
+    }
+
+    // 2. 检查钱包批次
+    for (const batch of walletStore.walletBatches) {
+      const batchWallet = batch.wallets.find(
+        w => w.address.toLowerCase() === walletAddress.toLowerCase()
+      );
+      if (batchWallet?.privateKey) {
+        return batchWallet.privateKey;
+      }
+    }
+
+    return null;
   }
 
   // 执行单个钱包的交易
@@ -169,9 +195,10 @@ export const useTaskStore = defineStore('task', () => {
     const walletStore = useWalletStore();
     const chainStore = useChainStore();
     const dexStore = useDexStore();
-    
-    const wallet = walletStore.localWallets.find(w => w.address === walletAddress);
-    if (!wallet || !wallet.encrypted) {
+
+    // 获取私钥（支持本地钱包和批次钱包）
+    const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+    if (!privateKey) {
       addLog(task.id, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
       return false;
     }
@@ -197,8 +224,8 @@ export const useTaskStore = defineStore('task', () => {
         chainId,
         rpcUrl,
         routerAddress,
-        privateKey: wallet.encrypted,
-        walletAddress: wallet.address,
+        privateKey: privateKey,
+        walletAddress: walletAddress,
         tokenAddress: task.config.tokenContract,
         spendToken: task.config.spendToken,
         amount: task.config.amount,
@@ -294,12 +321,12 @@ export const useTaskStore = defineStore('task', () => {
       // 简化处理：假设baseToken是BNB，那么需要找到对应的储备
       const isToken0Base = pairInfo.token0.toLowerCase() === baseToken.toLowerCase();
       const bnbReserve = isToken0Base ? pairInfo.reserve0 : pairInfo.reserve1;
-      
+
       // 获取BNB精度（18）
       const bnbAmount = Number(formatEther(bnbReserve));
-      
-      // 市值 = BNB储备 * 2（因为池子中两边价值相等）
-      return bnbAmount * 2;
+
+      // 市值 = 池子中BNB储备量（与资金池查询保持一致）
+      return bnbAmount;
       
     } catch (error) {
       console.error('获取市值失败:', error);
@@ -311,6 +338,19 @@ export const useTaskStore = defineStore('task', () => {
   async function executeRound(task: Task): Promise<void> {
     if (task.status !== 'running') return;
 
+    // 在执行前先检查市值停止条件
+    if (task.config.stopType === 'marketcap') {
+      const currentMarketCap = await getCurrentMarketCap(task);
+      if (currentMarketCap !== undefined) {
+        const modeText = task.mode === 'pump' ? '拉盘(>=目标停止)' : '砸盘(<=目标停止)';
+        addLog(task.id, 'info', `当前市值: ${currentMarketCap.toFixed(4)} BNB, 目标: ${task.config.stopValue} BNB [${modeText}]`);
+        if (checkStopCondition(task, undefined, currentMarketCap)) {
+          stopTask(task.id, '已达到停止条件');
+          return;
+        }
+      }
+    }
+
     const { walletMode } = task.config;
     const wallets = task.walletAddresses;
 
@@ -320,12 +360,12 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     if (walletMode === 'parallel') {
-      // 并行执行：所有钱包同时发起交易（添加随机延迟避免 nonce 冲突）
+      // 并行执行：所有钱包同时发起交易（添加递增延迟避免 nonce 冲突）
       addLog(task.id, 'info', `并行执行模式：${wallets.length} 个钱包同时发起交易`);
-      
-      // 为每个钱包添加随机延迟（0-500ms），避免 nonce 冲突
+
+      // 为每个钱包添加递增延迟（每个钱包间隔100ms），避免 nonce 冲突
       const promises = wallets.map((addr, index) => {
-        const delay = Math.random() * 500; // 0-500ms 随机延迟
+        const delay = index * 100; // 递增延迟：0ms, 100ms, 200ms...
         return new Promise<void>((resolve) => {
           setTimeout(async () => {
             await executeWalletTrade(task, addr);
@@ -334,14 +374,14 @@ export const useTaskStore = defineStore('task', () => {
         });
       });
       await Promise.allSettled(promises);
-      
+
     } else {
       // 顺序执行：逐个钱包执行
       for (const walletAddr of wallets) {
         if (task.status !== 'running') break;
-        
+
         await executeWalletTrade(task, walletAddr);
-        
+
         // 检查停止条件（包括市值）
         const currentMarketCap = await getCurrentMarketCap(task);
         if (checkStopCondition(task, undefined, currentMarketCap)) {
@@ -351,7 +391,7 @@ export const useTaskStore = defineStore('task', () => {
       }
     }
 
-    // 检查停止条件（包括市值）
+    // 执行后再次检查停止条件
     const currentMarketCap = await getCurrentMarketCap(task);
     if (checkStopCondition(task, undefined, currentMarketCap)) {
       stopTask(task.id, '已达到停止条件');
@@ -437,7 +477,7 @@ export const useTaskStore = defineStore('task', () => {
     if (taskIndex === -1) return false;
 
     const task = tasks.value[taskIndex];
-    
+
     // 先停止任务
     if (task.status === 'running') {
       stopTask(taskId);
@@ -450,6 +490,43 @@ export const useTaskStore = defineStore('task', () => {
       activeLogTaskId.value = tasks.value.length > 0 ? tasks.value[0].id : null;
     }
 
+    return true;
+  }
+
+  // 更新任务配置
+  function updateTask(
+    taskId: string,
+    updates: {
+      name?: string;
+      config?: Partial<TaskConfig>;
+      walletAddresses?: string[];
+    }
+  ): boolean {
+    const task = tasks.value.find(t => t.id === taskId);
+    if (!task) return false;
+
+    // 只有暂停或停止状态的任务才能编辑
+    if (task.status === 'running') {
+      console.error('运行中的任务不能编辑');
+      return false;
+    }
+
+    // 更新任务名称
+    if (updates.name !== undefined) {
+      task.name = updates.name;
+    }
+
+    // 更新任务配置
+    if (updates.config) {
+      task.config = { ...task.config, ...updates.config };
+    }
+
+    // 更新钱包地址列表
+    if (updates.walletAddresses !== undefined) {
+      task.walletAddresses = updates.walletAddresses;
+    }
+
+    addLog(taskId, 'info', `任务配置已更新`);
     return true;
   }
 
@@ -537,6 +614,7 @@ export const useTaskStore = defineStore('task', () => {
     resumeTask,
     stopTask,
     deleteTask,
+    updateTask,
     setActiveLogTask,
     clearTaskLogs,
     clearAllTasks,

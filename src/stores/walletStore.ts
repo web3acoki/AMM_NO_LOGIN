@@ -28,14 +28,30 @@ const USDT_DECIMALS = {
 
 type WalletType = 'main' | 'normal';
 
-type LocalWallet = { 
-  address: string; 
+type LocalWallet = {
+  address: string;
   encrypted?: string;
   nativeBalance?: string;
   tokenBalance?: string;
   walletType?: WalletType;
   remark?: string;
   createdAt?: string;
+};
+
+// 钱包批次类型
+type WalletBatchItem = {
+  address: string;
+  privateKey: string;
+};
+
+type WalletBatch = {
+  id: string;
+  remark: string;
+  createdAt: string;
+  wallets: WalletBatchItem[];
+  walletType: WalletType; // 批次钱包类型：主钱包或普通钱包
+  totalNativeBalance?: string;
+  totalTokenBalance?: string;
 };
 
 const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
@@ -142,6 +158,8 @@ export const useWalletStore = defineStore('wallet', {
     currentChainId: 97 as number, // 默认BSC测试网
     // 钱包选择相关状态
     selectedWalletAddresses: [] as string[], // 选中的钱包地址列表
+    // 钱包批次管理
+    walletBatches: [] as WalletBatch[],
     // 全局目标代币（从资金池查询获取）
     targetToken: null as {
       address: string;
@@ -149,6 +167,21 @@ export const useWalletStore = defineStore('wallet', {
       name: string;
       decimals: number;
     } | null,
+    // 全局资金池查询状态（跨页面共享）
+    poolQueryState: {
+      currentPrice: null as number | null,
+      marketCap: null as number | null,
+      priceDisplay: '' as string,
+      isUpdating: false as boolean,
+      lastUpdateTime: '' as string,
+      isRoutedPrice: false as boolean,
+      quoteTokenSymbol: '' as string,
+      selectedQuoteToken: '' as string,
+      tokenAddress: '' as string,
+      tokenSymbol: '' as string,
+      tokenName: '' as string,
+      tokenDecimals: 18 as number,
+    },
   }),
   getters: {
     // 获取选中的钱包列表
@@ -181,8 +214,209 @@ export const useWalletStore = defineStore('wallet', {
       } catch (error) {
         console.error('Failed to parse local wallets:', error);
       }
+      // 加载钱包批次数据
+      const savedBatches = localStorage.getItem('wallet-batches');
+      if (savedBatches) {
+        try {
+          this.walletBatches = JSON.parse(savedBatches);
+        } catch (error) {
+          console.error('Failed to parse wallet batches:', error);
+        }
+      }
     },
     persist() { localStorage.setItem('local-wallets', JSON.stringify(this.localWallets)); },
+    persistBatches() { localStorage.setItem('wallet-batches', JSON.stringify(this.walletBatches)); },
+
+    // ============ 钱包批次管理相关操作 ============
+
+    // 生成钱包批次
+    async generateWalletBatch(count: number, remark: string, walletType: WalletType = 'normal'): Promise<WalletBatch> {
+      const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const wallets: WalletBatchItem[] = [];
+
+      for (let i = 0; i < count; i++) {
+        const random = crypto.getRandomValues(new Uint8Array(32));
+        const privateKey = `0x${Array.from(random).map(b => b.toString(16).padStart(2, '0')).join('')}`;
+        const account = privateKeyToAccount(privateKey as `0x${string}`);
+
+        wallets.push({
+          address: account.address,
+          privateKey: privateKey,
+        });
+      }
+
+      const batch: WalletBatch = {
+        id: batchId,
+        remark: remark || `批次 ${new Date().toLocaleString()}`,
+        createdAt: new Date().toISOString(),
+        wallets: wallets,
+        walletType: walletType,
+      };
+
+      this.walletBatches.push(batch);
+      this.persistBatches();
+
+      // 自动导出私钥文件
+      this.exportBatchToFile(batch);
+
+      return batch;
+    },
+
+    // 导出批次私钥到文件
+    exportBatchToFile(batch: WalletBatch) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const csvHeader = '序号,钱包地址,私钥\n';
+      const csvRows = batch.wallets.map((wallet, index) =>
+        `${index + 1},"${wallet.address}","${wallet.privateKey}"`
+      );
+      const csvContent = csvHeader + csvRows.join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `wallet-batch-${batch.remark.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')}-${timestamp}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+
+    // 更新批次备注
+    updateBatchRemark(batchId: string, remark: string) {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      if (batch) {
+        batch.remark = remark;
+        this.persistBatches();
+      }
+    },
+
+    // 删除批次
+    deleteBatch(batchId: string) {
+      this.walletBatches = this.walletBatches.filter(b => b.id !== batchId);
+      this.persistBatches();
+    },
+
+    // 获取批次的钱包地址列表
+    getBatchAddresses(batchId: string): string[] {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      return batch ? batch.wallets.map(w => w.address) : [];
+    },
+
+    // 获取批次的私钥列表
+    getBatchPrivateKeys(batchId: string): string[] {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      return batch ? batch.wallets.map(w => w.privateKey) : [];
+    },
+
+    // 查询批次余额
+    async refreshBatchBalances(batchId: string) {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      if (!batch) return;
+
+      const publicClient = this.getPublicClient();
+      let totalNative = BigInt(0);
+      let totalToken = BigInt(0);
+      const tokenDecimals = this.targetToken?.decimals || 18;
+
+      for (const wallet of batch.wallets) {
+        try {
+          const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
+          totalNative += balance;
+
+          if (this.targetToken) {
+            const tokenBalance = await publicClient.readContract({
+              address: this.targetToken.address as `0x${string}`,
+              abi: erc20Abi,
+              functionName: 'balanceOf',
+              args: [wallet.address as `0x${string}`]
+            }) as bigint;
+            totalToken += tokenBalance;
+          }
+        } catch (error) {
+          console.error(`Failed to fetch balance for ${wallet.address}:`, error);
+        }
+      }
+
+      batch.totalNativeBalance = formatEther(totalNative);
+      batch.totalTokenBalance = this.targetToken ? formatUnits(totalToken, tokenDecimals) : undefined;
+      this.persistBatches();
+
+      return {
+        totalNativeBalance: batch.totalNativeBalance,
+        totalTokenBalance: batch.totalTokenBalance,
+      };
+    },
+
+    // 从批次导入钱包到钱包列表
+    importWalletsFromBatch(batchId: string, walletType: WalletType = 'normal') {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      if (!batch) return { added: 0, duplicates: 0 };
+
+      const existingAddresses = new Set(this.localWallets.map(w => w.address.toLowerCase()));
+      let added = 0;
+      let duplicates = 0;
+
+      for (const wallet of batch.wallets) {
+        if (existingAddresses.has(wallet.address.toLowerCase())) {
+          duplicates++;
+          continue;
+        }
+
+        this.localWallets.push({
+          address: wallet.address,
+          encrypted: wallet.privateKey,
+          walletType: walletType,
+          remark: batch.remark,
+          createdAt: batch.createdAt,
+        });
+        existingAddresses.add(wallet.address.toLowerCase());
+        added++;
+      }
+
+      if (added > 0) {
+        this.persist();
+      }
+
+      return { added, duplicates };
+    },
+
+    // 获取批次的私钥映射（用于转账）
+    getBatchPrivateKeyMap(batchId: string): Record<string, string> {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      if (!batch) return {};
+
+      const map: Record<string, string> = {};
+      for (const wallet of batch.wallets) {
+        map[wallet.address.toLowerCase()] = wallet.privateKey;
+      }
+      return map;
+    },
+
+    // 获取批次的钱包类型
+    getBatchWalletType(batchId: string): WalletType | null {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+      return batch?.walletType || null;
+    },
+
+    // 根据地址查找所属批次的钱包类型
+    getWalletTypeByAddress(address: string): WalletType | null {
+      // 先检查本地钱包
+      const localWallet = this.localWallets.find(w => w.address.toLowerCase() === address.toLowerCase());
+      if (localWallet?.walletType) {
+        return localWallet.walletType;
+      }
+      // 再检查批次
+      for (const batch of this.walletBatches) {
+        const found = batch.wallets.find(w => w.address.toLowerCase() === address.toLowerCase());
+        if (found) {
+          return batch.walletType;
+        }
+      }
+      return null;
+    },
 
     // ============ 钱包选择相关操作 ============
     
@@ -276,6 +510,31 @@ export const useWalletStore = defineStore('wallet', {
     // 清除目标代币
     clearTargetToken() {
       this.targetToken = null;
+      // 同时清除资金池查询状态
+      this.clearPoolQueryState();
+    },
+
+    // 更新资金池查询状态
+    updatePoolQueryState(state: Partial<typeof this.poolQueryState>) {
+      Object.assign(this.poolQueryState, state);
+    },
+
+    // 清除资金池查询状态
+    clearPoolQueryState() {
+      this.poolQueryState = {
+        currentPrice: null,
+        marketCap: null,
+        priceDisplay: '',
+        isUpdating: false,
+        lastUpdateTime: '',
+        isRoutedPrice: false,
+        quoteTokenSymbol: '',
+        selectedQuoteToken: '',
+        tokenAddress: '',
+        tokenSymbol: '',
+        tokenName: '',
+        tokenDecimals: 18,
+      };
     },
 
     // 刷新目标代币余额
@@ -2102,11 +2361,15 @@ export const useWalletStore = defineStore('wallet', {
       targetAddresses: string[],
       amount: number,
       tokenType: 'native' | 'token',
-      mode: 'oneToMany' | 'manyToOne' | 'manyToMany'
-    ): Promise<{ source: string; target: string; hash?: string; error?: string; success: boolean }[]> {
-      console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}`);
+      mode: 'oneToMany' | 'manyToOne' | 'manyToMany',
+      options?: {
+        privateKeyMap?: Record<string, string>;
+        transferAllBalance?: boolean;
+      }
+    ): Promise<{ source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[]> {
+      console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}，转全部余额: ${options?.transferAllBalance}`);
 
-      const results: { source: string; target: string; hash?: string; error?: string; success: boolean }[] = [];
+      const results: { source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[] = [];
       const chainConfig = this.getChainConfig();
       const publicClient = this.getPublicClient();
       const gasPrice = await publicClient.getGasPrice();
@@ -2147,9 +2410,17 @@ export const useWalletStore = defineStore('wallet', {
         const { sourceAddr, targetAddr } = tasks[i];
 
         try {
-          // 查找源钱包的私钥
-          const sourceWallet = this.localWallets.find(w => w.address.toLowerCase() === sourceAddr.toLowerCase());
-          if (!sourceWallet || !sourceWallet.encrypted) {
+          // 获取私钥：优先从options.privateKeyMap获取，其次从本地钱包获取
+          let privateKey: string | undefined;
+
+          if (options?.privateKeyMap && options.privateKeyMap[sourceAddr.toLowerCase()]) {
+            privateKey = options.privateKeyMap[sourceAddr.toLowerCase()];
+          } else {
+            const sourceWallet = this.localWallets.find(w => w.address.toLowerCase() === sourceAddr.toLowerCase());
+            privateKey = sourceWallet?.encrypted;
+          }
+
+          if (!privateKey) {
             results.push({
               source: sourceAddr,
               target: targetAddr,
@@ -2162,7 +2433,7 @@ export const useWalletStore = defineStore('wallet', {
           console.log(`转账 ${i + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
 
           // 创建钱包客户端
-          const account = privateKeyToAccount(sourceWallet.encrypted as `0x${string}`);
+          const account = privateKeyToAccount(privateKey as `0x${string}`);
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
@@ -2170,37 +2441,95 @@ export const useWalletStore = defineStore('wallet', {
           });
 
           let txHash: string;
+          let actualAmount = amount;
 
           if (tokenType === 'token' && this.targetToken) {
             // 目标代币转账
             const tokenAddress = this.targetToken.address as `0x${string}`;
             const decimals = this.targetToken.decimals;
-            const amountToSend = parseUnits(amount.toString(), decimals);
 
-            txHash = await walletClient.writeContract({
-              address: tokenAddress,
-              abi: erc20Abi,
-              functionName: 'transfer',
-              args: [targetAddr as `0x${string}`, amountToSend],
-              gas: BigInt(65000),
-              gasPrice: gasPrice,
-            });
+            if (options?.transferAllBalance) {
+              // 获取代币余额并转出全部
+              const balance = await publicClient.readContract({
+                address: tokenAddress,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [sourceAddr as `0x${string}`]
+              });
+              actualAmount = Number(formatUnits(balance as bigint, decimals));
+
+              if (actualAmount <= 0) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: '代币余额为0',
+                  success: false
+                });
+                continue;
+              }
+
+              txHash = await walletClient.writeContract({
+                address: tokenAddress,
+                abi: erc20Abi,
+                functionName: 'transfer',
+                args: [targetAddr as `0x${string}`, balance as bigint],
+                gas: BigInt(65000),
+                gasPrice: gasPrice,
+              });
+            } else {
+              const amountToSend = parseUnits(amount.toString(), decimals);
+              txHash = await walletClient.writeContract({
+                address: tokenAddress,
+                abi: erc20Abi,
+                functionName: 'transfer',
+                args: [targetAddr as `0x${string}`, amountToSend],
+                gas: BigInt(65000),
+                gasPrice: gasPrice,
+              });
+            }
           } else {
             // 原生代币转账
-            txHash = await walletClient.sendTransaction({
-              to: targetAddr as `0x${string}`,
-              value: parseEther(amount.toString()),
-              gas: BigInt(21000),
-              gasPrice: gasPrice,
-            });
+            if (options?.transferAllBalance) {
+              // 获取余额，多对一和多对多模式不预留额外gas，只扣除实际gas费
+              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
+              const gasLimit = BigInt(21000);
+              const gasCost = gasPrice * gasLimit;
+              const transferValue = balance - gasCost;
+
+              if (transferValue <= BigInt(0)) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: `余额不足以支付 gas 费用，当前余额: ${formatEther(balance)}`,
+                  success: false
+                });
+                continue;
+              }
+
+              actualAmount = Number(formatEther(transferValue));
+              txHash = await walletClient.sendTransaction({
+                to: targetAddr as `0x${string}`,
+                value: transferValue,
+                gas: gasLimit,
+                gasPrice: gasPrice,
+              });
+            } else {
+              txHash = await walletClient.sendTransaction({
+                to: targetAddr as `0x${string}`,
+                value: parseEther(amount.toString()),
+                gas: BigInt(21000),
+                gasPrice: gasPrice,
+              });
+            }
           }
 
-          console.log(`转账成功: ${txHash}`);
+          console.log(`转账成功: ${txHash}, 金额: ${actualAmount}`);
           results.push({
             source: sourceAddr,
             target: targetAddr,
             hash: txHash,
-            success: true
+            success: true,
+            amount: actualAmount
           });
 
           // 添加延迟
