@@ -225,14 +225,13 @@
 import { ref, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useWalletStore } from '../../stores/walletStore';
-import { useTaskStore } from '../../stores/taskStore';
 import { useDexStore } from '../../stores/dexStore';
 import { useChainStore } from '../../stores/chainStore';
+import { createTradingService } from '../../services/tradingService';
 
 const emit = defineEmits(['close']);
 
 const walletStore = useWalletStore();
-const taskStore = useTaskStore();
 const dexStore = useDexStore();
 const chainStore = useChainStore();
 
@@ -289,9 +288,23 @@ async function refreshTokenBalances() {
   }
 }
 
-// 执行批量卖出
+// 获取钱包私钥
+function getWalletPrivateKey(walletAddress: string): string | null {
+  const wallet = walletStore.localWallets.find(
+    w => w.address.toLowerCase() === walletAddress.toLowerCase()
+  );
+  return wallet?.encrypted || null;
+}
+
+// 执行批量卖出（直接执行，不创建任务）
 async function executeBatchSell() {
   if (!canExecute.value) return;
+
+  const routerAddress = dexStore.currentRouterAddress;
+  if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
+    alert('当前DEX的Router地址未配置');
+    return;
+  }
 
   isSelling.value = true;
   sellResults.value = [];
@@ -299,6 +312,11 @@ async function executeBatchSell() {
   try {
     const walletAddresses = selectedWalletAddresses.value;
     const tokenAddress = targetToken.value!.address;
+    const chainId = chainStore.selectedChainId;
+    const rpcUrl = chainStore.rpcUrl;
+
+    // 创建交易服务
+    const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
 
     // 将钱包分成多个批次
     const batches: string[][] = [];
@@ -315,6 +333,7 @@ async function executeBatchSell() {
 
       // 并发执行当前批次的所有钱包
       const batchPromises = batch.map(async (walletAddr) => {
+        // 计算卖出百分比
         let percent: number;
         if (sellMode.value === 'fixed') {
           percent = fixedPercent.value;
@@ -322,42 +341,63 @@ async function executeBatchSell() {
           percent = Math.random() * (maxPercent.value - minPercent.value) + minPercent.value;
         }
 
-        try {
-          // 创建砸盘任务
-          const task = taskStore.createTask(
-            `批量卖出 ${targetToken.value!.symbol}`,
-            'dump',
-            {
-              tokenContract: tokenAddress,
-              poolType: chainStore.currentGovernanceToken,
-              spendToken: chainStore.currentGovernanceToken,
-              targetPrice: 0,
-              amountType: 'quantity',
-              amount: 0,
-              stopType: 'count',
-              stopValue: 1,
-              interval: 1,
-              sellThreshold: percent,
-              walletMode: 'sequential',
-            },
-            [walletAddr]
-          );
-
-          // 启动任务
-          taskStore.startTask(task.id);
-
-          return {
-            wallet: walletAddr,
-            percent,
-            success: true,
-            error: null
-          };
-        } catch (error: any) {
+        // 获取私钥
+        const privateKey = getWalletPrivateKey(walletAddr);
+        if (!privateKey) {
           return {
             wallet: walletAddr,
             percent,
             success: false,
-            error: error.message || '创建任务失败'
+            error: '钱包没有私钥'
+          };
+        }
+
+        try {
+          console.log(`钱包 ${walletAddr.slice(0, 10)}... 开始卖出 ${percent.toFixed(1)}%`);
+
+          // 直接调用交易服务执行卖出
+          const result = await tradingService.executeTrade({
+            chainId,
+            rpcUrl,
+            routerAddress,
+            privateKey,
+            walletAddress: walletAddr,
+            tokenAddress,
+            spendToken: chainStore.currentGovernanceToken, // BNB/tBNB
+            amount: 0,
+            amountType: 'quantity',
+            mode: 'dump',
+            slippage: 30,
+            balancePercent: percent,
+          });
+
+          if (result.success) {
+            console.log(`钱包 ${walletAddr.slice(0, 10)}... 卖出成功: ${result.txHash}`);
+            return {
+              wallet: walletAddr,
+              percent,
+              success: true,
+              hash: result.txHash,
+              amountIn: result.amountIn,
+              amountOut: result.amountOut,
+              error: null
+            };
+          } else {
+            console.error(`钱包 ${walletAddr.slice(0, 10)}... 卖出失败:`, result.error);
+            return {
+              wallet: walletAddr,
+              percent,
+              success: false,
+              error: result.error || '交易失败'
+            };
+          }
+        } catch (error: any) {
+          console.error(`钱包 ${walletAddr.slice(0, 10)}... 卖出异常:`, error);
+          return {
+            wallet: walletAddr,
+            percent,
+            success: false,
+            error: error.message || '执行异常'
           };
         }
       });
@@ -373,16 +413,22 @@ async function executeBatchSell() {
       }
     }
 
-    alert(`已为 ${walletAddresses.length} 个钱包创建卖出任务，请在任务列表中查看执行情况`);
+    // 统计结果
+    const successCount = sellResults.value.filter(r => r.success).length;
+    const failCount = sellResults.value.filter(r => !r.success).length;
+
+    if (failCount === 0) {
+      alert(`卖出完成！成功 ${successCount} 笔`);
+    } else {
+      alert(`卖出完成！成功 ${successCount} 笔，失败 ${failCount} 笔`);
+    }
+
+    // 刷新余额
+    await walletStore.refreshTargetTokenBalance();
 
   } catch (error: any) {
     console.error('批量卖出失败:', error);
-    sellResults.value.push({
-      wallet: '-',
-      percent: 0,
-      success: false,
-      error: error.message || '批量卖出失败'
-    });
+    alert(`批量卖出失败: ${error.message || '未知错误'}`);
   } finally {
     isSelling.value = false;
   }
