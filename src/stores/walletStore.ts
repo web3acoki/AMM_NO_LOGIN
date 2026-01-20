@@ -80,6 +80,61 @@ function normalizeWallet(wallet: LocalWallet): LocalWallet {
   };
 }
 
+// 解析转账错误信息，返回用户友好的错误描述
+function parseTransferError(error: any): string {
+  const message = error?.message || error?.toString() || '未知错误';
+  const lowerMessage = message.toLowerCase();
+
+  // 余额不足相关
+  if (lowerMessage.includes('insufficient funds') || lowerMessage.includes('insufficient balance')) {
+    return '余额不足，无法支付转账金额和Gas费';
+  }
+  if (lowerMessage.includes('exceeds balance') || lowerMessage.includes('transfer amount exceeds balance')) {
+    return '转账金额超过代币余额';
+  }
+
+  // Gas相关
+  if (lowerMessage.includes('gas too low') || lowerMessage.includes('intrinsic gas too low')) {
+    return 'Gas设置过低，交易无法执行';
+  }
+  if (lowerMessage.includes('out of gas')) {
+    return 'Gas耗尽，交易执行失败';
+  }
+
+  // Nonce相关
+  if (lowerMessage.includes('nonce too low') || lowerMessage.includes('nonce has already been used')) {
+    return 'Nonce冲突，交易已被覆盖或已执行';
+  }
+  if (lowerMessage.includes('replacement transaction underpriced')) {
+    return 'Nonce冲突，替换交易Gas价格过低';
+  }
+
+  // 网络相关
+  if (lowerMessage.includes('timeout') || lowerMessage.includes('timed out')) {
+    return '网络超时，请检查网络连接';
+  }
+  if (lowerMessage.includes('network') || lowerMessage.includes('connection')) {
+    return '网络连接错误，请检查RPC节点';
+  }
+
+  // 交易被拒绝
+  if (lowerMessage.includes('rejected') || lowerMessage.includes('denied')) {
+    return '交易被节点拒绝';
+  }
+  if (lowerMessage.includes('reverted') || lowerMessage.includes('execution reverted')) {
+    return '交易执行失败，合约调用被回滚';
+  }
+
+  // 地址相关
+  if (lowerMessage.includes('invalid address')) {
+    return '无效的钱包地址';
+  }
+
+  // 返回截断的原始错误信息
+  const cleanMessage = message.replace(/^Error:\s*/i, '');
+  return cleanMessage.length > 80 ? cleanMessage.substring(0, 80) + '...' : cleanMessage;
+}
+
 function getUsdtAddress(chainId: number): `0x${string}` | null {
   const address = USDT_CONTRACTS[chainId as keyof typeof USDT_CONTRACTS];
   return address ? (address as `0x${string}`) : null;
@@ -262,6 +317,50 @@ export const useWalletStore = defineStore('wallet', {
       return batch;
     },
 
+    // 从私钥列表创建批次（用于导入时生成批次）
+    async createBatchFromPrivateKeys(privateKeys: string[], remark: string, walletType: WalletType = 'normal'): Promise<WalletBatch> {
+      const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const wallets: WalletBatchItem[] = [];
+      const privateKeyRegex = /^(0x)?[0-9a-fA-F]{64}$/;
+
+      for (const key of privateKeys) {
+        if (!privateKeyRegex.test(key)) continue;
+
+        try {
+          const normalizedKey = key.startsWith('0x') ? key : `0x${key}`;
+          const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+
+          // 检查是否已存在
+          const exists = wallets.some(w => w.address.toLowerCase() === account.address.toLowerCase());
+          if (!exists) {
+            wallets.push({
+              address: account.address,
+              privateKey: normalizedKey,
+            });
+          }
+        } catch (e) {
+          console.warn('无效的私钥，跳过:', key.slice(0, 10) + '...');
+        }
+      }
+
+      if (wallets.length === 0) {
+        throw new Error('没有有效的私钥');
+      }
+
+      const batch: WalletBatch = {
+        id: batchId,
+        remark: remark || `导入批次 ${new Date().toLocaleString()}`,
+        createdAt: new Date().toISOString(),
+        wallets: wallets,
+        walletType: walletType,
+      };
+
+      this.walletBatches.push(batch);
+      this.persistBatches();
+
+      return batch;
+    },
+
     // 导出批次私钥到文件
     exportBatchToFile(batch: WalletBatch) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -312,37 +411,49 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 查询批次余额
+    // 并发批量查询批次钱包余额（优化版本）
     async refreshBatchBalances(batchId: string) {
       const batch = this.walletBatches.find(b => b.id === batchId);
       if (!batch) return;
 
       const publicClient = this.getPublicClient();
-      let totalNative = BigInt(0);
-      let totalToken = BigInt(0);
       const tokenDecimals = this.targetToken?.decimals || 18;
 
-      for (const wallet of batch.wallets) {
-        try {
-          const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
-          totalNative += balance;
+      console.log(`开始查询批次余额: ${batch.wallets.length} 个钱包`);
 
-          if (this.targetToken) {
-            const tokenBalance = await publicClient.readContract({
-              address: this.targetToken.address as `0x${string}`,
-              abi: erc20Abi,
-              functionName: 'balanceOf',
-              args: [wallet.address as `0x${string}`]
-            }) as bigint;
-            totalToken += tokenBalance;
+      // 使用并发查询
+      const results = await Promise.all(
+        batch.wallets.map(async wallet => {
+          try {
+            const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
+            let tokenBalance = BigInt(0);
+
+            if (this.targetToken) {
+              tokenBalance = await publicClient.readContract({
+                address: this.targetToken.address as `0x${string}`,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [wallet.address as `0x${string}`]
+              }) as bigint;
+            }
+
+            return { native: balance, token: tokenBalance };
+          } catch (error) {
+            console.error(`Failed to fetch balance for ${wallet.address}:`, error);
+            return { native: BigInt(0), token: BigInt(0) };
           }
-        } catch (error) {
-          console.error(`Failed to fetch balance for ${wallet.address}:`, error);
-        }
-      }
+        })
+      );
+
+      // 汇总结果
+      const totalNative = results.reduce((sum, r) => sum + r.native, BigInt(0));
+      const totalToken = results.reduce((sum, r) => sum + r.token, BigInt(0));
 
       batch.totalNativeBalance = formatEther(totalNative);
       batch.totalTokenBalance = this.targetToken ? formatUnits(totalToken, tokenDecimals) : undefined;
       this.persistBatches();
+
+      console.log(`批次余额查询完成: ${batch.totalNativeBalance} BNB`);
 
       return {
         totalNativeBalance: batch.totalNativeBalance,
@@ -859,16 +970,36 @@ export const useWalletStore = defineStore('wallet', {
       });
     },
 
+    // 并发批量查询余额（优化版本）
     async refreshAllBalances() {
       const publicClient = this.getPublicClient();
       const usdtAddress = getUsdtAddress(this.currentChainId);
       const usdtDecimals = usdtAddress ? await fetchTokenDecimals(publicClient, usdtAddress) : 18;
 
-      for (const wallet of this.localWallets) {
-        await refreshWalletBalancesForWallet(wallet, publicClient, usdtAddress, usdtDecimals);
+      const wallets = this.localWallets;
+      const batchSize = 50; // 每批50个钱包
+      const totalBatches = Math.ceil(wallets.length / batchSize);
+
+      console.log(`开始批量查询余额: ${wallets.length} 个钱包, ${totalBatches} 批`);
+
+      for (let i = 0; i < totalBatches; i++) {
+        const start = i * batchSize;
+        const end = Math.min(start + batchSize, wallets.length);
+        const batch = wallets.slice(start, end);
+
+        // 批内并发查询
+        await Promise.all(
+          batch.map(wallet =>
+            refreshWalletBalancesForWallet(wallet, publicClient, usdtAddress, usdtDecimals)
+              .catch(err => console.error(`查询余额失败 ${wallet.address}:`, err))
+          )
+        );
+
+        console.log(`已完成 ${end}/${wallets.length} 个钱包`);
       }
 
       this.persist();
+      console.log('余额查询完成');
     },
 
     async refreshWalletBalance(address: string) {
@@ -882,26 +1013,45 @@ export const useWalletStore = defineStore('wallet', {
       this.persist();
     },
 
+    // 并发批量查询代币余额（优化版本）
     async refreshTokenBalance(tokenAddress: string) {
       const publicClient = this.getPublicClient();
       const decimals = await fetchTokenDecimals(publicClient, tokenAddress as `0x${string}`);
-      
-      for (const wallet of this.localWallets) {
-        try {
-          const balance = await publicClient.readContract({
-            address: tokenAddress as `0x${string}`,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [wallet.address as `0x${string}`]
-          });
-          wallet.tokenBalance = formatUnits(balance as bigint, decimals);
-        } catch (error) {
-          console.error(`Failed to fetch token balance for ${wallet.address}:`, error);
-          wallet.tokenBalance = 'Error';
-        }
+
+      const wallets = this.localWallets;
+      const batchSize = 50; // 每批50个钱包
+      const totalBatches = Math.ceil(wallets.length / batchSize);
+
+      console.log(`开始批量查询代币余额: ${wallets.length} 个钱包, ${totalBatches} 批`);
+
+      for (let i = 0; i < totalBatches; i++) {
+        const start = i * batchSize;
+        const end = Math.min(start + batchSize, wallets.length);
+        const batch = wallets.slice(start, end);
+
+        // 批内并发查询
+        await Promise.all(
+          batch.map(async wallet => {
+            try {
+              const balance = await publicClient.readContract({
+                address: tokenAddress as `0x${string}`,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [wallet.address as `0x${string}`]
+              });
+              wallet.tokenBalance = formatUnits(balance as bigint, decimals);
+            } catch (error) {
+              console.error(`Failed to fetch token balance for ${wallet.address}:`, error);
+              wallet.tokenBalance = 'Error';
+            }
+          })
+        );
+
+        console.log(`已完成 ${end}/${wallets.length} 个钱包`);
       }
-      
+
       this.persist();
+      console.log('代币余额查询完成');
     },
 
     // 基于合约的批量转账原生代币（真正的批量转账）
@@ -2216,7 +2366,7 @@ export const useWalletStore = defineStore('wallet', {
           results.push({
             source: task.source.address,
             target: task.target,
-            error: error.message || String(error),
+            error: parseTransferError(error),
             tokenType,
             success: false
           });
@@ -2542,7 +2692,7 @@ export const useWalletStore = defineStore('wallet', {
           results.push({
             source: sourceAddr,
             target: targetAddr,
-            error: error.message || String(error),
+            error: parseTransferError(error),
             success: false
           });
         }

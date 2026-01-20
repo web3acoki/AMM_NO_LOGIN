@@ -22,6 +22,59 @@ const USDC_ADDRESSES: Record<number, `0x${string}`> = {
   97: '0x64544969ed7EBf5f083679233325356EbE738930',   // BSC Testnet USDC (if exists)
 };
 
+// 解析交易错误信息
+function parseTransactionError(error: any): string {
+  const message = error?.message || error?.toString() || '未知错误';
+
+  // Nonce错误
+  if (message.includes('nonce too low') || message.includes('Nonce provided')) {
+    return 'Nonce冲突，交易已被覆盖或已执行';
+  }
+
+  // 滑点/价格变化
+  if (message.includes('INSUFFICIENT_OUTPUT_AMOUNT') || message.includes('slippage')) {
+    return '滑点过大，价格变化超出预期';
+  }
+
+  // 余额不足
+  if (message.includes('insufficient funds') || message.includes('exceeds balance')) {
+    return 'BNB余额不足支付Gas费';
+  }
+
+  // 代币余额不足
+  if (message.includes('transfer amount exceeds balance') || message.includes('ERC20: transfer amount')) {
+    return '代币余额不足';
+  }
+
+  // 授权问题
+  if (message.includes('allowance') || message.includes('ERC20: insufficient allowance')) {
+    return '代币授权额度不足';
+  }
+
+  // Gas问题
+  if (message.includes('gas') || message.includes('intrinsic gas too low')) {
+    return 'Gas设置不足';
+  }
+
+  // 交易被拒绝
+  if (message.includes('reverted') || message.includes('execution reverted')) {
+    // 尝试提取具体原因
+    const revertMatch = message.match(/reason="([^"]+)"/);
+    if (revertMatch) {
+      return `合约执行失败: ${revertMatch[1]}`;
+    }
+    return '合约执行失败（可能是滑点或流动性不足）';
+  }
+
+  // 超时
+  if (message.includes('timeout') || message.includes('Timeout')) {
+    return '交易超时';
+  }
+
+  // 返回原始错误（截取前100个字符）
+  return message.length > 100 ? message.substring(0, 100) + '...' : message;
+}
+
 // 获取链配置
 function getChainConfig(chainId: number) {
   switch (chainId) {
@@ -338,7 +391,7 @@ export class TradingService {
         return {
           success: false,
           txHash,
-          error: '交易失败'
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
         };
       }
 
@@ -346,7 +399,7 @@ export class TradingService {
       console.error('买入失败:', error);
       return {
         success: false,
-        error: error.message || String(error)
+        error: parseTransactionError(error)
       };
     }
   }
@@ -474,7 +527,7 @@ export class TradingService {
         return {
           success: false,
           txHash,
-          error: '交易失败'
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
         };
       }
 
@@ -482,7 +535,7 @@ export class TradingService {
       console.error('买入失败:', error);
       return {
         success: false,
-        error: error.message || String(error)
+        error: parseTransactionError(error)
       };
     }
   }
@@ -611,7 +664,7 @@ export class TradingService {
         return {
           success: false,
           txHash,
-          error: '交易失败'
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
         };
       }
 
@@ -619,7 +672,7 @@ export class TradingService {
       console.error('卖出失败:', error);
       return {
         success: false,
-        error: error.message || String(error)
+        error: parseTransactionError(error)
       };
     }
   }
@@ -737,7 +790,7 @@ export class TradingService {
         return {
           success: false,
           txHash,
-          error: '交易失败'
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
         };
       }
 
@@ -745,7 +798,7 @@ export class TradingService {
       console.error('卖出失败:', error);
       return {
         success: false,
-        error: error.message || String(error)
+        error: parseTransactionError(error)
       };
     }
   }

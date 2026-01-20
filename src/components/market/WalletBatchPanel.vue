@@ -40,7 +40,7 @@
           <button
             class="btn btn-primary btn-sm"
             @click="generateBatch"
-            :disabled="isGenerating || generateCount < 1"
+            :disabled="isGenerating || !generateCount || generateCount < 1"
           >
             <span v-if="isGenerating">
               <span class="spinner-border spinner-border-sm me-1"></span>生成中...
@@ -205,7 +205,7 @@ const chainStore = useChainStore();
 const { walletBatches, targetToken } = storeToRefs(walletStore);
 const { currentGovernanceToken } = storeToRefs(chainStore);
 
-const generateCount = ref(10);
+const generateCount = ref<number | undefined>(undefined);
 const generateRemark = ref('');
 const generateWalletType = ref<'main' | 'normal'>('normal');
 const isGenerating = ref(false);
@@ -216,7 +216,7 @@ const selectedBatch = ref<any>(null);
 
 // 生成钱包批次
 async function generateBatch() {
-  if (generateCount.value < 1) {
+  if (!generateCount.value || generateCount.value < 1) {
     alert('请输入有效的生成数量');
     return;
   }
