@@ -2057,8 +2057,7 @@ export const useWalletStore = defineStore('wallet', {
             // 原生代币转账
             amountToSend = parseEther(amountPerWallet.toString());
             const gasLimit = BigInt(21000);
-            // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
-            const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
+            const gasCost = gasPrice * gasLimit;
 
             // 获取钱包余额
             const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
@@ -2318,8 +2317,7 @@ export const useWalletStore = defineStore('wallet', {
           } else {
             // 原生代币转账
             const gasLimit = BigInt(21000);
-            // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
-            const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
+            const gasCost = gasPrice * gasLimit;
 
             // 检查余额
             const balance = await publicClient.getBalance({ address: task.source.address as `0x${string}` });
@@ -2643,22 +2641,21 @@ export const useWalletStore = defineStore('wallet', {
               // 获取余额，扣除gas费后全部转出
               const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
-              // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
-              const gasCostWithBuffer = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
-              const transferValue = balance - gasCostWithBuffer;
+              const gasCost = gasPrice * gasLimit;
+              const transferValue = balance - gasCost;
 
               if (transferValue <= BigInt(0)) {
                 results.push({
                   source: sourceAddr,
                   target: targetAddr,
-                  error: `余额不足以支付 gas 费用，当前余额: ${formatEther(balance)} BNB，预估Gas费: ${formatEther(gasCostWithBuffer)} BNB`,
+                  error: `余额不足以支付 gas 费用，当前余额: ${formatEther(balance)} BNB，预估Gas费: ${formatEther(gasCost)} BNB`,
                   success: false
                 });
                 continue;
               }
 
               actualAmount = Number(formatEther(transferValue));
-              console.log(`转全部余额: ${formatEther(balance)} BNB, 预留Gas: ${formatEther(gasCostWithBuffer)} BNB, 实际转账: ${actualAmount} BNB`);
+              console.log(`转全部余额: ${formatEther(balance)} BNB, Gas费: ${formatEther(gasCost)} BNB, 实际转账: ${actualAmount} BNB`);
 
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
@@ -2669,7 +2666,7 @@ export const useWalletStore = defineStore('wallet', {
               // 转固定金额，先检查余额是否足够
               const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
-              const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
+              const gasCost = gasPrice * gasLimit;
               const amountToSend = parseEther(amount.toString());
 
               if (balance < amountToSend + gasCost) {
