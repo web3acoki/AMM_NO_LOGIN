@@ -2057,8 +2057,8 @@ export const useWalletStore = defineStore('wallet', {
             // 原生代币转账
             amountToSend = parseEther(amountPerWallet.toString());
             const gasLimit = BigInt(21000);
-            // 增加20%的gas费缓冲
-            const gasCost = (gasPrice * gasLimit * BigInt(120)) / BigInt(100);
+            // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
+            const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
 
             // 获取钱包余额
             const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
@@ -2318,8 +2318,8 @@ export const useWalletStore = defineStore('wallet', {
           } else {
             // 原生代币转账
             const gasLimit = BigInt(21000);
-            // 增加20%的gas费缓冲
-            const gasCost = (gasPrice * gasLimit * BigInt(120)) / BigInt(100);
+            // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
+            const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
 
             // 检查余额
             const balance = await publicClient.getBalance({ address: task.source.address as `0x${string}` });
@@ -2643,8 +2643,8 @@ export const useWalletStore = defineStore('wallet', {
               // 获取余额，扣除gas费后全部转出
               const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
-              // 增加20%的gas费缓冲，防止gas价格波动导致交易失败
-              const gasCostWithBuffer = (gasPrice * gasLimit * BigInt(120)) / BigInt(100);
+              // 增加5%的gas费缓冲，防止gas价格波动导致交易失败
+              const gasCostWithBuffer = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
               const transferValue = balance - gasCostWithBuffer;
 
               if (transferValue <= BigInt(0)) {
