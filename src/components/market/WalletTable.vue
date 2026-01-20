@@ -718,9 +718,15 @@ async function executeTransfer() {
     const failCount = results.filter(r => !r.success).length;
 
     if (failCount === 0) {
-      alert(`转账完成！成功 ${successCount} 笔`);
+      alert(`✅ 转账完成！成功 ${successCount} 笔`);
+    } else if (successCount === 0) {
+      // 全部失败，提取第一个错误信息
+      const firstError = results.find(r => r.error)?.error || '未知错误';
+      alert(`❌ 转账全部失败！共 ${failCount} 笔\n\n失败原因: ${firstError}`);
     } else {
-      alert(`转账完成！成功 ${successCount} 笔，失败 ${failCount} 笔`);
+      // 部分成功部分失败
+      const firstError = results.find(r => r.error)?.error || '未知错误';
+      alert(`⚠️ 转账部分完成\n\n成功: ${successCount} 笔\n失败: ${failCount} 笔\n\n失败原因: ${firstError}`);
     }
   } catch (error: any) {
     alert(error.message || '转账失败');
