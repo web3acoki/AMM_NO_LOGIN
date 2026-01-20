@@ -215,11 +215,20 @@ export const useTaskStore = defineStore('task', () => {
       }
 
       addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易...`, walletAddress);
-      
+
       // 创建交易服务
       const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
 
       // 构建交易参数（滑点固定30%）
+      // 砸盘模式使用 sellThreshold 作为卖出百分比，拉盘模式使用 balancePercent
+      const sellPercent = task.mode === 'dump'
+        ? (task.config.sellThreshold || task.config.balancePercent || 100)
+        : task.config.balancePercent;
+
+      if (task.mode === 'dump') {
+        addLog(task.id, 'info', `卖出百分比: ${sellPercent}%`, walletAddress);
+      }
+
       const tradeParams: TradeParams = {
         chainId,
         rpcUrl,
@@ -234,7 +243,7 @@ export const useTaskStore = defineStore('task', () => {
         slippage: 30,
         gasPrice: task.config.gasPrice,
         gasLimit: task.config.gasLimit,
-        balancePercent: task.config.balancePercent,
+        balancePercent: sellPercent,
       };
       
       // 执行交易
