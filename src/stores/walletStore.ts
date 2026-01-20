@@ -830,10 +830,8 @@ export const useWalletStore = defineStore('wallet', {
       
       for (let i = 0; i < this.localWallets.length; i++) {
         const wallet = this.localWallets[i];
-        console.log(`\n检查钱包 ${i + 1}:`);
-        console.log(`  存储的地址: ${wallet.address}`);
-        console.log(`  存储的私钥: ${wallet.encrypted}`);
-        
+        console.log(`\n检查钱包 ${i + 1}: ${wallet.address}`);
+
         if (wallet.encrypted) {
           try {
             const account = privateKeyToAccount(wallet.encrypted as `0x${string}`);
@@ -2080,6 +2078,7 @@ export const useWalletStore = defineStore('wallet', {
               to: targetAddress as `0x${string}`,
               value: amountToSend,
               gas: gasLimit,
+              gasPrice: gasPrice,
             });
           }
           
@@ -2339,6 +2338,7 @@ export const useWalletStore = defineStore('wallet', {
               to: task.target as `0x${string}`,
               value: task.amount,
               gas: gasLimit,
+              gasPrice: gasPrice,
             });
           }
           
@@ -2661,6 +2661,7 @@ export const useWalletStore = defineStore('wallet', {
                 to: targetAddr as `0x${string}`,
                 value: transferValue,
                 gas: gasLimit,
+                gasPrice: gasPrice,
               });
             } else {
               // 转固定金额，先检查余额是否足够
@@ -2683,6 +2684,7 @@ export const useWalletStore = defineStore('wallet', {
                 to: targetAddr as `0x${string}`,
                 value: amountToSend,
                 gas: gasLimit,
+                gasPrice: gasPrice,
               });
             }
           }

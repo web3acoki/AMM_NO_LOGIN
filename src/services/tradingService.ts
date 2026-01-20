@@ -315,6 +315,9 @@ export class TradingService {
       const path: `0x${string}`[] = [wbnbAddress, tokenAddress as `0x${string}`];
       const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
 
+      // 获取目标代币精度
+      const targetDecimals = await this.getTokenDecimals(tokenAddress as `0x${string}`);
+
       // 获取BNB余额
       const balance = await this.getNativeBalance(walletAddress as `0x${string}`);
       
@@ -349,7 +352,7 @@ export class TradingService {
       const expectedOut = amountsOut[amountsOut.length - 1];
       const minAmountOut = this.calculateMinAmountOut(expectedOut, slippage);
 
-      console.log(`预期获得: ${formatEther(expectedOut)}, 最小: ${formatEther(minAmountOut)}`);
+      console.log(`预期获得: ${formatUnits(expectedOut, targetDecimals)}, 最小: ${formatUnits(minAmountOut, targetDecimals)}`);
 
       // 构建交易参数
       const txParams: any = {
@@ -385,7 +388,7 @@ export class TradingService {
           success: true,
           txHash,
           amountIn: amount.toString(),
-          amountOut: formatEther(expectedOut)
+          amountOut: formatUnits(expectedOut, targetDecimals)
         };
       } else {
         return {
@@ -438,6 +441,8 @@ export class TradingService {
 
       // 获取花费代币精度
       const spendDecimals = await this.getTokenDecimals(spendTokenAddress);
+      // 获取目标代币精度
+      const targetDecimals = await this.getTokenDecimals(tokenAddress as `0x${string}`);
       const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
 
       // 获取花费代币余额
@@ -486,7 +491,7 @@ export class TradingService {
       const expectedOut = amountsOut[amountsOut.length - 1];
       const minAmountOut = this.calculateMinAmountOut(expectedOut, slippage);
 
-      console.log(`预期获得: ${formatEther(expectedOut)}, 最小: ${formatEther(minAmountOut)}`);
+      console.log(`预期获得: ${formatUnits(expectedOut, targetDecimals)}, 最小: ${formatUnits(minAmountOut, targetDecimals)}`);
 
       // 构建交易参数
       const txParams: any = {
@@ -521,7 +526,7 @@ export class TradingService {
           success: true,
           txHash,
           amountIn: amount.toString(),
-          amountOut: formatEther(expectedOut)
+          amountOut: formatUnits(expectedOut, targetDecimals)
         };
       } else {
         return {
