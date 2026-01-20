@@ -2666,11 +2666,26 @@ export const useWalletStore = defineStore('wallet', {
                 gas: gasLimit,
               });
             } else {
+              // 转固定金额，先检查余额是否足够
+              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
+              const gasLimit = BigInt(21000);
+              const gasCost = (gasPrice * gasLimit * BigInt(105)) / BigInt(100);
+              const amountToSend = parseEther(amount.toString());
+
+              if (balance < amountToSend + gasCost) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: `余额不足，当前: ${formatEther(balance)} BNB，需要: ${formatEther(amountToSend + gasCost)} BNB`,
+                  success: false
+                });
+                continue;
+              }
+
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
-                value: parseEther(amount.toString()),
-                gas: BigInt(21000),
-                gasPrice: gasPrice,
+                value: amountToSend,
+                gas: gasLimit,
               });
             }
           }
