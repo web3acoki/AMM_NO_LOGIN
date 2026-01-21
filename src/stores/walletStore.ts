@@ -2625,7 +2625,26 @@ export const useWalletStore = defineStore('wallet', {
                 gasPrice: gasPrice,
               });
             } else {
+              // 先检查代币余额是否足够
+              const balance = await publicClient.readContract({
+                address: tokenAddress,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [sourceAddr as `0x${string}`]
+              }) as bigint;
+
               const amountToSend = parseUnits(amount.toString(), decimals);
+
+              if (balance < amountToSend) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: `代币余额不足，当前: ${formatUnits(balance, decimals)}, 需要: ${amount}`,
+                  success: false
+                });
+                continue;
+              }
+
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
                 abi: erc20Abi,
@@ -2689,14 +2708,32 @@ export const useWalletStore = defineStore('wallet', {
             }
           }
 
-          console.log(`转账成功: ${txHash}, 金额: ${actualAmount}`);
-          results.push({
-            source: sourceAddr,
-            target: targetAddr,
-            hash: txHash,
-            success: true,
-            amount: actualAmount
+          // 等待交易确认
+          console.log(`等待交易确认: ${txHash}`);
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash: txHash as `0x${string}`,
+            timeout: 60000 // 60秒超时
           });
+
+          if (receipt.status === 'success') {
+            console.log(`转账成功: ${txHash}, 金额: ${actualAmount}`);
+            results.push({
+              source: sourceAddr,
+              target: targetAddr,
+              hash: txHash,
+              success: true,
+              amount: actualAmount
+            });
+          } else {
+            console.error(`转账失败(交易回滚): ${txHash}`);
+            results.push({
+              source: sourceAddr,
+              target: targetAddr,
+              hash: txHash,
+              error: '交易已发送但执行失败（可能是余额不足或合约拒绝）',
+              success: false
+            });
+          }
 
           // 添加延迟
           if (i < tasks.length - 1) {
