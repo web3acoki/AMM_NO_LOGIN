@@ -584,7 +584,7 @@ export class TradingService {
 
       // 根据百分比计算实际卖出数量
       let amountIn: bigint;
-      if (balancePercent < 100) {
+      if (balancePercent > 0 && balancePercent <= 100) {
         // 使用代币余额的X%
         amountIn = (tokenBalance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额卖出，可用: ${formatUnits(tokenBalance, tokenDecimals)}, 实际: ${formatUnits(amountIn, tokenDecimals)}`);
@@ -717,7 +717,7 @@ export class TradingService {
 
       // 根据百分比计算实际卖出数量
       let amountIn: bigint;
-      if (balancePercent < 100) {
+      if (balancePercent > 0 && balancePercent <= 100) {
         // 使用代币余额的X%
         amountIn = (tokenBalance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额卖出，可用: ${formatUnits(tokenBalance, decimals)}, 实际: ${formatUnits(amountIn, decimals)}`);
