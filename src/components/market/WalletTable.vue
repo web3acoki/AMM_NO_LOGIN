@@ -42,19 +42,25 @@
     <!-- 操作按钮栏 -->
     <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
       <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-outline-secondary btn-sm" @click="openGenerateModal">
+          <i class="bi bi-plus-circle me-1"></i>生成钱包
+        </button>
+        <button class="btn btn-outline-info btn-sm" @click="exportPrivateKeys" :disabled="!wallets || wallets.length === 0">
+          <i class="bi bi-download me-1"></i>导出私钥
+        </button>
         <button class="btn btn-outline-primary btn-sm" @click="refreshBalances" :disabled="isRefreshing">
           <i class="bi bi-arrow-clockwise me-1"></i>{{ isRefreshing ? '刷新中' : '刷新余额' }}
         </button>
-        <button 
-          class="btn btn-outline-secondary btn-sm" 
-          @click="editSelectedRemark" 
+        <button
+          class="btn btn-outline-secondary btn-sm"
+          @click="editSelectedRemark"
           :disabled="selectedCount === 0"
         >
           <i class="bi bi-pencil me-1"></i>编辑选中 ({{ selectedCount }})
         </button>
-        <button 
-          class="btn btn-outline-danger btn-sm" 
-          @click="removeSelected" 
+        <button
+          class="btn btn-outline-danger btn-sm"
+          @click="removeSelected"
           :disabled="selectedCount === 0"
         >
           <i class="bi bi-trash me-1"></i>删除选中 ({{ selectedCount }})
@@ -70,6 +76,39 @@
         >
           <i class="bi bi-send me-1"></i>批量转账
         </button>
+      </div>
+    </div>
+
+    <!-- 生成钱包 Modal -->
+    <div class="modal fade" id="genWalletModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">生成本地钱包</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label class="form-label">生成数量</label>
+              <input type="number" class="form-control" v-model.number="generateCount" min="1" max="100" placeholder="5">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">钱包类型</label>
+              <select class="form-select" v-model="generateWalletType">
+                <option value="normal">普通钱包</option>
+                <option value="main">主钱包</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">备注（可选）</label>
+              <input type="text" class="form-control" v-model="generateRemark" placeholder="批次备注">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" @click="generateWallets">生成</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -393,6 +432,12 @@ const rangeInput = ref('');
 const showTransferPanel = ref(false);
 const isTransferring = ref(false);
 const transferResults = ref<any[]>([]);
+
+// 生成钱包相关
+const generateCount = ref<number>(5);
+const generateWalletType = ref<'main' | 'normal'>('normal');
+const generateRemark = ref<string>('');
+let genWalletModal: any = null;
 
 // 批量转账参数（基于文本框输入）
 const transferMode = ref<'oneToMany' | 'manyToOne' | 'manyToMany'>('oneToMany');
@@ -882,6 +927,51 @@ async function refreshBalances() {
 function clearAllWallets() {
   if (confirm('确定要删除所有钱包吗？')) {
     walletStore.clearLocalWallets();
+  }
+}
+
+// 打开生成钱包 Modal
+function openGenerateModal() {
+  const el = document.getElementById('genWalletModal');
+  if (!el) return;
+
+  if (!genWalletModal) {
+    const Bootstrap = (window as any).bootstrap;
+    genWalletModal = new Bootstrap.Modal(el);
+  }
+  genWalletModal.show();
+}
+
+// 生成钱包
+async function generateWallets() {
+  if (generateCount.value < 1 || generateCount.value > 100) {
+    alert('生成数量必须在 1-100 之间');
+    return;
+  }
+
+  try {
+    await walletStore.generateLocalWallets(generateCount.value, generateWalletType.value, generateRemark.value);
+    if (genWalletModal) {
+      genWalletModal.hide();
+    }
+    alert(`成功生成 ${generateCount.value} 个${generateWalletType.value === 'main' ? '主' : '普通'}钱包`);
+    generateRemark.value = '';
+  } catch (error: any) {
+    alert('生成钱包失败: ' + error.message);
+  }
+}
+
+// 导出私钥
+async function exportPrivateKeys() {
+  if (!wallets.value || wallets.value.length === 0) {
+    alert('没有钱包可导出');
+    return;
+  }
+
+  try {
+    await walletStore.exportPrivateKeys();
+  } catch (error: any) {
+    alert('导出失败: ' + error.message);
   }
 }
 </script>

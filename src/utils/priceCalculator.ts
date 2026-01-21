@@ -3,12 +3,7 @@ import { factoryAbi } from '../viem/abis/factory';
 import { pairAbi } from '../viem/abis/pair';
 import { erc20Abi } from '../viem/abis/erc20';
 import { pancakeV2RouterAbi } from '../viem/abis/pancakeV2';
-
-// WBNB 地址映射
-const WBNB_ADDRESSES: Record<number, string> = {
-  56: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',   // BSC Mainnet
-  97: '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd',   // BSC Testnet
-};
+import { WBNB_ADDRESSES } from '../constants';
 
 export type TokenPair = {
   pairAddress: string;

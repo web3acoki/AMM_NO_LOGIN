@@ -42,50 +42,45 @@
         </div>
       </div>
 
-      <!-- 池子类型和交易代币 -->
-      <div class="row g-2 mb-3">
-        <div class="col-6">
-          <label class="form-label small">池子类型</label>
-          <select class="form-select form-select-sm" v-model="poolType" disabled>
-            <option :value="currentGovernanceToken">{{ currentGovernanceToken }}</option>
-          </select>
-        </div>
-        <div class="col-6">
-          <label class="form-label small">{{ mode === 'pump' ? '花费代币' : '换成代币' }}</label>
-          <select class="form-select form-select-sm" v-model="spendToken" disabled>
-            <option :value="currentGovernanceToken">{{ currentGovernanceToken }}</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- 目标价格 -->
+      <!-- 金额区间 -->
       <div class="mb-3">
-        <label class="form-label small">目标价格（可选）</label>
-        <div class="input-group input-group-sm">
-          <input type="number" class="form-control" v-model.number="targetPrice" step="0.000001" placeholder="0.001">
-          <span class="input-group-text">{{ currentGovernanceToken }}</span>
+        <label class="form-label small">
+          {{ mode === 'pump' ? '买入金额区间' : '卖出金额区间' }}
+          <span class="text-muted">({{ currentGovernanceToken }})</span>
+        </label>
+        <div class="row g-2">
+          <div class="col-6">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">最小</span>
+              <input type="number" class="form-control" v-model.number="amountMin" step="any" placeholder="0.01" :disabled="mode === 'dump' && sellAll">
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">最大</span>
+              <input type="number" class="form-control" v-model.number="amountMax" step="any" placeholder="0.05" :disabled="mode === 'dump' && sellAll">
+            </div>
+          </div>
         </div>
-        <div class="form-text small">仅在停止条件选择"达到目标价格"时生效</div>
+        <div class="form-text small">
+          <i class="bi bi-info-circle me-1"></i>
+          {{ mode === 'pump'
+            ? `每个钱包随机花费 ${amountMin || 0} ~ ${amountMax || 0} ${currentGovernanceToken} 买入代币`
+            : `每个钱包随机卖出价值 ${amountMin || 0} ~ ${amountMax || 0} ${currentGovernanceToken} 的代币`
+          }}
+        </div>
       </div>
 
-      <!-- 金额类型和金额 -->
-      <div class="row g-2 mb-3">
-        <div class="col-4" v-if="mode === 'pump'">
-          <label class="form-label small">金额类型</label>
-          <select class="form-select form-select-sm" v-model="amountType">
-            <option value="amount">金额</option>
-            <option value="quantity">数量</option>
-          </select>
+      <!-- 砸盘模式：卖出全部选项 -->
+      <div class="mb-3" v-if="mode === 'dump'">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="sellAllCheck" v-model="sellAll">
+          <label class="form-check-label small" for="sellAllCheck">
+            <i class="bi bi-lightning-charge me-1"></i>卖出全部代币
+          </label>
         </div>
-        <div :class="mode === 'pump' ? 'col-8' : 'col-12'">
-          <label class="form-label small">{{ amountLabel }}</label>
-          <div class="input-group input-group-sm">
-            <input type="number" class="form-control" v-model.number="amount" step="0.001" placeholder="100">
-            <span class="input-group-text">{{ amountUnit }}</span>
-          </div>
-          <div v-if="mode === 'dump'" class="form-text small text-warning">
-            <i class="bi bi-info-circle me-1"></i>卖出代币数量（将换成 {{ spendToken }}）
-          </div>
+        <div class="form-text small text-muted">
+          勾选后将卖出钱包中100%的代币余额
         </div>
       </div>
 
@@ -110,13 +105,26 @@
         </div>
       </div>
 
-      <!-- 交易间隔 -->
-      <div class="mb-3">
-        <label class="form-label small">交易间隔</label>
-        <div class="input-group input-group-sm">
-          <input type="number" class="form-control" v-model.number="interval" min="1" placeholder="1">
-          <span class="input-group-text">秒</span>
+      <!-- 交易间隔和线程数 -->
+      <div class="row g-2 mb-3">
+        <div class="col-6">
+          <label class="form-label small">交易间隔</label>
+          <div class="input-group input-group-sm">
+            <input type="number" class="form-control" v-model.number="interval" min="1" placeholder="5">
+            <span class="input-group-text">秒</span>
+          </div>
         </div>
+        <div class="col-6">
+          <label class="form-label small">线程数</label>
+          <div class="input-group input-group-sm">
+            <input type="number" class="form-control" v-model.number="threadCount" min="1" placeholder="1">
+            <span class="input-group-text">个</span>
+          </div>
+        </div>
+      </div>
+      <div class="form-text small mb-3">
+        <i class="bi bi-info-circle me-1"></i>
+        每 {{ interval || 5 }} 秒同时执行 {{ threadCount || 1 }} 个钱包的交易
       </div>
 
       <!-- Gas 设置 -->
@@ -131,52 +139,6 @@
         <div class="col-6">
           <label class="form-label small">Gas Limit (可选)</label>
           <input type="number" class="form-control form-control-sm" v-model.number="gasLimit" placeholder="自动">
-        </div>
-      </div>
-
-      <!-- 卖出阈值 -->
-      <div class="mb-3">
-        <label class="form-label small">卖出阈值</label>
-        <div class="input-group input-group-sm">
-          <input type="number" class="form-control" v-model.number="sellThreshold" step="0.001" placeholder="0.001">
-          <span class="input-group-text">Token</span>
-        </div>
-        <div class="form-text small">累积超过此数量后触发卖出</div>
-      </div>
-
-      <!-- 钱包执行方式 -->
-      <div class="mb-3">
-        <label class="form-label small">钱包执行方式</label>
-        <div>
-          <div class="form-check form-check-inline">
-            <input class="form-check-input" type="radio" id="walletSequential" value="sequential" v-model="walletMode">
-            <label class="form-check-label small" for="walletSequential">顺序执行</label>
-          </div>
-          <div class="form-check form-check-inline">
-            <input class="form-check-input" type="radio" id="walletParallel" value="parallel" v-model="walletMode">
-            <label class="form-check-label small" for="walletParallel">同时执行</label>
-          </div>
-        </div>
-        <div class="form-text small">
-          {{ walletMode === 'sequential' ? '钱包逐个执行交易' : '所有钱包同时发起交易' }}
-        </div>
-      </div>
-
-      <!-- 余额使用百分比 -->
-      <div class="mb-3">
-        <label class="form-label small">
-          余额使用百分比
-          <i class="bi bi-question-circle ms-1" title="每个钱包用余额的X%进行交易"></i>
-        </label>
-        <div class="input-group input-group-sm">
-          <input type="number" class="form-control" v-model.number="balancePercent" min="1" max="100" step="1" placeholder="100">
-          <span class="input-group-text">%</span>
-        </div>
-        <div class="form-text small">
-          {{ mode === 'pump' 
-            ? `每个钱包使用 ${balancePercent || 100}% 的 ${spendToken} 余额进行买入` 
-            : `每个钱包使用 ${balancePercent || 100}% 的代币余额进行卖出` 
-          }}
         </div>
       </div>
 
@@ -268,30 +230,20 @@ const { selectedWalletAddresses, selectedCount, targetToken, walletBatches } = s
 const taskName = ref('');
 const mode = ref<'pump' | 'dump'>('pump');
 const tokenContract = ref('');
-const poolType = ref('');
-const spendToken = ref('');
-const targetPrice = ref<number>(0);
-const amountType = ref<'amount' | 'quantity'>('amount');
-const amount = ref<number>(100);
+const amountMin = ref<number>(0.01);
+const amountMax = ref<number>(0.05);
 const stopType = ref<'count' | 'amount' | 'time' | 'price' | 'marketcap'>('count');
 const stopValue = ref<number>(10);
-const interval = ref<number>(1);
+const interval = ref<number>(5);
+const threadCount = ref<number>(1); // 线程数：每个间隔内同时执行的钱包数量
 const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
-const sellThreshold = ref<number>(0);
-const walletMode = ref<'sequential' | 'parallel'>('sequential');
-const balancePercent = ref<number>(100);
+const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
 
 // 钱包来源选择
 const useLocalWallets = ref(true);
 const useBatchWallets = ref(false);
 const selectedBatchIds = ref<string[]>([]);
-
-// 监听治理代币变化，更新默认值
-watch(currentGovernanceToken, (newToken) => {
-  poolType.value = newToken;
-  spendToken.value = newToken;
-}, { immediate: true });
 
 // 监听目标代币变化，自动填入代币合约地址
 watch(targetToken, (token) => {
@@ -359,12 +311,14 @@ const finalWalletAddresses = computed(() => {
 });
 
 const canCreate = computed(() => {
+  // 砸盘卖出全部时不需要金额区间
+  const amountValid = (mode.value === 'dump' && sellAll.value) ||
+    (amountMin.value >= 0 && amountMax.value >= amountMin.value);
+
   return (
     taskName.value &&
     tokenContract.value &&
-    poolType.value &&
-    spendToken.value &&
-    amount.value > 0 &&
+    amountValid &&
     stopValue.value > 0 &&
     interval.value > 0 &&
     totalWalletCount.value > 0
@@ -396,33 +350,11 @@ const stopTypePlaceholder = computed(() => {
 const stopTypeUnit = computed(() => {
   switch (stopType.value) {
     case 'count': return '次';
-    case 'amount': return spendToken.value;
+    case 'amount': return currentGovernanceToken.value;
     case 'time': return '秒';
     case 'price': return currentGovernanceToken.value;
     case 'marketcap': return currentGovernanceToken.value;
     default: return '';
-  }
-});
-
-// 金额标签（根据模式和金额类型）
-const amountLabel = computed(() => {
-  if (mode.value === 'pump') {
-    // 拉盘（买入）
-    return amountType.value === 'amount' ? '买入金额' : '买入数量';
-  } else {
-    // 砸盘（卖出）
-    return amountType.value === 'amount' ? '卖出数量' : '卖出数量';
-  }
-});
-
-// 金额单位（根据模式和金额类型）
-const amountUnit = computed(() => {
-  if (mode.value === 'pump') {
-    // 拉盘：花费的代币
-    return amountType.value === 'amount' ? spendToken.value : 'Token';
-  } else {
-    // 砸盘：卖出的代币数量
-    return 'Token';
   }
 });
 
@@ -438,20 +370,17 @@ function handleCreateTask() {
 
   const config = {
     tokenContract: tokenContract.value,
-    poolType: poolType.value,
-    spendToken: spendToken.value,
-    targetPrice: targetPrice.value,
+    targetPrice: stopType.value === 'price' ? stopValue.value : 0, // 只有停止条件是价格时才使用
     targetMarketCap: stopType.value === 'marketcap' ? stopValue.value : undefined,
-    amountType: amountType.value,
-    amount: amount.value,
+    amountMin: amountMin.value,
+    amountMax: amountMax.value,
     stopType: stopType.value,
     stopValue: stopValue.value,
     interval: interval.value,
+    threadCount: threadCount.value, // 线程数
     gasPrice: gasPrice.value,
     gasLimit: gasLimit.value,
-    sellThreshold: sellThreshold.value,
-    walletMode: walletMode.value,
-    balancePercent: balancePercent.value,
+    sellAll: sellAll.value, // 砸盘时是否卖出全部
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）

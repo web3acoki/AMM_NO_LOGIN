@@ -1,67 +1,74 @@
 <template>
   <div class="task-list">
-    <!-- 任务列表 -->
-    <div v-if="tasks.length > 0" class="mb-3">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="fw-semibold mb-0">
-          <i class="bi bi-list-task me-1"></i>任务列表
-          <span class="badge bg-primary ms-1">{{ tasks.length }}</span>
-          <span v-if="runningCount > 0" class="badge bg-success ms-1">{{ runningCount }} 运行中</span>
-          <span v-if="selectedTaskIds.length > 0" class="badge bg-info ms-1">已选 {{ selectedTaskIds.length }}</span>
-        </h6>
-      </div>
-
-      <!-- 批量操作栏 -->
-      <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-        <div class="d-flex gap-2">
-          <button class="btn btn-outline-secondary btn-sm" @click="toggleSelectAll">
-            <i class="bi" :class="isAllSelected ? 'bi-check-square' : 'bi-square'"></i>
-            {{ isAllSelected ? '取消全选' : '全选' }}
-          </button>
-          <button class="btn btn-outline-secondary btn-sm" @click="selectStopped" :disabled="stoppedTasks.length === 0">
-            <i class="bi bi-stop-circle me-1"></i>选择已停止
-          </button>
-        </div>
-        <div class="d-flex gap-2">
-          <button
-            class="btn btn-success btn-sm"
-            @click="startSelectedTasks"
-            :disabled="startableSelectedCount === 0"
-          >
-            <i class="bi bi-play-fill me-1"></i>一键启动 ({{ startableSelectedCount }})
-          </button>
-          <button
-            class="btn btn-danger btn-sm"
-            @click="stopSelectedTasks"
-            :disabled="stoppableSelectedCount === 0"
-          >
-            <i class="bi bi-stop-fill me-1"></i>一键停止 ({{ stoppableSelectedCount }})
-          </button>
+    <div class="row g-3">
+      <!-- 左侧：新建任务表单 -->
+      <div class="col-lg-4">
+        <div class="sticky-top" style="top: 1rem;">
+          <TaskConfigForm />
         </div>
       </div>
 
-      <div class="task-cards-container" style="max-height: 300px; overflow-y: auto;">
-        <TaskCard
-          v-for="task in tasks"
-          :key="task.id"
-          :task="task"
-          :selected="selectedTaskIds.includes(task.id)"
-          @toggle-select="toggleTaskSelect(task.id)"
-          @edit="handleEditTask"
-        />
+      <!-- 右侧：任务列表 -->
+      <div class="col-lg-8">
+        <!-- 任务列表 -->
+        <div v-if="tasks.length > 0">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="fw-semibold mb-0">
+              <i class="bi bi-list-task me-1"></i>任务列表
+              <span class="badge bg-primary ms-1">{{ tasks.length }}</span>
+              <span v-if="runningCount > 0" class="badge bg-success ms-1">{{ runningCount }} 运行中</span>
+              <span v-if="selectedTaskIds.length > 0" class="badge bg-info ms-1">已选 {{ selectedTaskIds.length }}</span>
+            </h6>
+          </div>
+
+          <!-- 批量操作栏 -->
+          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <div class="d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm" @click="toggleSelectAll">
+                <i class="bi" :class="isAllSelected ? 'bi-check-square' : 'bi-square'"></i>
+                {{ isAllSelected ? '取消全选' : '全选' }}
+              </button>
+              <button class="btn btn-outline-secondary btn-sm" @click="selectStopped" :disabled="stoppedTasks.length === 0">
+                <i class="bi bi-stop-circle me-1"></i>选择已停止
+              </button>
+            </div>
+            <div class="d-flex gap-2">
+              <button
+                class="btn btn-success btn-sm"
+                @click="startSelectedTasks"
+                :disabled="startableSelectedCount === 0"
+              >
+                <i class="bi bi-play-fill me-1"></i>一键启动 ({{ startableSelectedCount }})
+              </button>
+              <button
+                class="btn btn-danger btn-sm"
+                @click="stopSelectedTasks"
+                :disabled="stoppableSelectedCount === 0"
+              >
+                <i class="bi bi-stop-fill me-1"></i>一键停止 ({{ stoppableSelectedCount }})
+              </button>
+            </div>
+          </div>
+
+          <div class="task-cards-container">
+            <TaskCard
+              v-for="task in tasks"
+              :key="task.id"
+              :task="task"
+              :selected="selectedTaskIds.includes(task.id)"
+              @toggle-select="toggleTaskSelect(task.id)"
+              @edit="handleEditTask"
+            />
+          </div>
+        </div>
+
+        <!-- 空状态 -->
+        <div v-else class="text-center text-muted py-5">
+          <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+          <p class="mb-0">暂无任务，请在左侧创建新任务</p>
+        </div>
       </div>
     </div>
-
-    <!-- 空状态 -->
-    <div v-else class="text-center text-muted py-3 mb-3">
-      <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-      <p class="small mb-0">暂无任务，请在下方创建新任务</p>
-    </div>
-
-    <hr class="my-3">
-
-    <!-- 新建任务表单 -->
-    <TaskConfigForm />
 
     <!-- 任务编辑弹窗 -->
     <TaskEditModal
@@ -185,13 +192,22 @@ function handleEditClose() {
 </script>
 
 <style scoped>
+.task-cards-container {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
 .task-cards-container::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 
 .task-cards-container::-webkit-scrollbar-thumb {
   background-color: #ccc;
-  border-radius: 2px;
+  border-radius: 3px;
+}
+
+.task-cards-container::-webkit-scrollbar-thumb:hover {
+  background-color: #999;
 }
 </style>
 

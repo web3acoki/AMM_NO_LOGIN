@@ -21,20 +21,17 @@ export interface LogEntry {
 // 任务配置接口
 export interface TaskConfig {
   tokenContract: string;      // 代币合约地址
-  poolType: string;           // 池子类型 (BNB/USDT/USDC)
-  spendToken: string;         // 花费代币
   targetPrice: number;        // 目标价格
   targetMarketCap?: number;   // 目标市值（BNB）
-  amountType: 'amount' | 'quantity';  // 金额类型
-  amount: number;             // 买入/卖出金额或数量
+  amountMin: number;          // 金额区间最小值（BNB）
+  amountMax: number;          // 金额区间最大值（BNB）
   stopType: 'count' | 'amount' | 'time' | 'price' | 'marketcap';  // 停止类型
   stopValue: number;          // 停止条件值
   interval: number;           // 交易间隔(秒)
+  threadCount: number;        // 线程数：每个间隔内同时执行的钱包数量
   gasPrice?: number;          // 自定义Gas价格 (Gwei)
   gasLimit?: number;          // 自定义Gas上限
-  sellThreshold: number;      // 卖出阈值
-  walletMode: 'sequential' | 'parallel';  // 钱包使用方式：顺序/同时
-  balancePercent?: number;    // 余额使用百分比 (1-100)
+  sellAll?: boolean;          // 砸盘时是否卖出全部
 }
 
 // 任务统计接口
@@ -56,6 +53,7 @@ export interface Task {
   logs: LogEntry[];
   stats: TaskStats;
   intervalId?: number;        // 定时器ID
+  currentWalletIndex: number; // 当前轮询到的钱包索引（用于round-robin）
 }
 
 export const useTaskStore = defineStore('task', () => {
@@ -122,7 +120,8 @@ export const useTaskStore = defineStore('task', () => {
         executedCount: 0,
         spentAmount: 0,
         elapsedTime: 0
-      }
+      },
+      currentWalletIndex: 0  // 初始化钱包索引
     };
     tasks.value.push(task);
     
@@ -208,26 +207,26 @@ export const useTaskStore = defineStore('task', () => {
       const chainId = chainStore.selectedChainId;
       const rpcUrl = chainStore.rpcUrl;
       const routerAddress = dexStore.currentRouterAddress;
-      
+
       if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
         addLog(task.id, 'error', '当前DEX的Router地址未配置', walletAddress);
         return false;
       }
 
+      // 计算随机金额（在区间内）
+      const amountMin = task.config.amountMin || 0;
+      const amountMax = task.config.amountMax || amountMin;
+      const randomAmount = amountMin + Math.random() * (amountMax - amountMin);
+      const roundedAmount = Math.round(randomAmount * 1000000) / 1000000; // 保留6位小数
+
       addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易...`, walletAddress);
+      addLog(task.id, 'info', `交易金额: ${roundedAmount} BNB (区间: ${amountMin}~${amountMax})`, walletAddress);
 
       // 创建交易服务
       const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
 
-      // 构建交易参数（滑点固定30%）
-      // 砸盘模式使用 sellThreshold 作为卖出百分比，拉盘模式使用 balancePercent
-      const sellPercent = task.mode === 'dump'
-        ? (task.config.sellThreshold || task.config.balancePercent || 100)
-        : task.config.balancePercent;
-
-      if (task.mode === 'dump') {
-        addLog(task.id, 'info', `卖出百分比: ${sellPercent}%`, walletAddress);
-      }
+      // 砸盘模式：如果 sellAll 为 true 则卖出100%
+      const sellAll = task.mode === 'dump' && task.config.sellAll;
 
       const tradeParams: TradeParams = {
         chainId,
@@ -236,36 +235,38 @@ export const useTaskStore = defineStore('task', () => {
         privateKey: privateKey,
         walletAddress: walletAddress,
         tokenAddress: task.config.tokenContract,
-        spendToken: task.config.spendToken,
-        amount: task.config.amount,
-        amountType: task.config.amountType,
+        spendToken: 'BNB', // 固定使用 BNB
+        amount: roundedAmount,
+        amountType: 'amount',
         mode: task.mode,
         slippage: 30,
         gasPrice: task.config.gasPrice,
         gasLimit: task.config.gasLimit,
-        balancePercent: sellPercent,
+        balancePercent: sellAll ? 100 : undefined,
+        // 砸盘模式：传递目标BNB金额，让交易服务计算需要卖出多少Token
+        targetBnbAmount: task.mode === 'dump' && !sellAll ? roundedAmount : undefined,
       };
-      
+
       // 执行交易
       const result = await tradingService.executeTrade(tradeParams);
-      
+
       if (result.success) {
         // 更新统计
         task.stats.executedCount++;
-        task.stats.spentAmount += task.config.amount;
-        
+        task.stats.spentAmount += roundedAmount;
+
         const actionText = task.mode === 'pump' ? '买入' : '卖出';
-        const resultText = result.amountOut 
+        const resultText = result.amountOut
           ? `${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
-          : `${actionText}成功，金额: ${task.config.amount} ${task.config.spendToken}`;
-        
+          : `${actionText}成功，金额: ${roundedAmount} BNB`;
+
         addLog(task.id, 'success', resultText, walletAddress, result.txHash);
         return true;
       } else {
         addLog(task.id, 'error', `交易失败: ${result.error}`, walletAddress, result.txHash);
         return false;
       }
-      
+
     } catch (error: any) {
       addLog(task.id, 'error', `交易异常: ${error.message}`, walletAddress);
       return false;
@@ -277,32 +278,18 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const chainStore = useChainStore();
       const dexStore = useDexStore();
-      
+
       const chainId = chainStore.selectedChainId;
       const rpcUrl = chainStore.rpcUrl;
       const factoryAddress = dexStore.currentFactoryAddress;
       const baseTokens = dexStore.currentBaseTokens;
-      
+
       if (!factoryAddress || !baseTokens || baseTokens.length === 0) {
         return undefined;
       }
 
-      // 确定底池代币（BNB池使用BNB作为底池）
-      let baseToken: string | undefined;
-      if (task.config.poolType === 'BNB' || task.config.poolType === 'tBNB') {
-        // 查找WBNB地址
-        baseToken = baseTokens.find(addr => {
-          // WBNB通常在baseTokens中，或者需要根据链ID查找
-          return true; // 简化处理，使用第一个baseToken
-        });
-        if (!baseToken && baseTokens.length > 0) {
-          baseToken = baseTokens[0];
-        }
-      } else {
-        // USDT/USDC池，需要找到对应的代币地址
-        // 这里简化处理，使用第一个baseToken
-        baseToken = baseTokens[0];
-      }
+      // 使用第一个baseToken（通常是WBNB）
+      const baseToken = baseTokens[0];
 
       if (!baseToken) {
         return undefined;
@@ -310,10 +297,10 @@ export const useTaskStore = defineStore('task', () => {
 
       // 创建价格计算器
       const calculator = new PriceCalculator(rpcUrl, factoryAddress, baseTokens);
-      
+
       // 查找交易对
       const pairInfo = await calculator.findTokenPair(task.config.tokenContract, baseToken);
-      
+
       if (!pairInfo) {
         return undefined;
       }
@@ -343,7 +330,7 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  // 执行一轮交易（根据钱包模式）
+  // 执行一轮交易（round-robin + 线程数）
   async function executeRound(task: Task): Promise<void> {
     if (task.status !== 'running') return;
 
@@ -360,47 +347,48 @@ export const useTaskStore = defineStore('task', () => {
       }
     }
 
-    const { walletMode } = task.config;
     const wallets = task.walletAddresses;
+    const threadCount = task.config.threadCount || 1;
 
     if (wallets.length === 0) {
       addLog(task.id, 'warning', '没有钱包参与交易');
       return;
     }
 
-    if (walletMode === 'parallel') {
-      // 并行执行：所有钱包同时发起交易（添加递增延迟避免 nonce 冲突）
-      addLog(task.id, 'info', `并行执行模式：${wallets.length} 个钱包同时发起交易`);
+    // Round-robin + 线程数执行逻辑：
+    // 每次执行 threadCount 个钱包，从 currentWalletIndex 开始
+    // 执行完后更新 currentWalletIndex，循环使用钱包列表
 
-      // 为每个钱包添加递增延迟（每个钱包间隔100ms），避免 nonce 冲突
-      const promises = wallets.map((addr, index) => {
-        const delay = index * 100; // 递增延迟：0ms, 100ms, 200ms...
-        return new Promise<void>((resolve) => {
-          setTimeout(async () => {
-            await executeWalletTrade(task, addr);
-            resolve();
-          }, delay);
-        });
-      });
-      await Promise.allSettled(promises);
-
-    } else {
-      // 顺序执行：逐个钱包执行
-      for (const walletAddr of wallets) {
-        if (task.status !== 'running') break;
-
-        await executeWalletTrade(task, walletAddr);
-
-        // 检查停止条件（包括市值）
-        const currentMarketCap = await getCurrentMarketCap(task);
-        if (checkStopCondition(task, undefined, currentMarketCap)) {
-          stopTask(task.id, '已达到停止条件');
-          return;
-        }
-      }
+    const walletsToExecute: string[] = [];
+    for (let i = 0; i < threadCount; i++) {
+      const walletIndex = (task.currentWalletIndex + i) % wallets.length;
+      walletsToExecute.push(wallets[walletIndex]);
     }
 
-    // 执行后再次检查停止条件
+    // 更新下一轮的起始索引
+    task.currentWalletIndex = (task.currentWalletIndex + threadCount) % wallets.length;
+
+    // 检查是否完成一轮（所有钱包都执行过一次）
+    const isNewRound = task.currentWalletIndex < threadCount || task.currentWalletIndex === 0;
+    if (isNewRound && task.stats.executedCount > 0) {
+      addLog(task.id, 'info', `--- 新一轮开始 ---`);
+    }
+
+    addLog(task.id, 'info', `执行 ${walletsToExecute.length} 个钱包 (线程数: ${threadCount})`);
+
+    // 并行执行选中的钱包（添加递增延迟避免 nonce 冲突）
+    const promises = walletsToExecute.map((addr, index) => {
+      const delay = index * 100; // 递增延迟：0ms, 100ms, 200ms...
+      return new Promise<void>((resolve) => {
+        setTimeout(async () => {
+          await executeWalletTrade(task, addr);
+          resolve();
+        }, delay);
+      });
+    });
+    await Promise.allSettled(promises);
+
+    // 执行后检查停止条件
     const currentMarketCap = await getCurrentMarketCap(task);
     if (checkStopCondition(task, undefined, currentMarketCap)) {
       stopTask(task.id, '已达到停止条件');
@@ -419,8 +407,10 @@ export const useTaskStore = defineStore('task', () => {
 
     task.status = 'running';
     task.stats.startTime = Date.now();
-    
-    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒`);
+    task.currentWalletIndex = 0;  // 重置钱包索引
+
+    const threadCount = task.config.threadCount || 1;
+    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，线程数: ${threadCount}，钱包数: ${task.walletAddresses.length}`);
 
     // 立即执行一轮
     executeRound(task);
@@ -572,7 +562,7 @@ export const useTaskStore = defineStore('task', () => {
       case 'count':
         return `执行 ${stopValue} 次`;
       case 'amount':
-        return `花费 ${stopValue} ${task.config.spendToken}`;
+        return `花费 ${stopValue} BNB`;
       case 'time':
         return `运行 ${stopValue} 秒`;
       case 'price':

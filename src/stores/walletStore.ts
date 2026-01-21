@@ -5,26 +5,8 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { bscTestnet, bsc, okc } from 'viem/chains';
 import { erc20Abi } from '../viem/abis/erc20';
 import { WalletDetector } from '../utils/walletDetector';
-
-// 批量转账合约地址配置
-const BATCH_TRANSFER_CONTRACTS = {
-  56: '0x0000000000000000000000000000000000000000', // BSC主网合约地址（需要部署）
-  97: '0xa859587fb766a44198dc7f4eb92ea9a056f842fa', // BSC测试网合约地址（已部署）
-  66: '0x0000000000000000000000000000000000000000', // OKX Chain合约地址（需要部署）
-};
-
-const USDT_CONTRACTS = {
-  56: '0x55d398326f99059fF775485246999027B3197955', // BSC Mainnet
-  97: '0x4Be45C88db35383F713ABC1adFA816200e0B8B56', // BSC Testnet (用户指定)
-  66: '0x382bb369d343125bfb2117af9c149795c6c65c50', // OKX Chain
-};
-
-// USDT 精度配置
-const USDT_DECIMALS = {
-  56: 18, // BSC Mainnet
-  97: 18, // BSC Testnet
-  66: 18, // OKX Chain
-};
+import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX } from '../constants';
+import { parseBlockchainError } from '../utils/errorParser';
 
 type WalletType = 'main' | 'normal';
 
@@ -54,8 +36,6 @@ type WalletBatch = {
   totalTokenBalance?: string;
 };
 
-const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
-
 async function sha256(message: string): Promise<string> {
   const msgUint8 = new TextEncoder().encode(message);
   const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
@@ -80,64 +60,8 @@ function normalizeWallet(wallet: LocalWallet): LocalWallet {
   };
 }
 
-// 解析转账错误信息，返回用户友好的错误描述
-function parseTransferError(error: any): string {
-  const message = error?.message || error?.toString() || '未知错误';
-  const lowerMessage = message.toLowerCase();
-
-  // 余额不足相关
-  if (lowerMessage.includes('insufficient funds') || lowerMessage.includes('insufficient balance')) {
-    return '余额不足，无法支付转账金额和Gas费';
-  }
-  if (lowerMessage.includes('exceeds balance') || lowerMessage.includes('transfer amount exceeds balance')) {
-    return '转账金额超过代币余额';
-  }
-
-  // Gas相关
-  if (lowerMessage.includes('gas too low') || lowerMessage.includes('intrinsic gas too low')) {
-    return 'Gas设置过低，交易无法执行';
-  }
-  if (lowerMessage.includes('out of gas')) {
-    return 'Gas耗尽，交易执行失败';
-  }
-
-  // Nonce相关
-  if (lowerMessage.includes('nonce too low') || lowerMessage.includes('nonce has already been used')) {
-    return 'Nonce冲突，交易已被覆盖或已执行';
-  }
-  if (lowerMessage.includes('replacement transaction underpriced')) {
-    return 'Nonce冲突，替换交易Gas价格过低';
-  }
-
-  // 网络相关
-  if (lowerMessage.includes('timeout') || lowerMessage.includes('timed out')) {
-    return '网络超时，请检查网络连接';
-  }
-  if (lowerMessage.includes('network') || lowerMessage.includes('connection')) {
-    return '网络连接错误，请检查RPC节点';
-  }
-
-  // 交易被拒绝
-  if (lowerMessage.includes('rejected') || lowerMessage.includes('denied')) {
-    return '交易被节点拒绝';
-  }
-  if (lowerMessage.includes('reverted') || lowerMessage.includes('execution reverted')) {
-    return '交易执行失败，合约调用被回滚';
-  }
-
-  // 地址相关
-  if (lowerMessage.includes('invalid address')) {
-    return '无效的钱包地址';
-  }
-
-  // 返回截断的原始错误信息
-  const cleanMessage = message.replace(/^Error:\s*/i, '');
-  return cleanMessage.length > 80 ? cleanMessage.substring(0, 80) + '...' : cleanMessage;
-}
-
 function getUsdtAddress(chainId: number): `0x${string}` | null {
-  const address = USDT_CONTRACTS[chainId as keyof typeof USDT_CONTRACTS];
-  return address ? (address as `0x${string}`) : null;
+  return USDT_ADDRESSES[chainId] || null;
 }
 
 async function fetchTokenDecimals(publicClient: ReturnType<typeof createPublicClient>, tokenAddress: `0x${string}`) {
@@ -2364,7 +2288,7 @@ export const useWalletStore = defineStore('wallet', {
           results.push({
             source: task.source.address,
             target: task.target,
-            error: parseTransferError(error),
+            error: parseBlockchainError(error),
             tokenType,
             success: false
           });
@@ -2745,7 +2669,7 @@ export const useWalletStore = defineStore('wallet', {
           results.push({
             source: sourceAddr,
             target: targetAddr,
-            error: parseTransferError(error),
+            error: parseBlockchainError(error),
             success: false
           });
         }

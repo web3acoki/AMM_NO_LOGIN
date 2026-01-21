@@ -24,7 +24,7 @@
     <div class="small text-muted mb-2">
       <div class="d-flex flex-wrap gap-2">
         <span><i class="bi bi-wallet2 me-1"></i>{{ task.walletAddresses.length }} 钱包</span>
-        <span><i class="bi bi-arrow-repeat me-1"></i>{{ task.config.walletMode === 'parallel' ? '同时' : '顺序' }}</span>
+        <span><i class="bi bi-layers me-1"></i>{{ task.config.threadCount || 1 }} 线程</span>
         <span><i class="bi bi-clock me-1"></i>{{ task.config.interval }}s</span>
       </div>
       <div class="mt-1">
@@ -46,7 +46,7 @@
     <!-- 统计信息 -->
     <div class="d-flex justify-content-between small text-muted mb-2">
       <span>执行: {{ task.stats.executedCount }} 次</span>
-      <span>花费: {{ task.stats.spentAmount.toFixed(4) }} {{ task.config.spendToken }}</span>
+      <span>花费: {{ task.stats.spentAmount.toFixed(4) }} BNB</span>
       <span>时间: {{ formatTime(task.stats.elapsedTime) }}</span>
     </div>
 

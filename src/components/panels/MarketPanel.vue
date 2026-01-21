@@ -30,13 +30,6 @@
           </div>
         </div>
 
-        <!-- DEX 面板 -->
-        <div class="card shadow-sm mb-3">
-          <div class="card-body">
-            <DexPanel />
-          </div>
-        </div>
-
         <!-- 任务日志面板 -->
         <div class="card shadow-sm">
           <div class="card-body">
@@ -52,7 +45,6 @@
 import LiquidityPoolQuery from '../market/LiquidityPoolQuery.vue';
 import WalletImportPanel from '../market/WalletImportPanel.vue';
 import WalletTable from '../market/WalletTable.vue';
-import DexPanel from '../market/DexPanel.vue';
 import TaskList from '../market/TaskList.vue';
 import TaskLogPanel from '../market/TaskLogPanel.vue';
 </script>

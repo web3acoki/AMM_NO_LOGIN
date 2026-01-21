@@ -8,15 +8,9 @@
       <button v-else class="btn btn-outline-danger btn-sm" @click="disconnectWallet">
         <i class="bi bi-x-circle me-1"></i>断开钱包
       </button>
-      <button class="btn btn-outline-secondary btn-sm" @click="openGenerateModal">
-        <i class="bi bi-plus-circle me-1"></i>生成本地钱包
-      </button>
-      <button class="btn btn-outline-info btn-sm" @click="exportPrivateKeys" :disabled="!localWallets || localWallets.length === 0">
-        <i class="bi bi-download me-1"></i>导出私钥
-      </button>
-      <button 
-        class="btn btn-outline-success btn-sm" 
-        @click="openBatchTransferModal" 
+      <button
+        class="btn btn-outline-success btn-sm"
+        @click="openBatchTransferModal"
         :disabled="!localWallets || localWallets.length === 0"
         :title="localWallets && localWallets.length > 0 ? '批量转账到所有钱包' : '请先生成刷单钱包'"
         style="pointer-events: auto;"
@@ -132,39 +126,6 @@
                 <small class="text-muted">请安装 MetaMask 或 OKX Wallet 扩展</small>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 生成钱包 Modal 简化版 -->
-    <div class="modal fade" id="genModal" tabindex="-1" aria-labelledby="genModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="genModalLabel">批量生成钱包</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <div class="mb-3">
-              <label class="form-label">生成数量</label>
-              <input type="number" min="1" class="form-control" v-model.number="generateCount" />
-            </div>
-            <div class="mb-3">
-              <label class="form-label">钱包类型</label>
-              <select class="form-select" v-model="generateWalletType">
-                <option value="main">主钱包</option>
-                <option value="normal">普通钱包</option>
-              </select>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">备注（可选）</label>
-              <input type="text" class="form-control" v-model="generateRemark" placeholder="批量备注" />
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-            <button type="button" class="btn btn-primary" @click="generateWallets">生成</button>
           </div>
         </div>
       </div>

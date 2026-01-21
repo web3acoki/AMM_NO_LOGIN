@@ -103,7 +103,7 @@
                 class="form-control"
                 v-model.number="concurrency"
                 min="1"
-                max="20"
+                max="50"
                 placeholder="5"
               >
             </div>
@@ -115,17 +115,18 @@
                 type="number"
                 class="form-control"
                 v-model.number="batchInterval"
-                min="100"
+                min="0"
                 max="10000"
                 step="100"
-                placeholder="1000"
+                placeholder="500"
               >
               <span class="input-group-text">ms</span>
             </div>
           </div>
         </div>
         <div class="form-text">
-          每批 {{ concurrency }} 个钱包并发执行，批次间隔 {{ batchInterval }}ms，预估完成时间：<strong>{{ estimatedTime }}</strong>
+          每批 {{ concurrency }} 个钱包并发执行，批次间隔 {{ batchInterval }}ms
+          <br>
         </div>
       </div>
 
@@ -246,8 +247,8 @@ const isSelling = ref(false);
 const isRefreshing = ref(false);
 const sellResults = ref<any[]>([]);
 // 并发控制参数
-const concurrency = ref(5);
-const batchInterval = ref(1000);
+const concurrency = ref(10);
+const batchInterval = ref(500);
 
 // 预估完成时间
 const estimatedTime = computed(() => {
@@ -331,8 +332,11 @@ async function executeBatchSell() {
       const batch = batches[batchIndex];
       console.log(`执行第 ${batchIndex + 1}/${batches.length} 批，包含 ${batch.length} 个钱包`);
 
-      // 并发执行当前批次的所有钱包
-      const batchPromises = batch.map(async (walletAddr) => {
+      // 并发执行当前批次的所有钱包（添加微小延迟避免RPC拥堵）
+      const batchPromises = batch.map(async (walletAddr, index) => {
+        // 每个钱包添加微小延迟（50ms间隔），让请求更均匀
+        await new Promise(resolve => setTimeout(resolve, index * 50));
+
         // 计算卖出百分比
         let percent: number;
         if (sellMode.value === 'fixed') {
@@ -407,7 +411,7 @@ async function executeBatchSell() {
       sellResults.value.push(...batchResults);
 
       // 如果不是最后一批，等待间隔时间
-      if (batchIndex < batches.length - 1) {
+      if (batchIndex < batches.length - 1 && batchInterval.value > 0) {
         console.log(`等待 ${batchInterval.value}ms 后执行下一批...`);
         await new Promise(resolve => setTimeout(resolve, batchInterval.value));
       }

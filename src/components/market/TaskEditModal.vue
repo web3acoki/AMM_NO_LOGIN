@@ -36,24 +36,27 @@
             </div>
 
             <div class="row">
-              <!-- 金额类型 -->
+              <!-- 金额区间最小值 -->
               <div class="col-md-6 mb-3">
-                <label class="form-label">金额类型</label>
-                <select class="form-select" v-model="formData.amountType">
-                  <option value="amount">金额</option>
-                  <option value="quantity">数量</option>
-                </select>
-              </div>
-
-              <!-- 金额 -->
-              <div class="col-md-6 mb-3">
-                <label class="form-label">金额/数量</label>
+                <label class="form-label">金额区间最小值 (BNB)</label>
                 <input
                   type="number"
                   class="form-control"
-                  v-model.number="formData.amount"
+                  v-model.number="formData.amountMin"
                   min="0"
-                  step="0.0001"
+                  step="any"
+                >
+              </div>
+
+              <!-- 金额区间最大值 -->
+              <div class="col-md-6 mb-3">
+                <label class="form-label">金额区间最大值 (BNB)</label>
+                <input
+                  type="number"
+                  class="form-control"
+                  v-model.number="formData.amountMax"
+                  min="0"
+                  step="any"
                 >
               </div>
             </div>
@@ -79,7 +82,7 @@
                   class="form-control"
                   v-model.number="formData.stopValue"
                   min="0"
-                  step="0.0001"
+                  step="any"
                 >
               </div>
             </div>
@@ -97,41 +100,17 @@
                 >
               </div>
 
-              <!-- 卖出阈值 -->
+              <!-- 线程数 -->
               <div class="col-md-6 mb-3">
-                <label class="form-label">卖出阈值(%)</label>
+                <label class="form-label">线程数</label>
                 <input
                   type="number"
                   class="form-control"
-                  v-model.number="formData.sellThreshold"
-                  min="0"
-                  max="100"
-                  step="1"
-                >
-              </div>
-            </div>
-
-            <div class="row">
-              <!-- 钱包执行方式 -->
-              <div class="col-md-6 mb-3">
-                <label class="form-label">钱包执行方式</label>
-                <select class="form-select" v-model="formData.walletMode">
-                  <option value="sequential">顺序执行</option>
-                  <option value="parallel">并行执行</option>
-                </select>
-              </div>
-
-              <!-- 余额使用百分比 -->
-              <div class="col-md-6 mb-3">
-                <label class="form-label">余额使用百分比(%)</label>
-                <input
-                  type="number"
-                  class="form-control"
-                  v-model.number="formData.balancePercent"
+                  v-model.number="formData.threadCount"
                   min="1"
-                  max="100"
                   step="1"
                 >
+                <div class="form-text">每个间隔内同时执行的钱包数量</div>
               </div>
             </div>
 
@@ -161,6 +140,17 @@
                   placeholder="留空使用默认值"
                 >
               </div>
+            </div>
+
+            <!-- 砸盘模式：卖出全部选项 -->
+            <div class="mb-3" v-if="props.task.mode === 'dump'">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="editSellAllCheck" v-model="formData.sellAll">
+                <label class="form-check-label" for="editSellAllCheck">
+                  <i class="bi bi-lightning-charge me-1"></i>卖出全部代币
+                </label>
+              </div>
+              <div class="form-text">勾选后将卖出钱包中100%的代币余额</div>
             </div>
 
             <!-- 参与钱包列表 -->
@@ -210,16 +200,15 @@ const taskStore = useTaskStore();
 const formData = ref({
   name: '',
   tokenContract: '',
-  amountType: 'amount' as 'amount' | 'quantity',
-  amount: 0,
+  amountMin: 0.01,
+  amountMax: 0.05,
   stopType: 'count' as 'count' | 'amount' | 'time' | 'price' | 'marketcap',
-  stopValue: 1,
+  stopValue: 10,
   interval: 5,
-  sellThreshold: 0,
-  walletMode: 'sequential' as 'sequential' | 'parallel',
-  balancePercent: 100,
+  threadCount: 1,
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
+  sellAll: true,
   walletAddressesText: ''
 });
 
@@ -238,16 +227,15 @@ onMounted(() => {
   formData.value = {
     name: task.name,
     tokenContract: task.config.tokenContract,
-    amountType: task.config.amountType,
-    amount: task.config.amount,
+    amountMin: task.config.amountMin,
+    amountMax: task.config.amountMax,
     stopType: task.config.stopType,
     stopValue: task.config.stopValue,
     interval: task.config.interval,
-    sellThreshold: task.config.sellThreshold,
-    walletMode: task.config.walletMode,
-    balancePercent: task.config.balancePercent || 100,
+    threadCount: task.config.threadCount || 1,
     gasPrice: task.config.gasPrice,
     gasLimit: task.config.gasLimit,
+    sellAll: task.config.sellAll ?? true,
     walletAddressesText: task.walletAddresses.join('\n')
   };
 });
@@ -270,16 +258,15 @@ function handleSave() {
     name: formData.value.name,
     config: {
       tokenContract: formData.value.tokenContract,
-      amountType: formData.value.amountType,
-      amount: formData.value.amount,
+      amountMin: formData.value.amountMin,
+      amountMax: formData.value.amountMax,
       stopType: formData.value.stopType,
       stopValue: formData.value.stopValue,
       interval: formData.value.interval,
-      sellThreshold: formData.value.sellThreshold,
-      walletMode: formData.value.walletMode,
-      balancePercent: formData.value.balancePercent,
+      threadCount: formData.value.threadCount,
       gasPrice: formData.value.gasPrice || undefined,
-      gasLimit: formData.value.gasLimit || undefined
+      gasLimit: formData.value.gasLimit || undefined,
+      sellAll: formData.value.sellAll
     } as Partial<TaskConfig>,
     walletAddresses
   };

@@ -3,77 +3,8 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { bsc, bscTestnet } from 'viem/chains';
 import { pancakeV2RouterAbi } from '../viem/abis/pancakeV2';
 import { erc20Abi } from '../viem/abis/erc20';
-
-// WBNB 地址映射
-const WBNB_ADDRESSES: Record<number, `0x${string}`> = {
-  56: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',   // BSC Mainnet
-  97: '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd',   // BSC Testnet
-};
-
-// USDT 地址映射
-const USDT_ADDRESSES: Record<number, `0x${string}`> = {
-  56: '0x55d398326f99059fF775485246999027B3197955',   // BSC Mainnet USDT
-  97: '0x4Be45C88db35383F713ABC1adFA816200e0B8B56',   // BSC Testnet USDT
-};
-
-// USDC 地址映射
-const USDC_ADDRESSES: Record<number, `0x${string}`> = {
-  56: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',   // BSC Mainnet USDC
-  97: '0x64544969ed7EBf5f083679233325356EbE738930',   // BSC Testnet USDC (if exists)
-};
-
-// 解析交易错误信息
-function parseTransactionError(error: any): string {
-  const message = error?.message || error?.toString() || '未知错误';
-
-  // Nonce错误
-  if (message.includes('nonce too low') || message.includes('Nonce provided')) {
-    return 'Nonce冲突，交易已被覆盖或已执行';
-  }
-
-  // 滑点/价格变化
-  if (message.includes('INSUFFICIENT_OUTPUT_AMOUNT') || message.includes('slippage')) {
-    return '滑点过大，价格变化超出预期';
-  }
-
-  // 余额不足
-  if (message.includes('insufficient funds') || message.includes('exceeds balance')) {
-    return 'BNB余额不足支付Gas费';
-  }
-
-  // 代币余额不足
-  if (message.includes('transfer amount exceeds balance') || message.includes('ERC20: transfer amount')) {
-    return '代币余额不足';
-  }
-
-  // 授权问题
-  if (message.includes('allowance') || message.includes('ERC20: insufficient allowance')) {
-    return '代币授权额度不足';
-  }
-
-  // Gas问题
-  if (message.includes('gas') || message.includes('intrinsic gas too low')) {
-    return 'Gas设置不足';
-  }
-
-  // 交易被拒绝
-  if (message.includes('reverted') || message.includes('execution reverted')) {
-    // 尝试提取具体原因
-    const revertMatch = message.match(/reason="([^"]+)"/);
-    if (revertMatch) {
-      return `合约执行失败: ${revertMatch[1]}`;
-    }
-    return '合约执行失败（可能是滑点或流动性不足）';
-  }
-
-  // 超时
-  if (message.includes('timeout') || message.includes('Timeout')) {
-    return '交易超时';
-  }
-
-  // 返回原始错误（截取前100个字符）
-  return message.length > 100 ? message.substring(0, 100) + '...' : message;
-}
+import { WBNB_ADDRESSES, USDT_ADDRESSES, USDC_ADDRESSES } from '../constants';
+import { parseBlockchainError } from '../utils/errorParser';
 
 // 获取链配置
 function getChainConfig(chainId: number) {
@@ -97,14 +28,15 @@ export interface TradeParams {
   tokenAddress: string;       // 要买/卖的代币地址
   spendToken: string;         // 花费的代币类型 (BNB/USDT等)
   spendTokenAddress?: string; // 花费代币的合约地址（如果不是原生币）
-  amount: number;             // 金额（当 balancePercent < 100 时作为备用）
+  amount: number;             // 金额（BNB）
   amountType: 'amount' | 'quantity';  // 金额类型
   mode: 'pump' | 'dump';      // 模式：拉盘(买入)/砸盘(卖出)
   slippage: number;           // 滑点百分比 (例如: 30 表示 30%)
   gasPrice?: number;          // Gas Price (Gwei)
   gasLimit?: number;          // Gas Limit
   deadline?: number;          // 交易截止时间（秒），默认20分钟
-  balancePercent?: number;    // 余额使用百分比 (1-100)，每个钱包用余额的X%进行交易
+  balancePercent?: number;    // 余额使用百分比 (1-100)，卖出全部时使用
+  targetBnbAmount?: number;   // 目标BNB金额（砸盘时使用，系统会计算需要卖出多少Token）
 }
 
 // 交易结果接口
@@ -402,7 +334,7 @@ export class TradingService {
       console.error('买入失败:', error);
       return {
         success: false,
-        error: parseTransactionError(error)
+        error: parseBlockchainError(error)
       };
     }
   }
@@ -540,7 +472,7 @@ export class TradingService {
       console.error('买入失败:', error);
       return {
         success: false,
-        error: parseTransactionError(error)
+        error: parseBlockchainError(error)
       };
     }
   }
@@ -677,7 +609,7 @@ export class TradingService {
       console.error('卖出失败:', error);
       return {
         success: false,
-        error: parseTransactionError(error)
+        error: parseBlockchainError(error)
       };
     }
   }
@@ -690,12 +622,12 @@ export class TradingService {
         walletAddress,
         tokenAddress,
         amount,
-        amountType,
         slippage,
         gasPrice,
         gasLimit,
         deadline = 1200,
-        balancePercent = 100
+        balancePercent,
+        targetBnbAmount
       } = params;
 
       const account = privateKeyToAccount(privateKey as `0x${string}`);
@@ -715,14 +647,50 @@ export class TradingService {
       // 获取代币余额
       const tokenBalance = await this.getTokenBalance(tokenAddress as `0x${string}`, walletAddress as `0x${string}`);
 
-      // 根据百分比计算实际卖出数量
+      // 根据不同模式计算实际卖出数量
       let amountIn: bigint;
-      if (balancePercent > 0 && balancePercent <= 100) {
-        // 使用代币余额的X%
+
+      if (balancePercent && balancePercent > 0 && balancePercent <= 100) {
+        // 模式1：使用代币余额的X%（卖出全部时使用）
         amountIn = (tokenBalance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额卖出，可用: ${formatUnits(tokenBalance, decimals)}, 实际: ${formatUnits(amountIn, decimals)}`);
+      } else if (targetBnbAmount && targetBnbAmount > 0) {
+        // 模式2：根据目标BNB金额计算需要卖出多少Token
+        // 使用 getAmountsIn 计算需要多少 Token 才能获得目标 BNB
+        const targetBnbWei = parseEther(targetBnbAmount.toString());
+        try {
+          const amountsIn = await this.publicClient.readContract({
+            address: this.routerAddress,
+            abi: pancakeV2RouterAbi,
+            functionName: 'getAmountsIn',
+            args: [targetBnbWei, path]
+          }) as bigint[];
+          amountIn = amountsIn[0];
+          console.log(`目标获得 ${targetBnbAmount} BNB，需要卖出: ${formatUnits(amountIn, decimals)} Token`);
+        } catch (e) {
+          // 如果 getAmountsIn 失败，使用 getAmountsOut 反向估算
+          console.log('getAmountsIn 失败，使用反向估算');
+          // 先用全部余额查询能获得多少 BNB
+          const testAmountsOut = await this.publicClient.readContract({
+            address: this.routerAddress,
+            abi: pancakeV2RouterAbi,
+            functionName: 'getAmountsOut',
+            args: [tokenBalance, path]
+          }) as bigint[];
+          const maxBnbOut = testAmountsOut[testAmountsOut.length - 1];
+          // 按比例计算需要卖出的 Token 数量
+          const ratio = Number(targetBnbWei) / Number(maxBnbOut);
+          amountIn = BigInt(Math.floor(Number(tokenBalance) * Math.min(ratio * 1.05, 1))); // 多算5%以确保足够
+          console.log(`反向估算：需要卖出约 ${formatUnits(amountIn, decimals)} Token`);
+        }
+
+        // 确保不超过余额
+        if (amountIn > tokenBalance) {
+          console.log(`计算的卖出数量超过余额，使用全部余额`);
+          amountIn = tokenBalance;
+        }
       } else {
-        // 使用固定数量
+        // 模式3：使用固定数量
         amountIn = parseUnits(amount.toString(), decimals);
         console.log(`开始卖出代币 ${tokenAddress}，数量: ${amount}`);
       }
@@ -803,7 +771,7 @@ export class TradingService {
       console.error('卖出失败:', error);
       return {
         success: false,
-        error: parseTransactionError(error)
+        error: parseBlockchainError(error)
       };
     }
   }

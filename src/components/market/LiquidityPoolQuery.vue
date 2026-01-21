@@ -81,16 +81,6 @@
             <i class="bi bi-search me-1"></i>
             {{ isQuerying ? '查询中...' : '查询价格' }}
           </button>
-          <button class="btn btn-outline-secondary btn-sm" @click="openGenerateModal">
-            <i class="bi bi-plus-circle me-1"></i>生成钱包
-          </button>
-          <button
-            class="btn btn-outline-info btn-sm"
-            @click="exportPrivateKeys"
-            :disabled="!localWallets || localWallets.length === 0"
-          >
-            <i class="bi bi-download me-1"></i>导出私钥
-          </button>
         </div>
       </div>
 
@@ -154,39 +144,6 @@
           <i class="bi bi-exclamation-triangle me-1"></i>
           {{ errorMessage }}
           <button type="button" class="btn-close" style="padding: 0.5rem;" @click="errorMessage = ''" aria-label="Close"></button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 生成钱包 Modal -->
-    <div class="modal fade" :id="modalId" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">批量生成钱包</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <div class="mb-3">
-              <label class="form-label">生成数量</label>
-              <input type="number" min="1" class="form-control" v-model.number="generateCount" />
-            </div>
-            <div class="mb-3">
-              <label class="form-label">钱包类型</label>
-              <select class="form-select" v-model="generateWalletType">
-                <option value="main">主钱包</option>
-                <option value="normal">普通钱包</option>
-              </select>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">备注（可选）</label>
-              <input type="text" class="form-control" v-model="generateRemark" placeholder="批量备注" />
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-            <button type="button" class="btn btn-primary" @click="generateWallets">生成</button>
-          </div>
         </div>
       </div>
     </div>
@@ -282,14 +239,6 @@ const isQuerying = ref<boolean>(false);
 const errorMessage = ref<string>('');
 const routePathDisplay = ref<string[]>([]);
 const updateInterval = ref<number | null>(null);
-
-// 钱包生成相关
-const generateCount = ref<number>(5);
-const generateWalletType = ref<'main' | 'normal'>('normal');
-const generateRemark = ref<string>('');
-let genModal: any = null;
-// 生成唯一的 Modal ID，避免多个组件实例冲突
-const modalId = `genModal_${Math.random().toString(36).substr(2, 9)}`;
 
 // 自定义RPC相关
 const useCustomRpc = ref<boolean>(false);
@@ -908,84 +857,6 @@ function stopUpdate() {
   isUpdating.value = false;
 }
 
-// 钱包生成相关函数
-function openGenerateModal() {
-  const el = document.getElementById(modalId);
-  if (!el) return;
-  if (genModal) {
-    genModal.show();
-  } else {
-    try {
-      const Bootstrap = (window as any).bootstrap;
-      genModal = new Bootstrap.Modal(el);
-      genModal.show();
-    } catch (error) {
-      alert('Modal初始化失败，请刷新页面重试');
-    }
-  }
-}
-
-async function generateWallets() {
-  const countBefore = localWallets.value?.length || 0;
-  await walletStore.generateLocalWallets(generateCount.value, {
-    walletType: generateWalletType.value,
-    remark: generateRemark.value
-  });
-  const newWallets = localWallets.value?.slice(countBefore) || [];
-  if (newWallets.length > 0) downloadWalletsExcel(newWallets);
-  generateWalletType.value = 'normal';
-  generateRemark.value = '';
-  genModal?.hide();
-}
-
-function downloadWalletsExcel(wallets: any[]) {
-  const BOM = '\uFEFF';
-  const headers = ['序号', '钱包地址', '私钥', '备注', '钱包类型', '创建时间'];
-  const rows = wallets.map((wallet, index) => {
-    return [
-      index + 1,
-      wallet.address,
-      wallet.encrypted || '',
-      wallet.remark || '',
-      wallet.walletType === 'main' ? '主钱包' : '普通钱包',
-      wallet.createdAt ? new Date(wallet.createdAt).toLocaleString() : ''
-    ].map(cell => {
-      const str = String(cell);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    }).join(',');
-  });
-  const csvContent = BOM + [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  link.download = `钱包信息_${timestamp}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-async function exportPrivateKeys() {
-  const confirm = window.confirm(
-    '⚠️ 安全警告 ⚠️\n\n您即将导出所有本地钱包的私钥信息。\n\n私钥是访问钱包资产的唯一凭证，请务必妥善保管。\n\n确定要继续导出吗？'
-  );
-  if (!confirm) return;
-  try {
-    if (typeof walletStore.exportPrivateKeys !== 'function') {
-      alert('导出功能暂不可用');
-      return;
-    }
-    await walletStore.exportPrivateKeys();
-  } catch (error) {
-    alert('导出私钥失败，请重试');
-  }
-}
-
 watch([selectedChainId, selectedDexIdLocal, selectedQuoteToken, () => tokenAddress.value], () => {
   stopUpdate();
 });
@@ -1002,14 +873,6 @@ onMounted(async () => {
   walletStore.setCurrentChainId(chainStore.selectedChainId);
   await new Promise(resolve => setTimeout(resolve, 100));
   await loadBaseTokenInfos();
-
-  // 初始化Modal
-  if (typeof window !== 'undefined' && (window as any).bootstrap) {
-    const el = document.getElementById(modalId);
-    if (el) {
-      genModal = new (window as any).bootstrap.Modal(el);
-    }
-  }
 
   // 全局状态已有数据时，不需要再初始化，直接使用
   // 如果有价格数据且没有在更新中，启动实时更新
