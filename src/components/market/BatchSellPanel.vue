@@ -314,7 +314,7 @@ async function executeBatchSell() {
     const walletAddresses = selectedWalletAddresses.value;
     const tokenAddress = targetToken.value!.address;
     const chainId = chainStore.selectedChainId;
-    const rpcUrl = chainStore.rpcUrl;
+    const rpcUrl = chainStore.effectiveRpcUrl;
 
     // 创建交易服务
     const tradingService = createTradingService(chainId, rpcUrl, routerAddress);

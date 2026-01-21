@@ -205,7 +205,7 @@ export const useTaskStore = defineStore('task', () => {
     try {
       // 获取链和DEX配置
       const chainId = chainStore.selectedChainId;
-      const rpcUrl = chainStore.rpcUrl;
+      const rpcUrl = chainStore.effectiveRpcUrl;
       const routerAddress = dexStore.currentRouterAddress;
 
       if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
@@ -280,7 +280,7 @@ export const useTaskStore = defineStore('task', () => {
       const dexStore = useDexStore();
 
       const chainId = chainStore.selectedChainId;
-      const rpcUrl = chainStore.rpcUrl;
+      const rpcUrl = chainStore.effectiveRpcUrl;
       const factoryAddress = dexStore.currentFactoryAddress;
       const baseTokens = dexStore.currentBaseTokens;
 

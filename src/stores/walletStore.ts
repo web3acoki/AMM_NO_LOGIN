@@ -7,6 +7,7 @@ import { erc20Abi } from '../viem/abis/erc20';
 import { WalletDetector } from '../utils/walletDetector';
 import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX } from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
+import { useChainStore } from './chainStore';
 
 type WalletType = 'main' | 'normal';
 
@@ -864,9 +865,13 @@ export const useWalletStore = defineStore('wallet', {
 
     getPublicClient(rpcUrl?: string) {
       const chain = this.getChainConfig();
-      return createPublicClient({ 
-        chain, 
-        transport: fallback([http(rpcUrl ?? chain.rpcUrls.default.http[0])]) 
+      // 优先使用传入的rpcUrl，其次使用chainStore的effectiveRpcUrl，最后使用默认
+      const chainStore = useChainStore();
+      const effectiveUrl = rpcUrl || chainStore.effectiveRpcUrl || chain.rpcUrls.default.http[0];
+      console.log('使用RPC节点:', effectiveUrl);
+      return createPublicClient({
+        chain,
+        transport: fallback([http(effectiveUrl)])
       });
     },
 
