@@ -77,10 +77,10 @@
             </div>
             <div v-if="batch.totalNativeBalance || batch.totalTokenBalance">
               <span v-if="batch.totalNativeBalance" class="badge bg-warning text-dark me-1">
-                {{ batch.totalNativeBalance }} {{ currentGovernanceToken }}
+                {{ formatBalance(batch.totalNativeBalance) }} {{ currentGovernanceToken }}
               </span>
               <span v-if="batch.totalTokenBalance && targetToken" class="badge bg-success">
-                {{ batch.totalTokenBalance }} {{ targetToken.symbol }}
+                {{ formatBalance(batch.totalTokenBalance) }} {{ targetToken.symbol }}
               </span>
             </div>
           </div>
@@ -258,7 +258,9 @@ async function queryBalances(batch: any) {
   try {
     const result = await walletStore.refreshBatchBalances(batch.id);
     if (result) {
-      alert(`余额查询完成\n${currentGovernanceToken.value}: ${result.totalNativeBalance}${result.totalTokenBalance ? `\n${targetToken.value?.symbol || '代币'}: ${result.totalTokenBalance}` : ''}`);
+      const nativeBalance = formatBalance(result.totalNativeBalance);
+      const tokenBalance = result.totalTokenBalance ? formatBalance(result.totalTokenBalance) : null;
+      alert(`余额查询完成\n\n${currentGovernanceToken.value} 总计: ${nativeBalance}${tokenBalance ? `\n${targetToken.value?.symbol || '代币'} 总计: ${tokenBalance}` : ''}\n\n钱包数量: ${batch.wallets.length} 个`);
     }
   } catch (error: any) {
     alert(error.message || '查询失败');
@@ -304,6 +306,18 @@ function formatDate(dateStr: string): string {
 // 格式化地址
 function formatAddress(address: string): string {
   return `${address.slice(0, 10)}...${address.slice(-8)}`;
+}
+
+// 格式化余额（保留4位小数）
+function formatBalance(balance: string | undefined): string {
+  if (!balance) return '0';
+  const num = parseFloat(balance);
+  if (isNaN(num)) return '0';
+  // 如果数字很大，显示完整；如果很小，保留更多小数
+  if (num >= 1000) return num.toFixed(2);
+  if (num >= 1) return num.toFixed(4);
+  if (num >= 0.0001) return num.toFixed(6);
+  return num.toExponential(2);
 }
 </script>
 
