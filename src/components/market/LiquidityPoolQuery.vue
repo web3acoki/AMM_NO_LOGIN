@@ -31,7 +31,8 @@
             @change="onCustomRpcChange"
           />
           <button class="btn btn-outline-secondary" type="button" @click="testRpcConnection" :disabled="!customRpcUrl || isTestingRpc">
-            <i class="bi" :class="isTestingRpc ? 'bi-hourglass-split' : 'bi-lightning'"></i>
+            <i class="bi me-1" :class="isTestingRpc ? 'bi-hourglass-split' : 'bi-lightning'"></i>
+            {{ isTestingRpc ? '测试中' : '连接' }}
           </button>
         </div>
         <select v-else class="form-select form-select-sm" v-model="selectedRpcUrl" @change="onRpcChange">

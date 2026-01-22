@@ -16,7 +16,7 @@
         style="pointer-events: auto;"
       >
         <i class="bi bi-arrow-right-circle me-1"></i>{{ currentGovernanceToken }} 批量转账
-        <small v-if="localWallets" class="d-block">({{ localWallets.length }}个钱包)</small>
+        <small v-if="localWallets" class="ms-1">({{ localWallets.length }}个)</small>
       </button>
       
       <!-- 测试功能已隐藏，保留核心功能 -->
@@ -1919,6 +1919,12 @@ onMounted(() => {
   justify-content: center;
   border-radius: 8px;
   background: #f8f9fa;
+}
+
+/* 修复按钮显示问题 */
+.btn {
+  white-space: nowrap;
+  min-width: fit-content;
 }
 </style>
 
