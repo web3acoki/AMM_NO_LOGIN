@@ -217,10 +217,17 @@ export const useTaskStore = defineStore('task', () => {
       const amountMin = task.config.amountMin || 0;
       const amountMax = task.config.amountMax || amountMin;
       const randomAmount = amountMin + Math.random() * (amountMax - amountMin);
-      const roundedAmount = Math.round(randomAmount * 1000000) / 1000000; // 保留6位小数
+      // 保留18位小数精度（与以太坊精度一致），避免小数被截断为0
+      const roundedAmount = Number(randomAmount.toFixed(18));
+
+      // 格式化显示金额，避免科学计数法
+      const formatAmount = (num: number): string => {
+        if (num === 0) return '0';
+        return num.toFixed(18).replace(/\.?0+$/, '');
+      };
 
       addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易...`, walletAddress);
-      addLog(task.id, 'info', `交易金额: ${roundedAmount} BNB (区间: ${amountMin}~${amountMax})`, walletAddress);
+      addLog(task.id, 'info', `交易金额: ${formatAmount(roundedAmount)} BNB (区间: ${formatAmount(amountMin)}~${formatAmount(amountMax)})`, walletAddress);
 
       // 创建交易服务
       const tradingService = createTradingService(chainId, rpcUrl, routerAddress);

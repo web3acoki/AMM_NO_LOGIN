@@ -263,14 +263,20 @@ export class TradingService {
         amountIn = (availableBalance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额买入，可用: ${formatEther(availableBalance)} BNB, 实际: ${formatEther(amountIn)} BNB`);
       } else {
-        // 使用固定金额
-        amountIn = parseEther(amount.toString());
-        console.log(`开始买入，花费 ${amount} BNB 购买代币 ${tokenAddress}`);
+        // 使用固定金额 - 将数字转为不含科学计数法的字符串
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseEther(amountStr);
+        console.log(`开始买入，花费 ${amountStr} BNB 购买代币 ${tokenAddress}`);
       }
 
-      // 检查余额是否足够
-      if (balance < amountIn || amountIn === BigInt(0)) {
+      // 检查余额是否足够（移除 amountIn === 0 的检查，允许非常小的金额）
+      if (balance < amountIn) {
         throw new Error(`BNB余额不足，当前: ${formatEther(balance)}, 需要: ${formatEther(amountIn)}`);
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        throw new Error(`交易金额为0，请检查输入的金额是否正确`);
       }
 
       // 获取预期输出
@@ -387,16 +393,25 @@ export class TradingService {
         amountIn = (balance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额买入，可用: ${formatUnits(balance, spendDecimals)} ${spendToken}, 实际: ${formatUnits(amountIn, spendDecimals)} ${spendToken}`);
       } else {
-        // 使用固定金额
-        amountIn = parseUnits(amount.toString(), spendDecimals);
-        console.log(`开始买入，花费 ${amount} ${spendToken} 购买代币 ${tokenAddress}`);
+        // 使用固定金额 - 将数字转为不含科学计数法的字符串
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseUnits(amountStr, spendDecimals);
+        console.log(`开始买入，花费 ${amountStr} ${spendToken} 购买代币 ${tokenAddress}`);
       }
 
       // 检查余额是否足够
-      if (balance < amountIn || amountIn === BigInt(0)) {
+      if (balance < amountIn) {
         return {
           success: false,
           error: `${spendToken} 余额不足，当前: ${formatUnits(balance, spendDecimals)}, 需要: ${formatUnits(amountIn, spendDecimals)}`
+        };
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        return {
+          success: false,
+          error: `交易金额为0，请检查输入的金额是否正确`
         };
       }
 
@@ -521,16 +536,25 @@ export class TradingService {
         amountIn = (tokenBalance * BigInt(balancePercent)) / BigInt(100);
         console.log(`使用 ${balancePercent}% 余额卖出，可用: ${formatUnits(tokenBalance, tokenDecimals)}, 实际: ${formatUnits(amountIn, tokenDecimals)}`);
       } else {
-        // 使用固定数量
-        amountIn = parseUnits(amount.toString(), tokenDecimals);
-        console.log(`开始卖出代币 ${tokenAddress} 换成 ${spendToken}，数量: ${amount}`);
+        // 使用固定数量 - 将数字转为不含科学计数法的字符串
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseUnits(amountStr, tokenDecimals);
+        console.log(`开始卖出代币 ${tokenAddress} 换成 ${spendToken}，数量: ${amountStr}`);
       }
 
       // 检查余额是否足够
-      if (tokenBalance < amountIn || amountIn === BigInt(0)) {
+      if (tokenBalance < amountIn) {
         return {
           success: false,
           error: `代币余额不足，当前: ${formatUnits(tokenBalance, tokenDecimals)}, 需要: ${formatUnits(amountIn, tokenDecimals)}`
+        };
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        return {
+          success: false,
+          error: `交易金额为0，请检查输入的金额是否正确`
         };
       }
 
@@ -657,7 +681,8 @@ export class TradingService {
       } else if (targetBnbAmount && targetBnbAmount > 0) {
         // 模式2：根据目标BNB金额计算需要卖出多少Token
         // 使用 getAmountsIn 计算需要多少 Token 才能获得目标 BNB
-        const targetBnbWei = parseEther(targetBnbAmount.toString());
+        const targetBnbStr = targetBnbAmount.toFixed(18).replace(/\.?0+$/, '');
+        const targetBnbWei = parseEther(targetBnbStr);
         try {
           const amountsIn = await this.publicClient.readContract({
             address: this.routerAddress,
@@ -666,7 +691,7 @@ export class TradingService {
             args: [targetBnbWei, path]
           }) as bigint[];
           amountIn = amountsIn[0];
-          console.log(`目标获得 ${targetBnbAmount} BNB，需要卖出: ${formatUnits(amountIn, decimals)} Token`);
+          console.log(`目标获得 ${targetBnbStr} BNB，需要卖出: ${formatUnits(amountIn, decimals)} Token`);
         } catch (e) {
           // 如果 getAmountsIn 失败，使用 getAmountsOut 反向估算
           console.log('getAmountsIn 失败，使用反向估算');
@@ -690,14 +715,20 @@ export class TradingService {
           amountIn = tokenBalance;
         }
       } else {
-        // 模式3：使用固定数量
-        amountIn = parseUnits(amount.toString(), decimals);
-        console.log(`开始卖出代币 ${tokenAddress}，数量: ${amount}`);
+        // 模式3：使用固定数量 - 将数字转为不含科学计数法的字符串
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseUnits(amountStr, decimals);
+        console.log(`开始卖出代币 ${tokenAddress}，数量: ${amountStr}`);
       }
 
       // 检查余额是否足够
-      if (tokenBalance < amountIn || amountIn === BigInt(0)) {
+      if (tokenBalance < amountIn) {
         throw new Error(`代币余额不足，当前: ${formatUnits(tokenBalance, decimals)}, 需要: ${formatUnits(amountIn, decimals)}`);
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        throw new Error(`交易金额为0，请检查输入的金额是否正确`);
       }
 
       console.log(`卖出数量: ${formatUnits(amountIn, decimals)}`);
