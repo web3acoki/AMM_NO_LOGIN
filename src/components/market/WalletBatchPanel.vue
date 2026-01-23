@@ -36,7 +36,7 @@
             placeholder="输入备注（可选）"
           >
         </div>
-        <div class="col-auto">
+        <div class="col-auto d-flex gap-1">
           <button
             class="btn btn-primary btn-sm"
             @click="generateBatch"
@@ -48,6 +48,12 @@
             <span v-else>
               <i class="bi bi-plus-circle me-1"></i>生成钱包批次
             </span>
+          </button>
+          <button
+            class="btn btn-outline-success btn-sm"
+            @click="openImportModal"
+          >
+            <i class="bi bi-box-arrow-in-down me-1"></i>导入钱包
           </button>
         </div>
       </div>
@@ -191,6 +197,100 @@
       </div>
     </div>
     <div v-if="showPrivateKeyModal" class="modal-backdrop show"></div>
+
+    <!-- 导入钱包选择弹窗 -->
+    <div v-if="showImportModal" class="modal show d-block" tabindex="-1" @click.self="showImportModal = false">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-success text-white">
+            <h5 class="modal-title"><i class="bi bi-box-arrow-in-down me-2"></i>从批次导入钱包</h5>
+            <button type="button" class="btn-close btn-close-white" @click="showImportModal = false"></button>
+          </div>
+          <div class="modal-body">
+            <!-- 选择批次 -->
+            <div class="mb-3">
+              <label class="form-label">选择钱包批次</label>
+              <select class="form-select" v-model="selectedImportBatchId" @change="onBatchChange">
+                <option value="">-- 请选择批次 --</option>
+                <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+                  {{ batch.remark }} ({{ batch.wallets.length }} 个钱包)
+                </option>
+              </select>
+            </div>
+
+            <!-- 钱包类型 -->
+            <div class="mb-3">
+              <label class="form-label">导入为</label>
+              <select class="form-select" v-model="importWalletType">
+                <option value="normal">普通钱包</option>
+                <option value="main">主钱包</option>
+              </select>
+            </div>
+
+            <!-- 钱包选择列表 -->
+            <div v-if="importBatchWallets.length > 0">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="small fw-bold">选择要导入的钱包</span>
+                <div>
+                  <button class="btn btn-outline-primary btn-sm me-1" @click="selectAllWallets">
+                    <i class="bi bi-check-all me-1"></i>全选
+                  </button>
+                  <button class="btn btn-outline-secondary btn-sm" @click="deselectAllWallets">
+                    <i class="bi bi-x-lg me-1"></i>取消全选
+                  </button>
+                </div>
+              </div>
+              <div class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                <div
+                  v-for="(wallet, idx) in importBatchWallets"
+                  :key="wallet.address"
+                  class="form-check py-1 border-bottom"
+                  :class="{ 'border-bottom-0': idx === importBatchWallets.length - 1 }"
+                >
+                  <input
+                    type="checkbox"
+                    class="form-check-input"
+                    :id="'wallet-' + idx"
+                    :value="wallet.address"
+                    v-model="selectedWalletAddresses"
+                  >
+                  <label class="form-check-label w-100 d-flex justify-content-between" :for="'wallet-' + idx">
+                    <span class="font-monospace small">{{ wallet.address }}</span>
+                    <span class="badge bg-secondary">{{ idx + 1 }}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="text-muted small mt-2">
+                已选择 <strong>{{ selectedWalletAddresses.length }}</strong> / {{ importBatchWallets.length }} 个钱包
+              </div>
+            </div>
+            <div v-else-if="selectedImportBatchId" class="alert alert-warning small mb-0">
+              <i class="bi bi-exclamation-triangle me-1"></i>该批次没有钱包
+            </div>
+            <div v-else class="alert alert-info small mb-0">
+              <i class="bi bi-info-circle me-1"></i>请先选择一个钱包批次
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" @click="showImportModal = false">取消</button>
+            <button
+              type="button"
+              class="btn btn-success"
+              @click="confirmImport"
+              :disabled="selectedWalletAddresses.length === 0 || isImporting"
+            >
+              <span v-if="isImporting">
+                <span class="spinner-border spinner-border-sm me-1"></span>导入中...
+              </span>
+              <span v-else>
+                <i class="bi bi-check-lg me-1"></i>确认导入 ({{ selectedWalletAddresses.length }} 个)
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div v-if="showImportModal" class="modal-backdrop show"></div>
   </div>
 </template>
 
@@ -213,6 +313,20 @@ const expandedBatchId = ref<string | null>(null);
 const queryingBatchId = ref<string | null>(null);
 const showPrivateKeyModal = ref(false);
 const selectedBatch = ref<any>(null);
+
+// 导入钱包相关
+const showImportModal = ref(false);
+const selectedImportBatchId = ref('');
+const importWalletType = ref<'main' | 'normal'>('normal');
+const selectedWalletAddresses = ref<string[]>([]);
+const isImporting = ref(false);
+
+// 计算属性：获取当前选中批次的钱包列表
+const importBatchWallets = computed(() => {
+  if (!selectedImportBatchId.value) return [];
+  const batch = walletBatches.value.find(b => b.id === selectedImportBatchId.value);
+  return batch?.wallets || [];
+});
 
 // 生成钱包批次
 async function generateBatch() {
@@ -318,6 +432,71 @@ function formatBalance(balance: string | undefined): string {
   if (num >= 1) return num.toFixed(4);
   if (num >= 0.0001) return num.toFixed(6);
   return num.toExponential(2);
+}
+
+// 打开导入钱包弹窗
+function openImportModal() {
+  showImportModal.value = true;
+  selectedImportBatchId.value = '';
+  selectedWalletAddresses.value = [];
+  importWalletType.value = 'normal';
+}
+
+// 批次选择变化时，默认选中所有钱包
+function onBatchChange() {
+  selectedWalletAddresses.value = importBatchWallets.value.map(w => w.address);
+}
+
+// 全选
+function selectAllWallets() {
+  selectedWalletAddresses.value = importBatchWallets.value.map(w => w.address);
+}
+
+// 取消全选
+function deselectAllWallets() {
+  selectedWalletAddresses.value = [];
+}
+
+// 确认导入选中的钱包
+async function confirmImport() {
+  if (selectedWalletAddresses.value.length === 0) {
+    alert('请至少选择一个钱包');
+    return;
+  }
+
+  const batch = walletBatches.value.find(b => b.id === selectedImportBatchId.value);
+  if (!batch) {
+    alert('批次不存在');
+    return;
+  }
+
+  isImporting.value = true;
+  try {
+    // 获取选中的钱包私钥
+    const selectedWallets = batch.wallets.filter(w => 
+      selectedWalletAddresses.value.includes(w.address)
+    );
+    const privateKeys = selectedWallets.map(w => w.privateKey);
+
+    // 导入钱包
+    const importResult = walletStore.importWalletsFromPrivateKeys(privateKeys, {
+      walletType: importWalletType.value,
+      remark: batch.remark,
+    });
+
+    if (importResult.added > 0) {
+      await walletStore.refreshAllBalances();
+      alert(`成功导入 ${importResult.added} 个钱包${importResult.duplicates > 0 ? `，${importResult.duplicates} 个重复已跳过` : ''}`);
+    } else if (importResult.duplicates > 0) {
+      alert(`所有钱包都已存在，${importResult.duplicates} 个重复已跳过`);
+    }
+
+    showImportModal.value = false;
+  } catch (error: any) {
+    alert(error.message || '导入失败');
+  } finally {
+    isImporting.value = false;
+  }
 }
 </script>
 
