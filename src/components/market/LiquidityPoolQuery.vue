@@ -545,7 +545,6 @@ async function onChainChange() {
   }
   dexStore.setDexByChainId(selectedChainId.value);
   selectedDexIdLocal.value = selectedDexId.value;
-  selectedQuoteToken.value = '';
   tokenAddress.value = '';
   currentPrice.value = null;
   marketCap.value = null;
@@ -553,6 +552,12 @@ async function onChainChange() {
   tokenInfoCache.clear();
   cacheUpdateTrigger.value++;
   await loadBaseTokenInfos();
+  // 默认选择第一个报价代币（WBNB）
+  if (currentBaseTokens.value && currentBaseTokens.value.length > 0) {
+    selectedQuoteToken.value = currentBaseTokens.value[0];
+  } else {
+    selectedQuoteToken.value = '';
+  }
 }
 
 function onRpcChange() {
@@ -604,11 +609,16 @@ async function testRpcConnection() {
 async function onDexChange() {
   stopUpdate();
   dexStore.setDex(selectedDexIdLocal.value);
-  selectedQuoteToken.value = '';
   currentPrice.value = null;
   marketCap.value = null;
   errorMessage.value = '';
   await loadBaseTokenInfos();
+  // 默认选择第一个报价代币（WBNB）
+  if (currentBaseTokens.value && currentBaseTokens.value.length > 0) {
+    selectedQuoteToken.value = currentBaseTokens.value[0];
+  } else {
+    selectedQuoteToken.value = '';
+  }
 }
 
 function onQuoteTokenChange() {
@@ -874,6 +884,11 @@ onMounted(async () => {
   walletStore.setCurrentChainId(chainStore.selectedChainId);
   await new Promise(resolve => setTimeout(resolve, 100));
   await loadBaseTokenInfos();
+
+  // 默认选择第一个报价代币（WBNB）
+  if (!selectedQuoteToken.value && currentBaseTokens.value && currentBaseTokens.value.length > 0) {
+    selectedQuoteToken.value = currentBaseTokens.value[0];
+  }
 
   // 全局状态已有数据时，不需要再初始化，直接使用
   // 如果有价格数据且没有在更新中，启动实时更新

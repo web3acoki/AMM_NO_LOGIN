@@ -18,7 +18,7 @@
       </header>
 
       <section class="content-area">
-        <keep-alive include="WalletManagePanel,TaskManagePanel">
+        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel">
           <component :is="currentComponent" />
         </keep-alive>
       </section>
@@ -33,13 +33,14 @@ import { ENABLE_LOGIN, DEFAULT_USERNAME } from './config';
 import LoginView from './components/auth/LoginView.vue';
 import Sidebar from './components/layout/Sidebar.vue';
 import WalletManagePanel from './components/panels/WalletManagePanel.vue';
+import BatchTransferPanel from './components/panels/BatchTransferPanel.vue';
 import TaskManagePanel from './components/panels/TaskManagePanel.vue';
 import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 
 const requireLogin = ENABLE_LOGIN;
 
-const activePanel = ref<'users' | 'wallet' | 'task' | 'analysis'>('wallet');
+const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis'>('wallet');
 const sidebarCollapsed = ref(false);
 const currentUser = ref<any>(null);
 const isAuthenticated = ref(false);
@@ -52,6 +53,7 @@ const displayUsername = computed(() => {
 
 const sidebarItems = [
   { key: 'wallet', label: '钱包管理', icon: '💰' },
+  { key: 'transfer', label: '批量转账', icon: '💸' },
   { key: 'task', label: '任务管理', icon: '📋' },
   { key: 'users', label: '用户管理', icon: '👥' },
   { key: 'analysis', label: '分析面板', icon: '📈' }
@@ -65,6 +67,7 @@ const currentTitle = computed(() => {
 const currentComponent = computed(() => {
   switch (activePanel.value) {
     case 'wallet': return WalletManagePanel;
+    case 'transfer': return BatchTransferPanel;
     case 'task': return TaskManagePanel;
     case 'users': return UserManagement;
     case 'analysis': return AnalysisPanel;
@@ -73,7 +76,7 @@ const currentComponent = computed(() => {
 });
 
 const handleSelect = (key: string) => {
-  activePanel.value = key as 'users' | 'wallet' | 'task' | 'analysis';
+  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis';
 };
 
 const loadSession = async () => {
