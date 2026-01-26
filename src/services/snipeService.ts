@@ -35,10 +35,10 @@ export const WSS_RPC_NODES = [
 
 // HTTP RPC 节点（用于发送交易）
 export const HTTP_RPC_NODES = [
+  'https://bsc.publicnode.com',
   'https://bsc-dataseed.binance.org',
   'https://bsc-dataseed1.binance.org',
   'https://bsc-dataseed2.binance.org',
-  'https://bsc.publicnode.com',
 ];
 
 // ==================== 类型定义 ====================
@@ -356,19 +356,23 @@ export class SnipeService {
         }
 
         if (currentBlock > lastBlockNumber) {
-          // 查询新区块的 TokenCreated 事件
+          // 查询新区块的所有 FourMeme 合约事件
           const logs = await this.httpClient.getLogs({
             address: FOURMEME_CONTRACT,
-            topics: [TOKEN_CREATED_EVENT_SIGNATURE],
             fromBlock: lastBlockNumber + 1n,
             toBlock: currentBlock
           });
 
-          if (logs.length > 0) {
-            this.log('info', `区块 ${lastBlockNumber + 1n}-${currentBlock} 发现 ${logs.length} 个代币创建事件`);
+          // 过滤出 TokenCreated 事件
+          const tokenCreatedLogs = logs.filter(log =>
+            log.topics[0]?.toLowerCase() === TOKEN_CREATED_EVENT_SIGNATURE.toLowerCase()
+          );
+
+          if (tokenCreatedLogs.length > 0) {
+            this.log('info', `区块 ${lastBlockNumber + 1n}-${currentBlock} 发现 ${tokenCreatedLogs.length} 个代币创建事件`);
           }
 
-          for (const log of logs) {
+          for (const log of tokenCreatedLogs) {
             await this.handleTokenCreatedEvent(log);
           }
 
@@ -385,9 +389,9 @@ export class SnipeService {
         this.log('warning', `轮询出错: ${error.message}`);
       }
 
-      // 继续轮询（每 300ms）
+      // 继续轮询（每 500ms）
       if (this.isRunning) {
-        setTimeout(poll, 300);
+        setTimeout(poll, 500);
       }
     };
 

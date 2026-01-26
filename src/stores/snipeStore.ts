@@ -181,11 +181,10 @@ export const useSnipeStore = defineStore('snipe', () => {
 
     const chainStore = useChainStore();
 
-    // 创建服务
+    // 创建服务（使用狙击服务自己的默认 RPC，更稳定）
     const service = createSnipeService(
       task,
-      chainStore.selectedChainId,
-      chainStore.effectiveRpcUrl
+      chainStore.selectedChainId
     );
 
     // 设置回调
