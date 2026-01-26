@@ -69,6 +69,41 @@
             </div>
           </div>
 
+          <!-- 自定义节点 -->
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <label class="form-label mb-0">自定义节点</label>
+              <button
+                type="button"
+                class="btn btn-link btn-sm p-0"
+                @click="showNodeSettings = !showNodeSettings"
+              >
+                {{ showNodeSettings ? '收起' : '展开' }}
+              </button>
+            </div>
+            <div v-if="showNodeSettings" class="node-settings">
+              <div class="mb-2">
+                <label class="form-label small">HTTP RPC</label>
+                <input
+                  type="text"
+                  class="form-control form-control-sm"
+                  v-model="formData.customHttpRpc"
+                  :placeholder="defaultHttpRpc"
+                />
+              </div>
+              <div class="mb-2">
+                <label class="form-label small">WebSocket</label>
+                <input
+                  type="text"
+                  class="form-control form-control-sm"
+                  v-model="formData.customWssRpc"
+                  :placeholder="defaultWssRpc"
+                />
+              </div>
+              <small class="text-muted">留空使用默认节点</small>
+            </div>
+          </div>
+
           <!-- 执行钱包选择 -->
           <div class="mb-3">
             <label class="form-label">执行钱包</label>
@@ -241,9 +276,17 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import { useSnipeStore } from '../../stores/snipeStore';
 import { useWalletStore } from '../../stores/walletStore';
+import { HTTP_RPC_NODES, WSS_RPC_NODES } from '../../services/snipeService';
 
 const snipeStore = useSnipeStore();
 const walletStore = useWalletStore();
+
+// 默认节点
+const defaultHttpRpc = HTTP_RPC_NODES[0];
+const defaultWssRpc = WSS_RPC_NODES[0];
+
+// 节点设置显示
+const showNodeSettings = ref(false);
 
 // 表单数据
 const formData = ref({
@@ -251,7 +294,9 @@ const formData = ref({
   buyAmount: 0.1,
   gasPrice: 0,
   gasLimit: 0,
-  batchId: ''
+  batchId: '',
+  customHttpRpc: '',
+  customWssRpc: ''
 });
 
 // 钱包选择模式
@@ -292,7 +337,9 @@ function createTask() {
     buyAmount: formData.value.buyAmount,
     gasPrice: formData.value.gasPrice,
     gasLimit: formData.value.gasLimit,
-    batchId: walletSelectMode.value === 'batch' ? formData.value.batchId : undefined
+    batchId: walletSelectMode.value === 'batch' ? formData.value.batchId : undefined,
+    customHttpRpc: formData.value.customHttpRpc || undefined,
+    customWssRpc: formData.value.customWssRpc || undefined
   });
 
   // 选中新创建的任务
@@ -485,5 +532,17 @@ watch(currentLogs, async () => {
   background: rgba(255, 255, 255, 0.03);
   padding: 0.75rem;
   border-radius: 0.25rem;
+}
+
+.node-settings {
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.node-settings input {
+  font-family: monospace;
+  font-size: 0.85rem;
 }
 </style>

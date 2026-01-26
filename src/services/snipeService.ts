@@ -59,6 +59,8 @@ export interface SnipeTaskConfig {
   wallets: SnipeWallet[];    // 执行买入的钱包列表
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
   createdAt: number;
+  customHttpRpc?: string;    // 自定义 HTTP RPC
+  customWssRpc?: string;     // 自定义 WebSocket
 }
 
 export interface SnipeWallet {
@@ -156,8 +158,9 @@ export class SnipeService {
   ) {
     this.task = task;
     this.chainId = chainId;
-    this.httpRpcUrl = httpRpcUrl || HTTP_RPC_NODES[0];
-    this.wssRpcUrl = wssRpcUrl || WSS_RPC_NODES[0];
+    // 优先使用传入的自定义节点，其次使用任务配置的，最后使用默认
+    this.httpRpcUrl = httpRpcUrl || task.customHttpRpc || HTTP_RPC_NODES[0];
+    this.wssRpcUrl = wssRpcUrl || task.customWssRpc || WSS_RPC_NODES[0];
   }
 
   // ==================== 事件回调设置 ====================

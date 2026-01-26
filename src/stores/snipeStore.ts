@@ -61,6 +61,8 @@ export const useSnipeStore = defineStore('snipe', () => {
     gasLimit: number;
     walletAddresses?: string[];  // 从钱包列表选择
     batchId?: string;            // 或从批次选择
+    customHttpRpc?: string;      // 自定义 HTTP RPC
+    customWssRpc?: string;       // 自定义 WebSocket
   }): SnipeTaskConfig {
     const walletStore = useWalletStore();
 
@@ -115,7 +117,9 @@ export const useSnipeStore = defineStore('snipe', () => {
       gasLimit: config.gasLimit,
       wallets: snipeWallets,
       status: 'pending',
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      customHttpRpc: config.customHttpRpc,
+      customWssRpc: config.customWssRpc
     };
 
     tasks.value.push(task);
@@ -181,10 +185,12 @@ export const useSnipeStore = defineStore('snipe', () => {
 
     const chainStore = useChainStore();
 
-    // 创建服务（使用狙击服务自己的默认 RPC，更稳定）
+    // 创建服务（优先使用自定义节点，否则使用默认节点）
     const service = createSnipeService(
       task,
-      chainStore.selectedChainId
+      chainStore.selectedChainId,
+      task.customHttpRpc,
+      task.customWssRpc
     );
 
     // 设置回调
