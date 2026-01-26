@@ -14,6 +14,9 @@ import {
   webSocket,
   parseEther,
   formatEther,
+  keccak256,
+  toHex,
+  concat,
   type PublicClient,
   type WalletClient,
   type Log
@@ -33,6 +36,11 @@ export const CREATE_TOKEN_SELECTORS = [
   '0x47ee97ff', // 其他创建方法
   '0x810c705b', // 其他创建方法
 ] as const;
+
+// CREATE2 地址预测参数
+const DEPLOYER = '0x757eba15a64468e6535532fcf093cef90e226f85';
+const INIT_CODE_HASH = '0x3eb722ec5d79ddc2f52880ea62f1b7e7d95c66d4ae0dfe32f988ca9eca52b359';
+const CREATE_AND_BUY_SELECTOR = '0x519ebb10';
 
 // WebSocket RPC 节点
 export const WSS_RPC_NODES = [
@@ -92,6 +100,45 @@ export interface BuyResult {
 }
 
 // ==================== 工具函数 ====================
+
+/**
+ * 计算 CREATE2 地址
+ */
+function computeCreate2Address(deployer: string, salt: string, initCodeHash: string): string {
+  const deployerHex = deployer.toLowerCase().replace('0x', '');
+  const saltHex = salt.replace('0x', '').padStart(64, '0');
+  const hashHex = initCodeHash.replace('0x', '');
+  const data = ('0xff' + deployerHex + saltHex + hashHex) as `0x${string}`;
+  const hash = keccak256(data);
+  return '0x' + hash.slice(-40);
+}
+
+/**
+ * 从 createAndBuy 交易 input 中预测代币地址
+ * 关键发现: Field5 (第 6 个字段) 就是 salt
+ */
+export function predictTokenAddress(txInput: string): string | null {
+  // 检查是否是 createAndBuy 方法
+  if (!txInput.toLowerCase().startsWith(CREATE_AND_BUY_SELECTOR)) {
+    return null;
+  }
+
+  // 去掉方法选择器 (4 bytes = 8 hex chars)
+  const inputData = txInput.slice(10);
+
+  // Field5 在第 6 个字段 (index 5)，每个字段 64 个 hex 字符
+  const field5Start = 5 * 64;
+  const field5End = field5Start + 64;
+
+  if (inputData.length < field5End) {
+    return null;
+  }
+
+  const salt = '0x' + inputData.slice(field5Start, field5End);
+
+  // 计算地址
+  return computeCreate2Address(DEPLOYER, salt, INIT_CODE_HASH);
+}
 
 /**
  * 构建买入交易的 calldata
@@ -395,7 +442,7 @@ export class SnipeService {
   }
 
   /**
-   * 处理 Pending 交易
+   * 处理 Pending 交易 - 使用地址预测实现同区块买入
    */
   private async processPendingTx(txHash: string) {
     if (!this.httpClient || !this.isRunning) return;
@@ -409,49 +456,85 @@ export class SnipeService {
       // 检查是否是 FourMeme 合约
       if (tx.to?.toLowerCase() !== FOURMEME_CONTRACT.toLowerCase()) return;
 
-      // 检查是否是创建代币的方法
+      // 检查是否是 createAndBuy 方法 (只有这个方法支持地址预测)
       const methodSelector = tx.input.slice(0, 10).toLowerCase();
-      const isCreateMethod = CREATE_TOKEN_SELECTORS.some(s => s.toLowerCase() === methodSelector);
-      if (!isCreateMethod) return;
+      if (methodSelector !== CREATE_AND_BUY_SELECTOR) return;
 
       // 检查是否是目标钱包
       if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) return;
 
       this.log('success', `🚀 检测到目标钱包 Pending 创建交易!`);
       this.log('info', `交易哈希: ${txHash.slice(0, 20)}...`);
-      this.log('info', `等待交易确认...`);
 
-      // 等待交易确认
+      // 🎯 关键: 立即预测代币地址，不等待确认
+      const predictedToken = predictTokenAddress(tx.input);
+
+      if (!predictedToken) {
+        this.log('error', '无法预测代币地址，等待交易确认...');
+        // 回退到原来的等待确认逻辑
+        await this.waitAndBuyConfirmed(txHash);
+        return;
+      }
+
+      this.log('success', `🎯 预测代币地址: ${predictedToken}`);
+      this.log('info', `⚡ 立即发送买入交易，不等待创建确认!`);
+
+      // 触发事件
+      const event: TokenCreatedEvent = {
+        creator: tx.from,
+        token: predictedToken,
+        blockNumber: 0n,  // pending 交易还没有区块号
+        transactionHash: txHash
+      };
+      this.onTokenFound?.(event);
+
+      // 🚀 立即执行买入 (与创建交易同时 pending)
+      const results = await this.executeBuy(predictedToken);
+      this.onBuyComplete?.(results);
+
+      // 任务完成
+      this.stop();
+      this.updateStatus('completed');
+
+    } catch (e) {
+      // 忽略单个交易错误
+    } finally {
+      this.activeRequests--;
+    }
+  }
+
+  /**
+   * 等待交易确认后买入 (备用方法)
+   */
+  private async waitAndBuyConfirmed(txHash: string) {
+    if (!this.httpClient) return;
+
+    try {
       const receipt = await this.httpClient.waitForTransactionReceipt({
         hash: txHash as `0x${string}`,
         timeout: 60000
       });
 
       if (receipt.status === 'success') {
-        // 从日志中解析代币地址
         const tokenCreatedLog = receipt.logs.find(log =>
           log.topics[0]?.toLowerCase() === TOKEN_CREATED_EVENT_SIGNATURE.toLowerCase()
         );
 
         if (tokenCreatedLog) {
           const event = parseTokenCreatedEvent(tokenCreatedLog);
-          this.log('success', `🎯 代币地址: ${event.token}`);
+          this.log('success', `🎯 代币地址 (确认): ${event.token}`);
 
           this.onTokenFound?.(event);
 
-          // 执行买入
           const results = await this.executeBuy(event.token);
           this.onBuyComplete?.(results);
 
-          // 任务完成
           this.stop();
           this.updateStatus('completed');
         }
       }
     } catch (e) {
-      // 忽略单个交易错误
-    } finally {
-      this.activeRequests--;
+      this.log('error', '等待交易确认失败');
     }
   }
 
