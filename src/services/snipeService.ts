@@ -27,7 +27,7 @@ export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as
 export const BUY_METHOD_SELECTOR = '0x87f27655' as const;
 export const TOKEN_CREATED_EVENT_SIGNATURE = '0x396d5e902b675b032348d3d2e9517ee8f0c4a926603fbc075d3d282ff00cad20' as const;
 
-// createAndBuy 方法选择器（用于检测 pending 交易）
+// 创建代币的方法选择器
 export const CREATE_TOKEN_SELECTORS = [
   '0x519ebb10', // createAndBuy
   '0x47ee97ff', // 其他创建方法
@@ -56,7 +56,6 @@ export interface SnipeTaskConfig {
   buyAmount: number;         // 买入金额 (BNB)
   gasPrice: number;          // Gas Price (Gwei)
   gasLimit: number;          // Gas Limit
-  gasMultiplier: number;     // Gas 倍数（Turbo 模式）
   wallets: SnipeWallet[];    // 执行买入的钱包列表
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
   createdAt: number;
@@ -138,9 +137,11 @@ export class SnipeService {
   private wssRpcUrl: string;
   private wsClient: PublicClient | null = null;
   private httpClient: PublicClient | null = null;
+  private rawWs: WebSocket | null = null;  // 原生 WebSocket 用于 pending 监听
   private walletClients: Map<string, WalletClient> = new Map();
   private unwatch: (() => void) | null = null;
   private isRunning: boolean = false;
+  private pendingTxProcessed: Set<string> = new Set();  // 已处理的 pending 交易
   private logs: SnipeLog[] = [];
   private onLog: ((log: SnipeLog) => void) | null = null;
   private onTokenFound: ((event: TokenCreatedEvent) => void) | null = null;
@@ -281,59 +282,86 @@ export class SnipeService {
     this.log('info', `执行钱包数量: ${this.task.wallets.length}`);
 
     // 同时启动两种监听模式
-    // 1. Pending 交易监听（更快，但依赖 WebSocket）
-    this.startPendingTxMonitor();
-    // 2. 区块事件轮询（作为备份）
-    this.startPolling();
+    this.startPendingTxMonitor();  // Pending 交易监听（更快）
+    this.startPolling();            // 区块轮询（备份）
   }
 
   /**
-   * 监听 Pending 交易（mempool）
+   * 使用原生 WebSocket 监听 Pending 交易
    */
   private startPendingTxMonitor() {
-    if (!this.wsClient) {
-      this.log('warning', 'WebSocket 不可用，无法监听 pending 交易');
-      return;
-    }
+    try {
+      this.rawWs = new WebSocket(this.wssRpcUrl);
 
-    this.log('info', '启动 Pending 交易监听（mempool 模式）...');
+      this.rawWs.onopen = () => {
+        this.log('success', 'Pending 监听 WebSocket 已连接');
 
-    // 订阅 pending 交易
-    this.wsClient.transport.subscribe({
-      method: 'eth_subscribe',
-      params: ['newPendingTransactions']
-    }).then((subscriptionId: string) => {
-      this.log('success', `Pending 交易订阅成功: ${subscriptionId}`);
+        // 订阅 pending 交易
+        const subscribeMsg = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_subscribe',
+          params: ['newPendingTransactions']
+        });
+        this.rawWs?.send(subscribeMsg);
+      };
 
-      // 监听订阅消息
-      (this.wsClient?.transport as any).onMessage((message: any) => {
+      this.rawWs.onmessage = async (event) => {
         if (!this.isRunning) return;
 
         try {
-          const data = JSON.parse(message);
+          const data = JSON.parse(event.data);
+
+          // 订阅确认
+          if (data.id === 1 && data.result) {
+            this.log('success', `Pending 交易订阅成功`);
+            return;
+          }
+
+          // Pending 交易通知
           if (data.method === 'eth_subscription' && data.params?.result) {
-            this.checkPendingTransaction(data.params.result);
+            const txHash = data.params.result;
+            this.processPendingTx(txHash);
           }
         } catch (e) {
           // 忽略解析错误
         }
-      });
-    }).catch((error: any) => {
-      this.log('warning', `Pending 订阅失败: ${error.message}，使用区块轮询模式`);
-    });
+      };
+
+      this.rawWs.onerror = (error) => {
+        this.log('warning', 'Pending 监听 WebSocket 错误，使用轮询模式');
+      };
+
+      this.rawWs.onclose = () => {
+        // 静默关闭
+      };
+
+    } catch (e: any) {
+      this.log('warning', `Pending 监听启动失败: ${e.message}`);
+    }
   }
 
   /**
-   * 检查 Pending 交易
+   * 处理 Pending 交易
    */
-  private async checkPendingTransaction(txHash: string) {
+  private async processPendingTx(txHash: string) {
+    // 避免重复处理
+    if (this.pendingTxProcessed.has(txHash)) return;
+    this.pendingTxProcessed.add(txHash);
+
+    // 限制缓存大小
+    if (this.pendingTxProcessed.size > 10000) {
+      const first = this.pendingTxProcessed.values().next().value;
+      this.pendingTxProcessed.delete(first);
+    }
+
     if (!this.httpClient || !this.isRunning) return;
 
     try {
       const tx = await this.httpClient.getTransaction({ hash: txHash as `0x${string}` });
       if (!tx) return;
 
-      // 检查是否是发送给 FourMeme 合约的交易
+      // 检查是否是 FourMeme 合约
       if (tx.to?.toLowerCase() !== FOURMEME_CONTRACT.toLowerCase()) return;
 
       // 检查是否是创建代币的方法
@@ -341,13 +369,14 @@ export class SnipeService {
       const isCreateMethod = CREATE_TOKEN_SELECTORS.some(s => s.toLowerCase() === methodSelector);
       if (!isCreateMethod) return;
 
-      // 检查是否是目标钱包发起的
+      // 检查是否是目标钱包
       if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) return;
 
-      this.log('success', `🚀 检测到目标钱包 Pending 创建交易: ${txHash.slice(0, 16)}...`);
-      this.log('info', `等待交易确认获取代币地址...`);
+      this.log('success', `🚀 检测到目标钱包 Pending 创建交易!`);
+      this.log('info', `交易哈希: ${txHash.slice(0, 20)}...`);
+      this.log('info', `等待交易确认...`);
 
-      // 等待交易确认，获取代币地址
+      // 等待交易确认
       const receipt = await this.httpClient.waitForTransactionReceipt({
         hash: txHash as `0x${string}`,
         timeout: 60000
@@ -361,9 +390,11 @@ export class SnipeService {
 
         if (tokenCreatedLog) {
           const event = parseTokenCreatedEvent(tokenCreatedLog);
-          this.log('success', `🎯 代币创建成功: ${event.token}`);
+          this.log('success', `🎯 代币地址: ${event.token}`);
 
-          // 立即执行买入
+          this.onTokenFound?.(event);
+
+          // 执行买入
           const results = await this.executeBuy(event.token);
           this.onBuyComplete?.(results);
 
@@ -373,64 +404,8 @@ export class SnipeService {
         }
       }
     } catch (e) {
-      // 忽略单个交易检查错误
+      // 忽略单个交易错误
     }
-  }
-
-  /**
-   * 使用 WebSocket 实时订阅事件
-   */
-  private startWebSocketSubscription() {
-    if (!this.wsClient) return;
-
-    this.log('info', '启动 WebSocket 实时订阅...');
-
-    let blockCount = 0;
-
-    // 使用 watchBlockNumber 订阅新区块
-    this.unwatch = this.wsClient.watchBlockNumber({
-      onBlockNumber: async (blockNumber) => {
-        if (!this.isRunning || !this.httpClient) return;
-
-        blockCount++;
-
-        try {
-          // 获取当前区块的 TokenCreated 事件
-          const logs = await this.httpClient.getLogs({
-            address: FOURMEME_CONTRACT,
-            topics: [TOKEN_CREATED_EVENT_SIGNATURE],
-            fromBlock: blockNumber,
-            toBlock: blockNumber
-          });
-
-          if (logs.length > 0) {
-            this.log('info', `区块 ${blockNumber} 发现 ${logs.length} 个代币创建事件`);
-          }
-
-          for (const log of logs) {
-            await this.handleTokenCreatedEvent(log);
-          }
-
-          // 每 10 个区块输出一次心跳
-          if (blockCount % 10 === 0) {
-            this.log('info', `监听中... 当前区块: ${blockNumber}`);
-          }
-
-        } catch (error: any) {
-          // 忽略单次查询错误
-        }
-      },
-      onError: (error) => {
-        this.log('error', `WebSocket 错误: ${error.message}`);
-        // 降级为轮询
-        if (this.isRunning) {
-          this.log('warning', '切换为 HTTP 轮询...');
-          this.startPolling();
-        }
-      }
-    });
-
-    this.log('success', '实时订阅已启动（监听新区块）');
   }
 
   /**
@@ -587,20 +562,9 @@ export class SnipeService {
         txParams.gas = BigInt(this.task.gasLimit);
       }
 
-      // 设置 gasPrice（支持 Turbo 模式倍数）
-      const multiplier = this.task.gasMultiplier || 1;
+      // 设置 gasPrice
       if (this.task.gasPrice > 0) {
-        // 使用手动设置的 gasPrice，并应用倍数
-        txParams.gasPrice = BigInt(Math.floor(this.task.gasPrice * multiplier)) * BigInt(1e9);
-      } else if (multiplier > 1 && this.httpClient) {
-        // 自动获取当前 gasPrice 并应用倍数
-        try {
-          const currentGasPrice = await this.httpClient.getGasPrice();
-          txParams.gasPrice = (currentGasPrice * BigInt(Math.floor(multiplier * 100))) / 100n;
-        } catch (e) {
-          // 获取失败，使用默认的高 gas
-          txParams.gasPrice = BigInt(10) * BigInt(1e9); // 10 Gwei
-        }
+        txParams.gasPrice = BigInt(this.task.gasPrice) * BigInt(1e9);
       }
 
       this.log('info', `发送买入交易: ${wallet.address.slice(0, 10)}...`);
@@ -649,6 +613,13 @@ export class SnipeService {
     this.isRunning = false;
     this.unwatch?.();
     this.unwatch = null;
+
+    // 关闭原生 WebSocket
+    if (this.rawWs) {
+      this.rawWs.close();
+      this.rawWs = null;
+    }
+
     this.log('info', '监听已停止');
   }
 
@@ -680,6 +651,7 @@ export class SnipeService {
   destroy() {
     this.stop();
     this.walletClients.clear();
+    this.pendingTxProcessed.clear();
     this.wsClient = null;
     this.httpClient = null;
     this.logs = [];

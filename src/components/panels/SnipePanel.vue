@@ -43,7 +43,7 @@
 
           <!-- Gas 设置 -->
           <div class="row mb-3">
-            <div class="col-4">
+            <div class="col-6">
               <label class="form-label">Gas Price (Gwei)</label>
               <input
                 type="number"
@@ -55,7 +55,7 @@
               />
               <small class="text-muted">0 = 自动</small>
             </div>
-            <div class="col-4">
+            <div class="col-6">
               <label class="form-label">Gas Limit</label>
               <input
                 type="number"
@@ -66,18 +66,6 @@
                 min="0"
               />
               <small class="text-muted">0 = 自动</small>
-            </div>
-            <div class="col-4">
-              <label class="form-label">Gas 倍数</label>
-              <select class="form-select form-select-sm" v-model.number="formData.gasMultiplier">
-                <option :value="1">1x (正常)</option>
-                <option :value="1.5">1.5x</option>
-                <option :value="2">2x (快速)</option>
-                <option :value="3">3x (Turbo)</option>
-                <option :value="5">5x (极速)</option>
-                <option :value="10">10x (抢跑)</option>
-              </select>
-              <small class="text-muted">越高越快</small>
             </div>
           </div>
 
@@ -263,7 +251,6 @@ const formData = ref({
   buyAmount: 0.1,
   gasPrice: 0,
   gasLimit: 0,
-  gasMultiplier: 2,
   batchId: ''
 });
 
@@ -305,7 +292,6 @@ function createTask() {
     buyAmount: formData.value.buyAmount,
     gasPrice: formData.value.gasPrice,
     gasLimit: formData.value.gasLimit,
-    gasMultiplier: formData.value.gasMultiplier,
     batchId: walletSelectMode.value === 'batch' ? formData.value.batchId : undefined
   });
 
