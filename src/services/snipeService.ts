@@ -356,27 +356,31 @@ export class SnipeService {
         }
 
         if (currentBlock > lastBlockNumber) {
-          // 查询新区块的所有 FourMeme 合约事件
-          const logs = await this.httpClient.getLogs({
-            address: FOURMEME_CONTRACT,
-            fromBlock: lastBlockNumber + 1n,
-            toBlock: currentBlock
-          });
+          try {
+            // 查询新区块的所有 FourMeme 合约事件
+            const logs = await this.httpClient.getLogs({
+              address: FOURMEME_CONTRACT,
+              fromBlock: lastBlockNumber + 1n,
+              toBlock: currentBlock
+            });
 
-          // 过滤出 TokenCreated 事件
-          const tokenCreatedLogs = logs.filter(log =>
-            log.topics[0]?.toLowerCase() === TOKEN_CREATED_EVENT_SIGNATURE.toLowerCase()
-          );
+            // 过滤出 TokenCreated 事件
+            const tokenCreatedLogs = logs.filter(log =>
+              log.topics[0]?.toLowerCase() === TOKEN_CREATED_EVENT_SIGNATURE.toLowerCase()
+            );
 
-          if (tokenCreatedLogs.length > 0) {
-            this.log('info', `区块 ${lastBlockNumber + 1n}-${currentBlock} 发现 ${tokenCreatedLogs.length} 个代币创建事件`);
+            if (tokenCreatedLogs.length > 0) {
+              this.log('info', `区块 ${lastBlockNumber + 1n}-${currentBlock} 发现 ${tokenCreatedLogs.length} 个代币创建事件`);
+            }
+
+            for (const log of tokenCreatedLogs) {
+              await this.handleTokenCreatedEvent(log);
+            }
+
+            lastBlockNumber = currentBlock;
+          } catch (e) {
+            // 偶发的 RPC 错误，忽略继续
           }
-
-          for (const log of tokenCreatedLogs) {
-            await this.handleTokenCreatedEvent(log);
-          }
-
-          lastBlockNumber = currentBlock;
         }
 
         // 每 30 次轮询输出一次心跳日志
@@ -386,7 +390,7 @@ export class SnipeService {
         }
 
       } catch (error: any) {
-        this.log('warning', `轮询出错: ${error.message}`);
+        // 获取区块号失败，静默忽略
       }
 
       // 继续轮询（每 500ms）
