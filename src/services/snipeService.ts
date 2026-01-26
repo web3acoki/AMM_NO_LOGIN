@@ -200,21 +200,25 @@ export class SnipeService {
     try {
       this.log('info', '正在初始化狙击服务...');
 
-      // 创建 HTTP 客户端（用于发送交易）
+      // 创建 HTTP 客户端（用于发送交易和查询）
       this.httpClient = createPublicClient({
         chain: getChainConfig(this.chainId),
         transport: http(this.httpRpcUrl)
       });
 
-      // 创建 WebSocket 客户端（用于实时订阅事件）
+      this.log('info', `HTTP RPC: ${this.httpRpcUrl}`);
+
+      // 尝试创建 WebSocket 客户端
       try {
         this.wsClient = createPublicClient({
           chain: getChainConfig(this.chainId),
           transport: webSocket(this.wssRpcUrl)
         });
+        // 测试 WebSocket 连接
+        await this.wsClient.getBlockNumber();
         this.log('success', `WebSocket 连接成功: ${this.wssRpcUrl}`);
-      } catch (wsError) {
-        this.log('warning', `WebSocket 连接失败，将使用 HTTP 轮询: ${wsError}`);
+      } catch (wsError: any) {
+        this.log('warning', `WebSocket 不可用，使用 HTTP 轮询模式`);
         this.wsClient = null;
       }
 
@@ -269,12 +273,8 @@ export class SnipeService {
     this.log('info', `执行钱包数量: ${this.task.wallets.length}`);
 
     // 优先使用 WebSocket 订阅（实时），否则降级为轮询
-    if (this.wsClient) {
-      this.startWebSocketSubscription();
-    } else {
-      this.log('warning', 'WebSocket 不可用，降级为 HTTP 轮询');
-      this.startPolling();
-    }
+    // 注意：浏览器环境下 WebSocket 订阅可能不稳定，使用轮询更可靠
+    this.startPolling();
   }
 
   /**
@@ -283,12 +283,16 @@ export class SnipeService {
   private startWebSocketSubscription() {
     if (!this.wsClient) return;
 
-    this.log('info', '使用 WebSocket 实时订阅 TokenCreated 事件...');
+    this.log('info', '启动 WebSocket 实时订阅...');
 
-    // 使用 watchEvent 订阅特定合约的特定事件
+    let blockCount = 0;
+
+    // 使用 watchBlockNumber 订阅新区块
     this.unwatch = this.wsClient.watchBlockNumber({
       onBlockNumber: async (blockNumber) => {
         if (!this.isRunning || !this.httpClient) return;
+
+        blockCount++;
 
         try {
           // 获取当前区块的 TokenCreated 事件
@@ -299,15 +303,25 @@ export class SnipeService {
             toBlock: blockNumber
           });
 
+          if (logs.length > 0) {
+            this.log('info', `区块 ${blockNumber} 发现 ${logs.length} 个代币创建事件`);
+          }
+
           for (const log of logs) {
             await this.handleTokenCreatedEvent(log);
           }
+
+          // 每 10 个区块输出一次心跳
+          if (blockCount % 10 === 0) {
+            this.log('info', `监听中... 当前区块: ${blockNumber}`);
+          }
+
         } catch (error: any) {
           // 忽略单次查询错误
         }
       },
       onError: (error) => {
-        this.log('error', `WebSocket 订阅错误: ${error.message}`);
+        this.log('error', `WebSocket 错误: ${error.message}`);
         // 降级为轮询
         if (this.isRunning) {
           this.log('warning', '切换为 HTTP 轮询...');
@@ -326,6 +340,9 @@ export class SnipeService {
     if (!this.httpClient) return;
 
     let lastBlockNumber = 0n;
+    let pollCount = 0;
+
+    this.log('info', '启动 HTTP 轮询监听...');
 
     const poll = async () => {
       if (!this.isRunning || !this.httpClient) return;
@@ -347,19 +364,30 @@ export class SnipeService {
             toBlock: currentBlock
           });
 
+          if (logs.length > 0) {
+            this.log('info', `区块 ${lastBlockNumber + 1n}-${currentBlock} 发现 ${logs.length} 个代币创建事件`);
+          }
+
           for (const log of logs) {
             await this.handleTokenCreatedEvent(log);
           }
 
           lastBlockNumber = currentBlock;
         }
+
+        // 每 30 次轮询输出一次心跳日志
+        pollCount++;
+        if (pollCount % 30 === 0) {
+          this.log('info', `监听中... 当前区块: ${currentBlock}`);
+        }
+
       } catch (error: any) {
         this.log('warning', `轮询出错: ${error.message}`);
       }
 
-      // 继续轮询（每 1 秒）
+      // 继续轮询（每 300ms）
       if (this.isRunning) {
-        setTimeout(poll, 1000);
+        setTimeout(poll, 300);
       }
     };
 

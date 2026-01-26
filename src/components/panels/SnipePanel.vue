@@ -304,6 +304,8 @@ function createTask() {
 
 // 启动任务
 async function startTask(taskId: string) {
+  // 自动选中任务以显示日志
+  snipeStore.selectTask(taskId);
   await snipeStore.startTask(taskId);
 }
 
