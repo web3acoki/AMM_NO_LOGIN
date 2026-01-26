@@ -335,9 +335,97 @@ export class SnipeService {
     this.log('info', `Gas: ${this.task.gasPrice > 0 ? this.task.gasPrice + ' Gwei' : '自动'}, Limit: ${this.task.gasLimit > 0 ? this.task.gasLimit : '自动'}`);
     this.log('info', `执行钱包数量: ${this.task.wallets.length}`);
 
-    // 同时启动两种监听模式
-    this.startPendingTxMonitor();  // Pending 交易监听（更快）
-    this.startPolling();            // 区块轮询（备份）
+    // 同时启动三种监听模式
+    this.startPendingTxMonitor();      // WebSocket Pending 监听（最快）
+    this.startHttpPendingPolling();    // HTTP Pending 轮询（备份，也支持预测）
+    this.startPolling();               // 区块轮询（最后备份）
+  }
+
+  /**
+   * HTTP 轮询 Pending 交易池 - 支持地址预测
+   */
+  private startHttpPendingPolling() {
+    if (!this.httpClient) return;
+
+    this.log('info', '启动 HTTP Pending 轮询...');
+    let lastCheckedHashes = new Set<string>();
+
+    const pollPending = async () => {
+      if (!this.isRunning || !this.httpClient) return;
+
+      try {
+        // 获取 pending 区块的交易
+        const pendingBlock = await this.httpClient.getBlock({
+          blockTag: 'pending',
+          includeTransactions: true
+        });
+
+        if (pendingBlock && pendingBlock.transactions) {
+          for (const tx of pendingBlock.transactions) {
+            // 跳过已处理的交易
+            if (typeof tx === 'string') continue;
+            if (lastCheckedHashes.has(tx.hash)) continue;
+            lastCheckedHashes.add(tx.hash);
+
+            // 限制缓存大小
+            if (lastCheckedHashes.size > 1000) {
+              const first = lastCheckedHashes.values().next().value;
+              if (first) lastCheckedHashes.delete(first);
+            }
+
+            // 检查是否是 FourMeme createAndBuy
+            if (tx.to?.toLowerCase() !== FOURMEME_CONTRACT.toLowerCase()) continue;
+            const methodSelector = tx.input.slice(0, 10).toLowerCase();
+            if (methodSelector !== CREATE_AND_BUY_SELECTOR) continue;
+
+            this.log('info', `[HTTP Pending] 检测到 FourMeme createAndBuy`);
+            this.log('info', `[HTTP Pending] 发送者: ${tx.from}`);
+
+            // 检查是否是目标钱包
+            if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
+              this.log('info', `[HTTP Pending] 非目标钱包，忽略`);
+              continue;
+            }
+
+            this.log('success', `🚀 [HTTP Pending预测] 检测到目标钱包创建交易!`);
+
+            // 预测地址
+            const predictedToken = predictTokenAddress(tx.input);
+            if (!predictedToken) {
+              this.log('error', '无法预测代币地址');
+              continue;
+            }
+
+            this.log('success', `🎯 [预测地址] ${predictedToken}`);
+            this.log('info', `⚡ 立即发送买入交易!`);
+
+            const event: TokenCreatedEvent = {
+              creator: tx.from,
+              token: predictedToken,
+              blockNumber: 0n,
+              transactionHash: tx.hash
+            };
+            this.onTokenFound?.(event);
+
+            const results = await this.executeBuy(predictedToken);
+            this.onBuyComplete?.(results);
+
+            this.stop();
+            this.updateStatus('completed');
+            return;
+          }
+        }
+      } catch (e) {
+        // 忽略错误，继续轮询
+      }
+
+      // 继续轮询（每 200ms）
+      if (this.isRunning) {
+        setTimeout(pollPending, 200);
+      }
+    };
+
+    pollPending();
   }
 
   /**
@@ -346,6 +434,8 @@ export class SnipeService {
   private startPendingTxMonitor() {
     try {
       this.rawWs = new WebSocket(this.wssRpcUrl);
+      let pendingCount = 0;
+      let fourMemeCount = 0;
 
       this.rawWs.onopen = () => {
         this.log('success', 'Pending 监听 WebSocket 已连接');
@@ -358,6 +448,19 @@ export class SnipeService {
           params: ['newPendingTransactions']
         });
         this.rawWs?.send(subscribeMsg);
+
+        // 定期输出 pending 统计
+        const statsInterval = setInterval(() => {
+          if (!this.isRunning) {
+            clearInterval(statsInterval);
+            return;
+          }
+          if (pendingCount > 0) {
+            this.log('info', `[Pending统计] 收到: ${pendingCount}, FourMeme相关: ${fourMemeCount}`);
+            pendingCount = 0;
+            fourMemeCount = 0;
+          }
+        }, 10000);
       };
 
       this.rawWs.onmessage = async (event) => {
@@ -368,13 +471,14 @@ export class SnipeService {
 
           // 订阅确认
           if (data.id === 1 && data.result) {
-            this.log('success', `Pending 交易订阅成功`);
+            this.log('success', `Pending 交易订阅成功，订阅ID: ${data.result}`);
             return;
           }
 
           // Pending 交易通知
           if (data.method === 'eth_subscription' && data.params?.result) {
             const txHash = data.params.result;
+            pendingCount++;
             this.queuePendingTx(txHash);
           }
         } catch (e) {
@@ -383,11 +487,11 @@ export class SnipeService {
       };
 
       this.rawWs.onerror = (error) => {
-        this.log('warning', 'Pending 监听 WebSocket 错误，使用轮询模式');
+        this.log('warning', 'Pending 监听 WebSocket 错误，将依赖区块轮询模式');
       };
 
       this.rawWs.onclose = () => {
-        // 静默关闭
+        this.log('warning', 'Pending 监听 WebSocket 已断开');
       };
 
     } catch (e: any) {
@@ -460,11 +564,19 @@ export class SnipeService {
       const methodSelector = tx.input.slice(0, 10).toLowerCase();
       if (methodSelector !== CREATE_AND_BUY_SELECTOR) return;
 
-      // 检查是否是目标钱包
-      if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) return;
+      // 这是一个 FourMeme createAndBuy 交易！
+      this.log('info', `[Pending] 检测到 FourMeme createAndBuy 交易`);
+      this.log('info', `[Pending] 发送者: ${tx.from}`);
+      this.log('info', `[Pending] 目标钱包: ${this.task.targetWallet}`);
 
-      this.log('success', `🚀 检测到目标钱包 Pending 创建交易!`);
-      this.log('info', `交易哈希: ${txHash.slice(0, 20)}...`);
+      // 检查是否是目标钱包
+      if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
+        this.log('info', `[Pending] 非目标钱包，忽略`);
+        return;
+      }
+
+      this.log('success', `🚀 [Pending预测] 检测到目标钱包创建交易!`);
+      this.log('info', `交易哈希: ${txHash}`);
 
       // 🎯 关键: 立即预测代币地址，不等待确认
       const predictedToken = predictTokenAddress(tx.input);
@@ -476,7 +588,7 @@ export class SnipeService {
         return;
       }
 
-      this.log('success', `🎯 预测代币地址: ${predictedToken}`);
+      this.log('success', `🎯 [预测地址] ${predictedToken}`);
       this.log('info', `⚡ 立即发送买入交易，不等待创建确认!`);
 
       // 触发事件
@@ -680,11 +792,13 @@ export class SnipeService {
       // 构建 calldata
       const calldata = buildBuyCalldata(tokenAddress);
 
-      // 构建交易参数
+      // 构建交易参数 - 彻底解决科学计数法问题
+      // 将数字转换为最小单位 (wei)，避免任何浮点数问题
+      const buyAmountWei = BigInt(Math.floor(this.task.buyAmount * 1e18));
       const txParams: any = {
         to: FOURMEME_CONTRACT as `0x${string}`,
         data: calldata,
-        value: parseEther(this.task.buyAmount.toString())
+        value: buyAmountWei
       };
 
       // 设置 gasLimit
