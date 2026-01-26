@@ -59,6 +59,7 @@ export const useSnipeStore = defineStore('snipe', () => {
     buyAmount: number;
     gasPrice: number;
     gasLimit: number;
+    gasMultiplier: number;       // Gas 倍数（Turbo 模式）
     walletAddresses?: string[];  // 从钱包列表选择
     batchId?: string;            // 或从批次选择
   }): SnipeTaskConfig {
@@ -113,6 +114,7 @@ export const useSnipeStore = defineStore('snipe', () => {
       buyAmount: config.buyAmount,
       gasPrice: config.gasPrice,
       gasLimit: config.gasLimit,
+      gasMultiplier: config.gasMultiplier || 1,
       wallets: snipeWallets,
       status: 'pending',
       createdAt: Date.now()
