@@ -36,8 +36,7 @@
               class="form-control form-control-sm"
               v-model.number="formData.buyAmount"
               placeholder="0.1"
-              step="0.01"
-              min="0.001"
+              step="any"
             />
             <small class="text-muted">每个钱包的买入金额</small>
           </div>
