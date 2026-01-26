@@ -144,6 +144,10 @@ export class SnipeService {
   private unwatch: (() => void) | null = null;
   private isRunning: boolean = false;
   private pendingTxProcessed: Set<string> = new Set();  // 已处理的 pending 交易
+  private pendingTxQueue: string[] = [];  // 待处理的交易队列
+  private isProcessingQueue: boolean = false;  // 是否正在处理队列
+  private maxConcurrentRequests: number = 5;  // 最大并发请求数
+  private activeRequests: number = 0;  // 当前活跃请求数
   private logs: SnipeLog[] = [];
   private onLog: ((log: SnipeLog) => void) | null = null;
   private onTokenFound: ((event: TokenCreatedEvent) => void) | null = null;
@@ -324,7 +328,7 @@ export class SnipeService {
           // Pending 交易通知
           if (data.method === 'eth_subscription' && data.params?.result) {
             const txHash = data.params.result;
-            this.processPendingTx(txHash);
+            this.queuePendingTx(txHash);
           }
         } catch (e) {
           // 忽略解析错误
@@ -345,20 +349,58 @@ export class SnipeService {
   }
 
   /**
-   * 处理 Pending 交易
+   * 将交易加入队列
    */
-  private async processPendingTx(txHash: string) {
+  private queuePendingTx(txHash: string) {
     // 避免重复处理
     if (this.pendingTxProcessed.has(txHash)) return;
     this.pendingTxProcessed.add(txHash);
 
     // 限制缓存大小
-    if (this.pendingTxProcessed.size > 10000) {
+    if (this.pendingTxProcessed.size > 5000) {
       const first = this.pendingTxProcessed.values().next().value;
       this.pendingTxProcessed.delete(first);
     }
 
+    // 限制队列大小，避免积压
+    if (this.pendingTxQueue.length < 100) {
+      this.pendingTxQueue.push(txHash);
+    }
+
+    // 启动队列处理
+    this.processQueue();
+  }
+
+  /**
+   * 处理交易队列（限流）
+   */
+  private async processQueue() {
+    if (this.isProcessingQueue || !this.isRunning) return;
+    this.isProcessingQueue = true;
+
+    while (this.pendingTxQueue.length > 0 && this.isRunning) {
+      // 等待有空闲的请求槽位
+      if (this.activeRequests >= this.maxConcurrentRequests) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        continue;
+      }
+
+      const txHash = this.pendingTxQueue.shift();
+      if (txHash) {
+        this.processPendingTx(txHash);
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  /**
+   * 处理 Pending 交易
+   */
+  private async processPendingTx(txHash: string) {
     if (!this.httpClient || !this.isRunning) return;
+
+    this.activeRequests++;
 
     try {
       const tx = await this.httpClient.getTransaction({ hash: txHash as `0x${string}` });
@@ -408,6 +450,8 @@ export class SnipeService {
       }
     } catch (e) {
       // 忽略单个交易错误
+    } finally {
+      this.activeRequests--;
     }
   }
 
@@ -461,9 +505,9 @@ export class SnipeService {
           }
         }
 
-        // 每 30 次轮询输出一次心跳日志
+        // 每 100 次轮询输出一次心跳日志（约10秒）
         pollCount++;
-        if (pollCount % 30 === 0) {
+        if (pollCount % 100 === 0) {
           this.log('info', `监听中... 当前区块: ${currentBlock}`);
         }
 
@@ -471,9 +515,9 @@ export class SnipeService {
         // 获取区块号失败，静默忽略
       }
 
-      // 继续轮询（每 500ms）
+      // 继续轮询（每 100ms）
       if (this.isRunning) {
-        setTimeout(poll, 500);
+        setTimeout(poll, 100);
       }
     };
 
@@ -623,6 +667,10 @@ export class SnipeService {
       this.rawWs = null;
     }
 
+    // 清空队列
+    this.pendingTxQueue = [];
+    this.isProcessingQueue = false;
+
     this.log('info', '监听已停止');
   }
 
@@ -655,6 +703,9 @@ export class SnipeService {
     this.stop();
     this.walletClients.clear();
     this.pendingTxProcessed.clear();
+    this.pendingTxQueue = [];
+    this.isProcessingQueue = false;
+    this.activeRequests = 0;
     this.wsClient = null;
     this.httpClient = null;
     this.logs = [];
