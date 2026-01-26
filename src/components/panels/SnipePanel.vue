@@ -159,19 +159,19 @@
                     {{ task.buyAmount }} BNB · {{ task.wallets.length }} 钱包
                   </div>
                 </div>
-                <div class="task-actions">
+                <div class="task-actions d-flex align-items-center gap-2">
                   <!-- 状态徽章 -->
                   <span
-                    class="badge me-1"
+                    class="badge"
                     :class="getStatusBadgeClass(task.status)"
                   >
                     {{ getStatusText(task.status) }}
                   </span>
                   <!-- 操作按钮 -->
-                  <div class="btn-group btn-group-sm">
+                  <div class="btn-group">
                     <button
                       v-if="task.status === 'pending' || task.status === 'stopped'"
-                      class="btn btn-success btn-sm"
+                      class="btn btn-success btn-sm px-2"
                       @click.stop="startTask(task.id)"
                       title="启动"
                     >
@@ -179,14 +179,14 @@
                     </button>
                     <button
                       v-if="task.status === 'running'"
-                      class="btn btn-warning btn-sm"
+                      class="btn btn-warning btn-sm px-2"
                       @click.stop="stopTask(task.id)"
                       title="停止"
                     >
                       <i class="bi bi-stop-fill"></i>
                     </button>
                     <button
-                      class="btn btn-danger btn-sm"
+                      class="btn btn-danger btn-sm px-2"
                       @click.stop="deleteTask(task.id)"
                       title="删除"
                     >
@@ -416,6 +416,18 @@ watch(currentLogs, async () => {
 .task-info {
   flex: 1;
   min-width: 0;
+}
+
+.task-actions {
+  flex-shrink: 0;
+}
+
+.task-actions .btn {
+  min-width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .task-target {
