@@ -50,10 +50,11 @@
                 type="number"
                 class="form-control form-control-sm"
                 v-model.number="formData.gasPrice"
-                placeholder="5"
+                placeholder="0 = 自动"
                 step="1"
-                min="1"
+                min="0"
               />
+              <small class="text-muted">0 表示自动估算</small>
             </div>
             <div class="col-6">
               <label class="form-label">Gas Limit</label>
@@ -61,10 +62,11 @@
                 type="number"
                 class="form-control form-control-sm"
                 v-model.number="formData.gasLimit"
-                placeholder="250000"
+                placeholder="0 = 自动"
                 step="10000"
-                min="100000"
+                min="0"
               />
+              <small class="text-muted">0 表示自动估算</small>
             </div>
           </div>
 
@@ -248,8 +250,8 @@ const walletStore = useWalletStore();
 const formData = ref({
   targetWallet: '',
   buyAmount: 0.1,
-  gasPrice: 5,
-  gasLimit: 250000,
+  gasPrice: 0,
+  gasLimit: 0,
   batchId: ''
 });
 

@@ -131,7 +131,6 @@ export class SnipeService {
   private wsClient: PublicClient | null = null;
   private httpClient: PublicClient | null = null;
   private walletClients: Map<string, WalletClient> = new Map();
-  private nonceMap: Map<string, number> = new Map();
   private unwatch: (() => void) | null = null;
   private isRunning: boolean = false;
   private logs: SnipeLog[] = [];
@@ -201,22 +200,22 @@ export class SnipeService {
     try {
       this.log('info', '正在初始化狙击服务...');
 
-      // 创建 HTTP 客户端
+      // 创建 HTTP 客户端（用于发送交易）
       this.httpClient = createPublicClient({
         chain: getChainConfig(this.chainId),
         transport: http(this.httpRpcUrl)
       });
 
-      // 创建 WebSocket 客户端
+      // 创建 WebSocket 客户端（用于实时订阅事件）
       try {
         this.wsClient = createPublicClient({
           chain: getChainConfig(this.chainId),
           transport: webSocket(this.wssRpcUrl)
         });
-        this.log('info', `WebSocket 连接成功: ${this.wssRpcUrl}`);
+        this.log('success', `WebSocket 连接成功: ${this.wssRpcUrl}`);
       } catch (wsError) {
-        this.log('warning', `WebSocket 连接失败，使用 HTTP 轮询: ${wsError}`);
-        this.wsClient = this.httpClient;
+        this.log('warning', `WebSocket 连接失败，将使用 HTTP 轮询: ${wsError}`);
+        this.wsClient = null;
       }
 
       // 预创建钱包客户端
@@ -235,9 +234,6 @@ export class SnipeService {
         }
       }
 
-      // 预取 nonce
-      await this.prefetchNonces();
-
       this.log('success', '狙击服务初始化完成');
       return true;
 
@@ -245,36 +241,6 @@ export class SnipeService {
       this.log('error', '初始化失败', error.message);
       return false;
     }
-  }
-
-  /**
-   * 预取所有钱包的 nonce
-   */
-  private async prefetchNonces() {
-    if (!this.httpClient) return;
-
-    for (const wallet of this.task.wallets) {
-      try {
-        const nonce = await this.httpClient.getTransactionCount({
-          address: wallet.address as `0x${string}`,
-          blockTag: 'pending'
-        });
-        this.nonceMap.set(wallet.address.toLowerCase(), nonce);
-        this.log('info', `Nonce 预取完成: ${wallet.address.slice(0, 10)}... = ${nonce}`);
-      } catch (e: any) {
-        this.log('warning', `Nonce 预取失败: ${wallet.address}`, e.message);
-      }
-    }
-  }
-
-  /**
-   * 获取并递增 nonce
-   */
-  private getAndIncrementNonce(address: string): number {
-    const key = address.toLowerCase();
-    const nonce = this.nonceMap.get(key) || 0;
-    this.nonceMap.set(key, nonce + 1);
-    return nonce;
   }
 
   // ==================== 监听方法 ====================
@@ -299,11 +265,58 @@ export class SnipeService {
 
     this.log('info', `开始监听目标钱包: ${this.task.targetWallet}`);
     this.log('info', `买入金额: ${this.task.buyAmount} BNB`);
-    this.log('info', `Gas: ${this.task.gasPrice} Gwei, Limit: ${this.task.gasLimit}`);
+    this.log('info', `Gas: ${this.task.gasPrice > 0 ? this.task.gasPrice + ' Gwei' : '自动'}, Limit: ${this.task.gasLimit > 0 ? this.task.gasLimit : '自动'}`);
     this.log('info', `执行钱包数量: ${this.task.wallets.length}`);
 
-    // 使用轮询方式监听事件（更可靠）
-    this.startPolling();
+    // 优先使用 WebSocket 订阅（实时），否则降级为轮询
+    if (this.wsClient) {
+      this.startWebSocketSubscription();
+    } else {
+      this.log('warning', 'WebSocket 不可用，降级为 HTTP 轮询');
+      this.startPolling();
+    }
+  }
+
+  /**
+   * 使用 WebSocket 实时订阅事件
+   */
+  private startWebSocketSubscription() {
+    if (!this.wsClient) return;
+
+    this.log('info', '使用 WebSocket 实时订阅 TokenCreated 事件...');
+
+    // 使用 watchEvent 订阅特定合约的特定事件
+    this.unwatch = this.wsClient.watchBlockNumber({
+      onBlockNumber: async (blockNumber) => {
+        if (!this.isRunning || !this.httpClient) return;
+
+        try {
+          // 获取当前区块的 TokenCreated 事件
+          const logs = await this.httpClient.getLogs({
+            address: FOURMEME_CONTRACT,
+            topics: [TOKEN_CREATED_EVENT_SIGNATURE],
+            fromBlock: blockNumber,
+            toBlock: blockNumber
+          });
+
+          for (const log of logs) {
+            await this.handleTokenCreatedEvent(log);
+          }
+        } catch (error: any) {
+          // 忽略单次查询错误
+        }
+      },
+      onError: (error) => {
+        this.log('error', `WebSocket 订阅错误: ${error.message}`);
+        // 降级为轮询
+        if (this.isRunning) {
+          this.log('warning', '切换为 HTTP 轮询...');
+          this.startPolling();
+        }
+      }
+    });
+
+    this.log('success', '实时订阅已启动（监听新区块）');
   }
 
   /**
@@ -426,20 +439,24 @@ export class SnipeService {
       // 构建 calldata
       const calldata = buildBuyCalldata(tokenAddress);
 
-      // 获取 nonce
-      const nonce = this.getAndIncrementNonce(wallet.address);
-
-      // 构建交易参数
-      const txParams = {
+      // 构建交易参数（不指定 nonce，让 viem 自动获取）
+      const txParams: any = {
         to: FOURMEME_CONTRACT as `0x${string}`,
         data: calldata,
-        value: parseEther(this.task.buyAmount.toString()),
-        gas: BigInt(this.task.gasLimit),
-        gasPrice: parseEther((this.task.gasPrice / 1e9).toString()), // Gwei to Ether
-        nonce
+        value: parseEther(this.task.buyAmount.toString())
       };
 
-      this.log('info', `发送买入交易: ${wallet.address.slice(0, 10)}..., nonce: ${nonce}`);
+      // 只有当 gasLimit > 0 时才设置
+      if (this.task.gasLimit > 0) {
+        txParams.gas = BigInt(this.task.gasLimit);
+      }
+
+      // 只有当 gasPrice > 0 时才设置
+      if (this.task.gasPrice > 0) {
+        txParams.gasPrice = BigInt(this.task.gasPrice) * BigInt(1e9); // Gwei to Wei
+      }
+
+      this.log('info', `发送买入交易: ${wallet.address.slice(0, 10)}...`);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction(txParams);
@@ -516,7 +533,6 @@ export class SnipeService {
   destroy() {
     this.stop();
     this.walletClients.clear();
-    this.nonceMap.clear();
     this.wsClient = null;
     this.httpClient = null;
     this.logs = [];
