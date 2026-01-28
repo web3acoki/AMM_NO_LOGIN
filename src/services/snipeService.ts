@@ -932,11 +932,29 @@ export class SnipeService {
       // 将数字转换为最小单位 (wei)，避免任何浮点数问题
       const buyAmountWei = BigInt(Math.floor(this.task.buyAmount * 1e18));
 
+      // 获取最新 nonce（使用 pending 状态，包含未确认交易）
+      let nonce: number | undefined;
+      if (this.httpClient) {
+        try {
+          nonce = await this.httpClient.getTransactionCount({
+            address: wallet.address as `0x${string}`,
+            blockTag: 'pending'
+          });
+        } catch (e) {
+          // 获取失败，让 viem 自动处理
+        }
+      }
+
       const txParams: any = {
         to: FOURMEME_CONTRACT as `0x${string}`,
         data: calldata,
         value: buyAmountWei
       };
+
+      // 设置 nonce
+      if (nonce !== undefined) {
+        txParams.nonce = nonce;
+      }
 
       // 设置 gasLimit
       if (this.task.gasLimit > 0) {
@@ -948,9 +966,9 @@ export class SnipeService {
         txParams.gasPrice = BigInt(this.task.gasPrice) * BigInt(1e9);
       }
 
-      this.log('info', `发送买入交易: ${wallet.address.slice(0, 10)}...`);
+      this.log('info', `发送买入交易: ${wallet.address.slice(0, 10)}... (nonce: ${nonce ?? 'auto'})`);
 
-      // 发送交易 - 让 viem 自动处理 nonce，追求最快速度
+      // 发送交易
       const txHash = await walletClient.sendTransaction(txParams);
 
       const elapsed = Date.now() - startTime;
