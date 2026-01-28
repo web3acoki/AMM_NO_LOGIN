@@ -23,9 +23,9 @@
               type="text"
               class="form-control form-control-sm"
               v-model="formData.targetWallet"
-              placeholder="输入要监听的钱包地址 (0x...)"
+              placeholder="留空 = 监听所有创建代币 (测试模式)"
             />
-            <small class="text-muted">监听此钱包创建的代币</small>
+            <small class="text-muted">留空监听所有，或输入指定钱包地址</small>
           </div>
 
           <!-- 买入金额 -->
@@ -188,7 +188,10 @@
                 <div class="task-info">
                   <div class="task-target text-truncate" style="max-width: 180px;">
                     <i class="bi bi-crosshair me-1"></i>
-                    {{ task.targetWallet.slice(0, 10) }}...{{ task.targetWallet.slice(-6) }}
+                    <span v-if="task.targetWallet && task.targetWallet.trim()">
+                      {{ task.targetWallet.slice(0, 10) }}...{{ task.targetWallet.slice(-6) }}
+                    </span>
+                    <span v-else class="text-warning">监听所有</span>
                   </div>
                   <div class="task-meta small text-muted">
                     {{ task.buyAmount }} BNB · {{ task.wallets.length }} 钱包
@@ -313,7 +316,9 @@ const currentLogs = computed(() => {
 
 // 是否可以创建任务
 const canCreateTask = computed(() => {
-  if (!formData.value.targetWallet || !formData.value.targetWallet.match(/^0x[a-fA-F0-9]{40}$/)) {
+  // 目标钱包：允许为空（测试模式），或必须是有效地址
+  const wallet = formData.value.targetWallet.trim();
+  if (wallet && !wallet.match(/^0x[a-fA-F0-9]{40}$/)) {
     return false;
   }
   if (formData.value.buyAmount <= 0) {
