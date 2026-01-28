@@ -28,6 +28,7 @@ export const useSnipeStore = defineStore('snipe', () => {
   const activeServices = ref<Map<string, SnipeService>>(new Map());
   const taskLogs = ref<Map<string, SnipeLog[]>>(new Map());
   const currentTaskId = ref<string | null>(null);
+  const detectedInnerToken = ref<string | null>(null);  // 检测到的内盘代币地址
 
   // ==================== 计算属性 ====================
 
@@ -276,6 +277,13 @@ export const useSnipeStore = defineStore('snipe', () => {
     return taskLogs.value.get(taskId) || [];
   }
 
+  /**
+   * 设置内盘目标代币地址（从狙击检测中获取）
+   */
+  function setInnerToken(tokenAddress: string | null) {
+    detectedInnerToken.value = tokenAddress;
+  }
+
   // ==================== 返回 ====================
 
   return {
@@ -283,6 +291,7 @@ export const useSnipeStore = defineStore('snipe', () => {
     tasks,
     currentTaskId,
     taskLogs,
+    detectedInnerToken,
 
     // 计算属性
     currentTask,
@@ -302,6 +311,9 @@ export const useSnipeStore = defineStore('snipe', () => {
     // 日志管理
     addLog,
     clearLogs,
-    getTaskLogs
+    getTaskLogs,
+
+    // 内盘代币
+    setInnerToken
   };
 });

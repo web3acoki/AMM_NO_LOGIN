@@ -209,7 +209,8 @@ export class SnipeService {
   private httpClients: PublicClient[] = [];
   private nodeIndex: number = 0;
   private activeRequests: number = 0;
-  private maxConcurrentRequests: number = 20;  // 最大并发请求数
+  private maxConcurrentRequests: number = 50;  // 提高并发限制到 50
+  private fourMemeDetected: number = 0;  // FourMeme 交易检测计数
 
   constructor(
     task: SnipeTaskConfig,
@@ -526,8 +527,9 @@ export class SnipeService {
               clearInterval(statsInterval);
               return;
             }
-            this.log('info', `[Pending统计] 10秒内收到: ${pendingCount} 笔交易`);
+            this.log('info', `[Pending统计] 10秒内收到: ${pendingCount}, FourMeme: ${this.fourMemeDetected}, 当前并发: ${this.activeRequests}`);
             pendingCount = 0;
+            this.fourMemeDetected = 0;
           }, 10000);
         };
 
@@ -600,9 +602,9 @@ export class SnipeService {
   private async processPendingTxDirect(txHash: string) {
     if (!this.isRunning) return;
 
-    // 并发限制
+    // 并发限制 - 但不要完全跳过，记录一下
     if (this.activeRequests >= this.maxConcurrentRequests) {
-      return; // 超过并发限制，跳过
+      return; // 超过并发限制，跳过（但节点池足够大，应该很少发生）
     }
 
     this.activeRequests++;
@@ -624,6 +626,7 @@ export class SnipeService {
       if (methodSelector !== CREATE_AND_BUY_SELECTOR) return;
 
       // 🎯 检测到 FourMeme createAndBuy 交易！
+      this.fourMemeDetected++;  // 统计计数
       const isWatchAll = !this.task.targetWallet || this.task.targetWallet.trim() === '';
 
       this.log('info', `[Pending] 检测到 FourMeme createAndBuy`);

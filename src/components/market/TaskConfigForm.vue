@@ -20,6 +20,50 @@
         </div>
       </div>
 
+      <!-- 盘口选择 -->
+      <div class="mb-3">
+        <label class="form-label small">盘口选择</label>
+        <div class="btn-group btn-group-sm w-100">
+          <button
+            type="button"
+            class="btn"
+            :class="marketType === 'outer' ? 'btn-primary' : 'btn-outline-primary'"
+            @click="marketType = 'outer'"
+          >
+            外盘 (DEX)
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :class="marketType === 'inner' ? 'btn-primary' : 'btn-outline-primary'"
+            @click="marketType = 'inner'"
+          >
+            内盘 (FourMeme)
+          </button>
+        </div>
+        <div class="form-text small">
+          <i class="bi bi-info-circle me-1"></i>
+          {{ marketType === 'outer' ? '外盘通过 PancakeSwap DEX 进行交易' : '内盘通过 FourMeme 主合约直接交易' }}
+        </div>
+      </div>
+
+      <!-- 内盘目标代币地址（仅内盘模式显示） -->
+      <div class="mb-3" v-if="marketType === 'inner'">
+        <label class="form-label small">
+          内盘目标代币地址
+          <span v-if="innerTokenAddress" class="badge bg-success ms-1">已设置</span>
+        </label>
+        <input
+          type="text"
+          class="form-control form-control-sm"
+          v-model="innerTokenAddress"
+          placeholder="0x... 或从狙击检测自动设置"
+        >
+        <div class="form-text small text-muted">
+          <i class="bi bi-crosshair me-1"></i>可在代币狙击中检测到代币后点击按钮自动设置
+        </div>
+      </div>
+
       <!-- 代币合约地址 -->
       <div class="mb-3">
         <label class="form-label small">
@@ -217,18 +261,23 @@ import { ref, computed, watch } from 'vue';
 import { useTaskStore } from '../../stores/taskStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { useChainStore } from '../../stores/chainStore';
+import { useSnipeStore } from '../../stores/snipeStore';
 import { storeToRefs } from 'pinia';
 
 const taskStore = useTaskStore();
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
+const snipeStore = useSnipeStore();
 
 const { currentGovernanceToken } = storeToRefs(chainStore);
 const { selectedWalletAddresses, selectedCount, targetToken, walletBatches } = storeToRefs(walletStore);
+const { detectedInnerToken } = storeToRefs(snipeStore);
 
 // 表单数据
 const taskName = ref('');
 const mode = ref<'pump' | 'dump'>('pump');
+const marketType = ref<'inner' | 'outer'>('outer');  // 盘口类型
+const innerTokenAddress = ref('');  // 内盘目标代币地址
 const tokenContract = ref('');
 const amountMin = ref<number>(0.01);
 const amountMax = ref<number>(0.05);
@@ -249,6 +298,15 @@ const selectedBatchIds = ref<string[]>([]);
 watch(targetToken, (token) => {
   if (token) {
     tokenContract.value = token.address;
+  }
+}, { immediate: true });
+
+// 监听狙击检测到的内盘代币，自动填入内盘代币地址
+watch(detectedInnerToken, (token) => {
+  if (token) {
+    innerTokenAddress.value = token;
+    // 自动切换到内盘模式
+    marketType.value = 'inner';
   }
 }, { immediate: true });
 
@@ -315,9 +373,14 @@ const canCreate = computed(() => {
   const amountValid = (mode.value === 'dump' && sellAll.value) ||
     (amountMin.value >= 0 && amountMax.value >= amountMin.value);
 
+  // 内盘模式需要内盘代币地址，外盘模式需要代币合约地址
+  const tokenValid = marketType.value === 'inner'
+    ? innerTokenAddress.value.match(/^0x[a-fA-F0-9]{40}$/)
+    : tokenContract.value;
+
   return (
     taskName.value &&
-    tokenContract.value &&
+    tokenValid &&
     amountValid &&
     stopValue.value > 0 &&
     interval.value > 0 &&
@@ -369,7 +432,7 @@ function handleCreateTask() {
   if (!canCreate.value) return;
 
   const config = {
-    tokenContract: tokenContract.value,
+    tokenContract: marketType.value === 'inner' ? innerTokenAddress.value : tokenContract.value,
     targetPrice: stopType.value === 'price' ? stopValue.value : 0, // 只有停止条件是价格时才使用
     targetMarketCap: stopType.value === 'marketcap' ? stopValue.value : undefined,
     amountMin: amountMin.value,
@@ -381,6 +444,8 @@ function handleCreateTask() {
     gasPrice: gasPrice.value,
     gasLimit: gasLimit.value,
     sellAll: sellAll.value, // 砸盘时是否卖出全部
+    marketType: marketType.value, // 盘口类型
+    innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
@@ -396,7 +461,8 @@ function handleCreateTask() {
   selectedBatchIds.value = [];
 
   // 显示成功提示
-  alert(`任务 "${task.name}" 创建成功！\n\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
+  const marketTypeText = marketType.value === 'inner' ? '内盘' : '外盘';
+  alert(`任务 "${task.name}" 创建成功！\n\n盘口: ${marketTypeText}\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
 }
 </script>
 

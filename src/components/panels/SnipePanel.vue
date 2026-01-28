@@ -238,6 +238,34 @@
         </div>
       </div>
 
+      <!-- 最近检测到的代币 -->
+      <div class="detected-token card mb-3" v-if="lastDetectedToken">
+        <div class="card-header">
+          <h6 class="mb-0">
+            <i class="bi bi-bullseye me-1"></i>
+            最近检测到的代币
+          </h6>
+        </div>
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-center">
+            <div class="token-address">
+              <code class="small">{{ lastDetectedToken }}</code>
+            </div>
+            <button
+              class="btn btn-sm btn-success"
+              @click="setAsInnerTarget"
+              title="设置为内盘目标代币"
+            >
+              <i class="bi bi-arrow-right-circle me-1"></i>
+              设为内盘目标
+            </button>
+          </div>
+          <div class="form-text small text-muted mt-1">
+            点击按钮将此代币设置为任务管理中的内盘目标代币
+          </div>
+        </div>
+      </div>
+
       <!-- 日志面板 -->
       <div class="log-panel card">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -313,6 +341,35 @@ const currentLogs = computed(() => {
   if (!snipeStore.currentTaskId) return [];
   return snipeStore.getTaskLogs(snipeStore.currentTaskId);
 });
+
+// 最近检测到的代币地址（从日志中提取）
+const lastDetectedToken = computed(() => {
+  // 从日志中找到最近的代币检测记录
+  const logs = currentLogs.value;
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const log = logs[i];
+    // 检查是否是代币检测日志
+    if (log.data && log.data.token) {
+      return log.data.token;
+    }
+    // 也检查预测的代币地址
+    if (log.message && log.message.includes('预测代币地址:')) {
+      const match = log.message.match(/预测代币地址:\s*(0x[a-fA-F0-9]{40})/);
+      if (match) {
+        return match[1];
+      }
+    }
+  }
+  return null;
+});
+
+// 设置为内盘目标代币
+function setAsInnerTarget() {
+  if (lastDetectedToken.value) {
+    snipeStore.setInnerToken(lastDetectedToken.value);
+    alert(`已设置内盘目标代币: ${lastDetectedToken.value}\n\n请在任务管理中选择"内盘"模式来使用此代币。`);
+  }
+}
 
 // 是否可以创建任务
 const canCreateTask = computed(() => {
@@ -549,5 +606,20 @@ watch(currentLogs, async () => {
 .node-settings input {
   font-family: monospace;
   font-size: 0.85rem;
+}
+
+.detected-token .card-header {
+  background: rgba(40, 167, 69, 0.15);
+  padding: 0.5rem 1rem;
+}
+
+.detected-token .token-address {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.detected-token code {
+  color: #28a745;
 }
 </style>

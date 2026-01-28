@@ -4,6 +4,7 @@ import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
 import { useDexStore } from './dexStore';
 import { createTradingService, type TradeParams } from '../services/tradingService';
+import { createFourMemeService, type FourMemeTradeParams } from '../services/fourMemeService';
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
@@ -32,6 +33,8 @@ export interface TaskConfig {
   gasPrice?: number;          // 自定义Gas价格 (Gwei)
   gasLimit?: number;          // 自定义Gas上限
   sellAll?: boolean;          // 砸盘时是否卖出全部
+  marketType: 'inner' | 'outer';  // 盘口类型：inner=内盘(FourMeme), outer=外盘(DEX)
+  innerTokenAddress?: string; // 内盘目标代币地址（仅内盘模式使用）
 }
 
 // 任务统计接口
@@ -203,15 +206,9 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     try {
-      // 获取链和DEX配置
+      // 获取链配置
       const chainId = chainStore.selectedChainId;
       const rpcUrl = chainStore.effectiveRpcUrl;
-      const routerAddress = dexStore.currentRouterAddress;
-
-      if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
-        addLog(task.id, 'error', '当前DEX的Router地址未配置', walletAddress);
-        return false;
-      }
 
       // 计算随机金额（在区间内）
       const amountMin = task.config.amountMin || 0;
@@ -226,56 +223,126 @@ export const useTaskStore = defineStore('task', () => {
         return num.toFixed(18).replace(/\.?0+$/, '');
       };
 
-      addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易...`, walletAddress);
+      const marketTypeText = task.config.marketType === 'inner' ? '内盘' : '外盘';
+      addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易 [${marketTypeText}]...`, walletAddress);
       addLog(task.id, 'info', `交易金额: ${formatAmount(roundedAmount)} BNB (区间: ${formatAmount(amountMin)}~${formatAmount(amountMax)})`, walletAddress);
 
-      // 创建交易服务
-      const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
-
-      // 砸盘模式：如果 sellAll 为 true 则卖出100%
-      const sellAll = task.mode === 'dump' && task.config.sellAll;
-
-      const tradeParams: TradeParams = {
-        chainId,
-        rpcUrl,
-        routerAddress,
-        privateKey: privateKey,
-        walletAddress: walletAddress,
-        tokenAddress: task.config.tokenContract,
-        spendToken: 'BNB', // 固定使用 BNB
-        amount: roundedAmount,
-        amountType: 'amount',
-        mode: task.mode,
-        slippage: 30,
-        gasPrice: task.config.gasPrice,
-        gasLimit: task.config.gasLimit,
-        balancePercent: sellAll ? 100 : undefined,
-        // 砸盘模式：传递目标BNB金额，让交易服务计算需要卖出多少Token
-        targetBnbAmount: task.mode === 'dump' && !sellAll ? roundedAmount : undefined,
-      };
-
-      // 执行交易
-      const result = await tradingService.executeTrade(tradeParams);
-
-      if (result.success) {
-        // 更新统计
-        task.stats.executedCount++;
-        task.stats.spentAmount += roundedAmount;
-
-        const actionText = task.mode === 'pump' ? '买入' : '卖出';
-        const resultText = result.amountOut
-          ? `${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
-          : `${actionText}成功，金额: ${roundedAmount} BNB`;
-
-        addLog(task.id, 'success', resultText, walletAddress, result.txHash);
-        return true;
+      // 根据盘口类型选择不同的交易服务
+      if (task.config.marketType === 'inner') {
+        // 内盘交易：使用 FourMeme 服务
+        return await executeInnerMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount);
       } else {
-        addLog(task.id, 'error', `交易失败: ${result.error}`, walletAddress, result.txHash);
-        return false;
+        // 外盘交易：使用 DEX 服务
+        return await executeOuterMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, dexStore);
       }
 
     } catch (error: any) {
       addLog(task.id, 'error', `交易异常: ${error.message}`, walletAddress);
+      return false;
+    }
+  }
+
+  // 执行内盘交易（FourMeme）
+  async function executeInnerMarketTrade(
+    task: Task,
+    walletAddress: string,
+    privateKey: string,
+    chainId: number,
+    rpcUrl: string,
+    amount: number
+  ): Promise<boolean> {
+    const fourMemeService = createFourMemeService(chainId, rpcUrl);
+
+    // 砸盘模式：如果 sellAll 为 true 则卖出100%
+    const sellAll = task.mode === 'dump' && task.config.sellAll;
+
+    const tradeParams: FourMemeTradeParams = {
+      chainId,
+      rpcUrl,
+      privateKey,
+      walletAddress,
+      tokenAddress: task.config.innerTokenAddress || task.config.tokenContract,
+      amount,
+      mode: task.mode === 'pump' ? 'buy' : 'sell',
+      gasPrice: task.config.gasPrice,
+      gasLimit: task.config.gasLimit,
+      sellPercent: sellAll ? 100 : undefined,
+    };
+
+    const result = await fourMemeService.executeTrade(tradeParams);
+
+    if (result.success) {
+      task.stats.executedCount++;
+      task.stats.spentAmount += amount;
+
+      const actionText = task.mode === 'pump' ? '买入' : '卖出';
+      const resultText = result.amountOut
+        ? `[内盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
+        : `[内盘] ${actionText}成功，金额: ${amount} BNB`;
+
+      addLog(task.id, 'success', resultText, walletAddress, result.txHash);
+      return true;
+    } else {
+      addLog(task.id, 'error', `[内盘] 交易失败: ${result.error}`, walletAddress, result.txHash);
+      return false;
+    }
+  }
+
+  // 执行外盘交易（DEX）
+  async function executeOuterMarketTrade(
+    task: Task,
+    walletAddress: string,
+    privateKey: string,
+    chainId: number,
+    rpcUrl: string,
+    amount: number,
+    dexStore: ReturnType<typeof useDexStore>
+  ): Promise<boolean> {
+    const routerAddress = dexStore.currentRouterAddress;
+
+    if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
+      addLog(task.id, 'error', '当前DEX的Router地址未配置', walletAddress);
+      return false;
+    }
+
+    const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
+
+    // 砸盘模式：如果 sellAll 为 true 则卖出100%
+    const sellAll = task.mode === 'dump' && task.config.sellAll;
+
+    const tradeParams: TradeParams = {
+      chainId,
+      rpcUrl,
+      routerAddress,
+      privateKey,
+      walletAddress,
+      tokenAddress: task.config.tokenContract,
+      spendToken: 'BNB',
+      amount,
+      amountType: 'amount',
+      mode: task.mode,
+      slippage: 30,
+      gasPrice: task.config.gasPrice,
+      gasLimit: task.config.gasLimit,
+      balancePercent: sellAll ? 100 : undefined,
+      targetBnbAmount: task.mode === 'dump' && !sellAll ? amount : undefined,
+    };
+
+    const result = await tradingService.executeTrade(tradeParams);
+
+    if (result.success) {
+      task.stats.executedCount++;
+      task.stats.spentAmount += amount;
+
+      const actionText = task.mode === 'pump' ? '买入' : '卖出';
+      const resultText = result.amountOut
+        ? `[外盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
+        : `[外盘] ${actionText}成功，金额: ${amount} BNB`;
+
+      addLog(task.id, 'success', resultText, walletAddress, result.txHash);
+      return true;
+    } else {
+      addLog(task.id, 'error', `[外盘] 交易失败: ${result.error}`, walletAddress, result.txHash);
       return false;
     }
   }
