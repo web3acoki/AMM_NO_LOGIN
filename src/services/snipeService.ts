@@ -48,12 +48,20 @@ export const WSS_RPC_NODES = [
   'wss://bsc-rpc.publicnode.com',
 ];
 
-// HTTP RPC 节点（用于发送交易）
+// HTTP RPC 节点池（多个公共节点分散压力）
 export const HTTP_RPC_NODES = [
   'https://bsc.publicnode.com',
   'https://bsc-dataseed.binance.org',
   'https://bsc-dataseed1.binance.org',
   'https://bsc-dataseed2.binance.org',
+  'https://bsc-dataseed3.binance.org',
+  'https://bsc-dataseed4.binance.org',
+  'https://bsc-dataseed1.defibit.io',
+  'https://bsc-dataseed2.defibit.io',
+  'https://bsc-dataseed1.ninicoin.io',
+  'https://bsc-dataseed2.ninicoin.io',
+  'https://rpc.ankr.com/bsc',
+  'https://bsc-rpc.publicnode.com',
 ];
 
 // ==================== 类型定义 ====================
@@ -197,6 +205,12 @@ export class SnipeService {
   private onBuyComplete: ((results: BuyResult[]) => void) | null = null;
   private onStatusChange: ((status: SnipeTaskConfig['status']) => void) | null = null;
 
+  // 多节点请求池
+  private httpClients: PublicClient[] = [];
+  private nodeIndex: number = 0;
+  private activeRequests: number = 0;
+  private maxConcurrentRequests: number = 20;  // 最大并发请求数
+
   constructor(
     task: SnipeTaskConfig,
     chainId: number = 56,
@@ -259,13 +273,32 @@ export class SnipeService {
     try {
       this.log('info', '正在初始化狙击服务...');
 
-      // 创建 HTTP 客户端（用于发送交易和查询）
+      // 创建主 HTTP 客户端（用于发送交易）
       this.httpClient = createPublicClient({
         chain: getChainConfig(this.chainId),
         transport: http(this.httpRpcUrl)
       });
 
-      this.log('info', `HTTP RPC: ${this.httpRpcUrl}`);
+      this.log('info', `主节点: ${this.httpRpcUrl}`);
+
+      // 创建多节点 HTTP 客户端池（用于 pending 查询，分散压力）
+      const nodesToUse = this.task.customHttpRpc
+        ? [this.task.customHttpRpc]  // 如果有自定义节点，只用自定义的
+        : HTTP_RPC_NODES;            // 否则使用所有公共节点
+
+      for (const rpcUrl of nodesToUse) {
+        try {
+          const client = createPublicClient({
+            chain: getChainConfig(this.chainId),
+            transport: http(rpcUrl, { timeout: 5000 })  // 5秒超时
+          });
+          this.httpClients.push(client);
+        } catch (e) {
+          // 忽略创建失败的节点
+        }
+      }
+
+      this.log('info', `节点池: ${this.httpClients.length} 个节点`);
 
       // 尝试创建 WebSocket 客户端
       try {
@@ -304,6 +337,16 @@ export class SnipeService {
       this.log('error', '初始化失败', error.message);
       return false;
     }
+  }
+
+  /**
+   * 获取下一个 HTTP 客户端（轮询）
+   */
+  private getNextClient(): PublicClient | null {
+    if (this.httpClients.length === 0) return this.httpClient;
+    const client = this.httpClients[this.nodeIndex % this.httpClients.length];
+    this.nodeIndex++;
+    return client;
   }
 
   // ==================== 监听方法 ====================
@@ -552,15 +595,25 @@ export class SnipeService {
   }
 
   /**
-   * 直接处理 Pending 交易 - 无队列无限制，100% 处理
+   * 直接处理 Pending 交易 - 多节点轮询 + 并发限制
    */
   private async processPendingTxDirect(txHash: string) {
-    if (!this.httpClient || !this.isRunning) return;
+    if (!this.isRunning) return;
 
+    // 并发限制
+    if (this.activeRequests >= this.maxConcurrentRequests) {
+      return; // 超过并发限制，跳过
+    }
+
+    this.activeRequests++;
     const detectTime = Date.now();
 
     try {
-      const tx = await this.httpClient.getTransaction({ hash: txHash as `0x${string}` });
+      // 使用轮询获取下一个节点
+      const client = this.getNextClient();
+      if (!client) return;
+
+      const tx = await client.getTransaction({ hash: txHash as `0x${string}` });
       if (!tx) return;
 
       // 检查是否是 FourMeme 合约
@@ -631,6 +684,8 @@ export class SnipeService {
 
     } catch (e) {
       // 忽略错误
+    } finally {
+      this.activeRequests--;
     }
   }
 
