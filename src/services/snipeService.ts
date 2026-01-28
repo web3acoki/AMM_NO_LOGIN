@@ -326,7 +326,13 @@ export class SnipeService {
     this.isRunning = true;
     this.updateStatus('running');
 
-    this.log('info', `开始监听目标钱包: ${this.task.targetWallet}`);
+    // 判断监听模式
+    const isWatchAll = !this.task.targetWallet || this.task.targetWallet.trim() === '';
+    if (isWatchAll) {
+      this.log('warning', `⚠️ 监听模式: 所有创建代币交易 (测试模式)`);
+    } else {
+      this.log('info', `监听目标钱包: ${this.task.targetWallet}`);
+    }
     this.log('info', `买入金额: ${this.task.buyAmount} BNB`);
     this.log('info', `Gas: ${this.task.gasPrice > 0 ? this.task.gasPrice + ' Gwei' : '自动'}, Limit: ${this.task.gasLimit > 0 ? this.task.gasLimit : '自动'}`);
     this.log('info', `执行钱包数量: ${this.task.wallets.length}`);
@@ -374,26 +380,35 @@ export class SnipeService {
             const methodSelector = tx.input.slice(0, 10).toLowerCase();
             if (methodSelector !== CREATE_AND_BUY_SELECTOR) continue;
 
+            const detectTime = Date.now();
+            const isWatchAll = !this.task.targetWallet || this.task.targetWallet.trim() === '';
+
             this.log('info', `[HTTP Pending] 检测到 FourMeme createAndBuy`);
             this.log('info', `[HTTP Pending] 发送者: ${tx.from}`);
 
-            // 检查是否是目标钱包
-            if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
-              this.log('info', `[HTTP Pending] 非目标钱包，忽略`);
+            // 检查是否是目标钱包（如果设置了的话）
+            if (!isWatchAll && tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
               continue;
             }
 
-            this.log('success', `🚀 [HTTP Pending预测] 检测到目标钱包创建交易!`);
+            if (isWatchAll) {
+              this.log('success', `🚀 [HTTP Pending] 检测到创建交易! (监听所有)`);
+            } else {
+              this.log('success', `🚀 [HTTP Pending] 目标钱包创建交易!`);
+            }
 
             // 预测地址
+            const predictStartTime = Date.now();
             const predictedToken = predictTokenAddress(tx.input);
+            const predictTime = Date.now() - predictStartTime;
+
             if (!predictedToken) {
               this.log('error', '无法预测代币地址');
               continue;
             }
 
             this.log('success', `🎯 [预测地址] ${predictedToken}`);
-            this.log('info', `⚡ 立即发送买入交易!`);
+            this.log('info', `⏱️ 预测耗时: ${predictTime}ms`);
 
             const event: TokenCreatedEvent = {
               creator: tx.from,
@@ -403,8 +418,19 @@ export class SnipeService {
             };
             this.onTokenFound?.(event);
 
+            // 执行买入
+            const buyStartTime = Date.now();
+            this.log('info', `⚡ 开始买入...`);
             const results = await this.executeBuy(predictedToken);
+            const buyTime = Date.now() - buyStartTime;
+
+            this.log('info', `⏱️ 买入耗时: ${buyTime}ms`);
+            this.log('info', `⏱️ 总耗时 (检测到买入完成): ${Date.now() - detectTime}ms`);
+
             this.onBuyComplete?.(results);
+
+            // 验证预测
+            this.verifyPrediction(tx.hash, predictedToken, detectTime);
 
             this.stop();
             this.updateStatus('completed');
@@ -531,6 +557,8 @@ export class SnipeService {
   private async processPendingTxDirect(txHash: string) {
     if (!this.httpClient || !this.isRunning) return;
 
+    const detectTime = Date.now();
+
     try {
       const tx = await this.httpClient.getTransaction({ hash: txHash as `0x${string}` });
       if (!tx) return;
@@ -543,19 +571,29 @@ export class SnipeService {
       if (methodSelector !== CREATE_AND_BUY_SELECTOR) return;
 
       // 🎯 检测到 FourMeme createAndBuy 交易！
+      const isWatchAll = !this.task.targetWallet || this.task.targetWallet.trim() === '';
+
       this.log('info', `[Pending] 检测到 FourMeme createAndBuy`);
       this.log('info', `[Pending] 发送者: ${tx.from}`);
+      this.log('info', `[Pending] 检测耗时: ${Date.now() - detectTime}ms`);
 
-      // 检查是否是目标钱包
-      if (tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
+      // 检查是否是目标钱包（如果设置了的话）
+      if (!isWatchAll && tx.from.toLowerCase() !== this.task.targetWallet.toLowerCase()) {
         return; // 非目标钱包，静默忽略
       }
 
-      this.log('success', `🚀 [Pending] 目标钱包创建交易!`);
+      const matchTime = Date.now();
+      if (isWatchAll) {
+        this.log('success', `🚀 [Pending] 检测到创建交易! (监听所有)`);
+      } else {
+        this.log('success', `🚀 [Pending] 目标钱包创建交易!`);
+      }
       this.log('info', `交易哈希: ${txHash}`);
 
       // 立即预测代币地址
+      const predictStartTime = Date.now();
       const predictedToken = predictTokenAddress(tx.input);
+      const predictTime = Date.now() - predictStartTime;
 
       if (!predictedToken) {
         this.log('error', '预测失败，等待确认...');
@@ -564,7 +602,7 @@ export class SnipeService {
       }
 
       this.log('success', `🎯 [预测地址] ${predictedToken}`);
-      this.log('info', `⚡ 立即买入!`);
+      this.log('info', `⏱️ 预测耗时: ${predictTime}ms`);
 
       const event: TokenCreatedEvent = {
         creator: tx.from,
@@ -574,14 +612,74 @@ export class SnipeService {
       };
       this.onTokenFound?.(event);
 
+      // 执行买入
+      const buyStartTime = Date.now();
+      this.log('info', `⚡ 开始买入...`);
       const results = await this.executeBuy(predictedToken);
+      const buyTime = Date.now() - buyStartTime;
+
+      this.log('info', `⏱️ 买入耗时: ${buyTime}ms`);
+      this.log('info', `⏱️ 总耗时 (检测到买入完成): ${Date.now() - detectTime}ms`);
+
       this.onBuyComplete?.(results);
+
+      // 验证预测地址 - 等待交易确认后对比
+      this.verifyPrediction(txHash, predictedToken, detectTime);
 
       this.stop();
       this.updateStatus('completed');
 
     } catch (e) {
       // 忽略错误
+    }
+  }
+
+  /**
+   * 验证预测地址是否正确
+   */
+  private async verifyPrediction(createTxHash: string, predictedToken: string, detectTime: number) {
+    if (!this.httpClient) return;
+
+    try {
+      this.log('info', `⏳ 等待创建交易确认，验证预测...`);
+
+      const receipt = await this.httpClient.waitForTransactionReceipt({
+        hash: createTxHash as `0x${string}`,
+        timeout: 60000
+      });
+
+      const confirmTime = Date.now();
+
+      if (receipt.status === 'success') {
+        const tokenCreatedLog = receipt.logs.find(log =>
+          log.topics[0]?.toLowerCase() === TOKEN_CREATED_EVENT_SIGNATURE.toLowerCase()
+        );
+
+        if (tokenCreatedLog) {
+          const event = parseTokenCreatedEvent(tokenCreatedLog);
+          const realToken = event.token.toLowerCase();
+          const predicted = predictedToken.toLowerCase();
+          const isMatch = realToken === predicted;
+
+          this.log('info', `━━━━━━━━━━ 预测验证结果 ━━━━━━━━━━`);
+          this.log('info', `🔮 预测地址: ${predictedToken}`);
+          this.log('info', `✅ 真实地址: ${event.token}`);
+
+          if (isMatch) {
+            this.log('success', `🎉 预测正确! ✓`);
+          } else {
+            this.log('error', `❌ 预测错误!`);
+          }
+
+          this.log('info', `⏱️ 创建交易确认区块: ${receipt.blockNumber}`);
+          this.log('info', `⏱️ 从检测到确认耗时: ${confirmTime - detectTime}ms`);
+          this.log('info', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        }
+      } else {
+        this.log('error', `创建交易失败`);
+      }
+    } catch (e) {
+      this.log('warning', `验证超时或失败`);
     }
   }
 
@@ -693,21 +791,34 @@ export class SnipeService {
    * 处理 TokenCreated 事件
    */
   private async handleTokenCreatedEvent(log: Log) {
+    const detectTime = Date.now();
     try {
       const event = parseTokenCreatedEvent(log);
+      const isWatchAll = !this.task.targetWallet || this.task.targetWallet.trim() === '';
 
-      this.log('info', `检测到新代币创建: ${event.token.slice(0, 10)}...`);
-      this.log('info', `创建者: ${event.creator}`);
+      this.log('info', `[区块轮询] 检测到新代币创建: ${event.token}`);
+      this.log('info', `[区块轮询] 创建者: ${event.creator}`);
 
-      // 检查是否为目标钱包
-      if (event.creator.toLowerCase() === this.task.targetWallet.toLowerCase()) {
-        this.log('success', `🎯 目标钱包创建代币！Token: ${event.token}`);
+      // 检查是否为目标钱包（如果设置了的话）
+      const isTargetWallet = isWatchAll || event.creator.toLowerCase() === this.task.targetWallet.toLowerCase();
+
+      if (isTargetWallet) {
+        if (isWatchAll) {
+          this.log('success', `🎯 [区块轮询] 检测到代币创建! (监听所有) Token: ${event.token}`);
+        } else {
+          this.log('success', `🎯 [区块轮询] 目标钱包创建代币！Token: ${event.token}`);
+        }
 
         // 触发回调
         this.onTokenFound?.(event);
 
         // 执行买入
+        const buyStartTime = Date.now();
+        this.log('info', `⚡ 开始买入...`);
         const results = await this.executeBuy(event.token);
+        const buyTime = Date.now() - buyStartTime;
+
+        this.log('info', `⏱️ 买入耗时: ${buyTime}ms`);
 
         // 触发买入完成回调
         this.onBuyComplete?.(results);
