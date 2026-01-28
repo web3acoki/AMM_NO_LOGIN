@@ -408,8 +408,8 @@ export const useTaskStore = defineStore('task', () => {
   async function executeRound(task: Task): Promise<void> {
     if (task.status !== 'running') return;
 
-    // 在执行前先检查市值停止条件
-    if (task.config.stopType === 'marketcap') {
+    // 在执行前先检查市值停止条件（仅外盘模式，内盘没有 DEX 交易对）
+    if (task.config.stopType === 'marketcap' && task.config.marketType !== 'inner') {
       const currentMarketCap = await getCurrentMarketCap(task);
       if (currentMarketCap !== undefined) {
         const modeText = task.mode === 'pump' ? '拉盘(>=目标停止)' : '砸盘(<=目标停止)';
@@ -462,10 +462,17 @@ export const useTaskStore = defineStore('task', () => {
     });
     await Promise.allSettled(promises);
 
-    // 执行后检查停止条件
-    const currentMarketCap = await getCurrentMarketCap(task);
-    if (checkStopCondition(task, undefined, currentMarketCap)) {
-      stopTask(task.id, '已达到停止条件');
+    // 执行后检查停止条件（内盘模式不检查市值，因为没有 DEX 交易对）
+    if (task.config.marketType !== 'inner') {
+      const currentMarketCap = await getCurrentMarketCap(task);
+      if (checkStopCondition(task, undefined, currentMarketCap)) {
+        stopTask(task.id, '已达到停止条件');
+      }
+    } else {
+      // 内盘模式：只检查非市值相关的停止条件
+      if (checkStopCondition(task, undefined, undefined)) {
+        stopTask(task.id, '已达到停止条件');
+      }
     }
   }
 

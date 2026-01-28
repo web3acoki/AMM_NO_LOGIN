@@ -25,9 +25,32 @@ import { privateKeyToAccount } from 'viem/accounts';
 // FourMeme 主合约地址
 export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
 
-// 方法选择器
-export const BUY_METHOD_SELECTOR = '0x87f27655' as const;   // 买入
-export const SELL_METHOD_SELECTOR = '0xf464e7db' as const;  // 卖出
+// FourMeme 合约 ABI (只包含我们需要的函数)
+const FOURMEME_ABI = [
+  {
+    name: 'buyTokenAMAP',
+    type: 'function',
+    stateMutability: 'payable',
+    inputs: [
+      { name: 'origin', type: 'uint256' },
+      { name: 'token', type: 'address' },
+      { name: 'funds', type: 'uint256' },
+      { name: 'minAmount', type: 'uint256' }
+    ],
+    outputs: []
+  },
+  {
+    name: 'sellToken',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'minEthAmount', type: 'uint256' }
+    ],
+    outputs: []
+  }
+] as const;
 
 // ==================== 类型定义 ====================
 
@@ -109,11 +132,18 @@ export class FourMemeService {
       const tokenAddress = params.tokenAddress as Address;
       const buyAmountWei = BigInt(Math.floor(params.amount * 1e18));
 
-      // 构建买入交易数据
-      // FourMeme 买入方法: buy(address token)
-      // 选择器: 0x87f27655
-      const callData = (BUY_METHOD_SELECTOR +
-        tokenAddress.slice(2).padStart(64, '0')) as `0x${string}`;
+      // 使用 ABI 编码买入交易数据
+      // buyTokenAMAP(uint256 origin, address token, uint256 funds, uint256 minAmount)
+      const callData = encodeFunctionData({
+        abi: FOURMEME_ABI,
+        functionName: 'buyTokenAMAP',
+        args: [
+          0n,            // origin: 0 (直接购买，无推荐)
+          tokenAddress,  // token: 代币地址
+          buyAmountWei,  // funds: BNB 金额
+          0n             // minAmount: 0 (不设滑点保护)
+        ]
+      });
 
       // 获取 gas 设置
       const gasPrice = params.gasPrice
@@ -215,12 +245,17 @@ export class FourMemeService {
         }
       }
 
-      // 构建卖出交易数据
-      // FourMeme 卖出方法: sell(address token, uint256 amount)
-      // 选择器: 0xf464e7db
-      const callData = (SELL_METHOD_SELECTOR +
-        tokenAddress.slice(2).padStart(64, '0') +
-        sellAmount.toString(16).padStart(64, '0')) as `0x${string}`;
+      // 使用 ABI 编码卖出交易数据
+      // sellToken(address token, uint256 amount, uint256 minEthAmount)
+      const callData = encodeFunctionData({
+        abi: FOURMEME_ABI,
+        functionName: 'sellToken',
+        args: [
+          tokenAddress,  // token: 代币地址
+          sellAmount,    // amount: 卖出数量
+          0n             // minEthAmount: 0 (不设滑点保护)
+        ]
+      });
 
       // 获取 gas 设置
       const gasPrice = params.gasPrice

@@ -205,7 +205,7 @@
           <div class="modal-header bg-success text-white">
             <h5 class="modal-title"><i class="bi bi-box-arrow-in-down me-2"></i>从批次导入钱包</h5>
             <button type="button" class="btn-close btn-close-white" @click="showImportModal = false"></button>
-          </div>
+          </div> 
           <div class="modal-body">
             <!-- 选择批次 -->
             <div class="mb-3">
