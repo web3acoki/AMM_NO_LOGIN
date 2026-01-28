@@ -64,8 +64,8 @@
         </div>
       </div>
 
-      <!-- 代币合约地址 -->
-      <div class="mb-3">
+      <!-- 代币合约地址（仅外盘模式显示） -->
+      <div class="mb-3" v-if="marketType === 'outer'">
         <label class="form-label small">
           代币合约地址
           <span v-if="targetToken" class="badge bg-success ms-1">已自动填入</span>
