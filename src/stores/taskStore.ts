@@ -496,17 +496,35 @@ export const useTaskStore = defineStore('task', () => {
     // 立即执行一轮
     executeRound(task);
 
-    // 设置定时器
-    const intervalMs = task.config.interval * 1000;
-    task.intervalId = window.setInterval(() => {
-      if (task.status === 'running') {
+    // 使用 setTimeout 递归调用，而不是 setInterval
+    // 这样每次执行时都能获取最新的任务配置（包括 interval）
+    function scheduleNextRound() {
+      // 每次调度时重新获取最新的任务对象
+      const currentTask = tasks.value.find(t => t.id === taskId);
+      if (!currentTask || currentTask.status !== 'running') return;
+
+      // 使用最新的 interval 配置
+      const intervalMs = currentTask.config.interval * 1000;
+
+      currentTask.intervalId = window.setTimeout(async () => {
+        // 再次获取最新的任务对象
+        const latestTask = tasks.value.find(t => t.id === taskId);
+        if (!latestTask || latestTask.status !== 'running') return;
+
         // 更新运行时间
-        if (task.stats.startTime) {
-          task.stats.elapsedTime = Math.floor((Date.now() - task.stats.startTime) / 1000);
+        if (latestTask.stats.startTime) {
+          latestTask.stats.elapsedTime = Math.floor((Date.now() - latestTask.stats.startTime) / 1000);
         }
-        executeRound(task);
-      }
-    }, intervalMs);
+
+        await executeRound(latestTask);
+
+        // 递归调度下一轮
+        scheduleNextRound();
+      }, intervalMs);
+    }
+
+    // 开始调度
+    scheduleNextRound();
 
     return true;
   }
@@ -517,9 +535,9 @@ export const useTaskStore = defineStore('task', () => {
     if (!task || task.status !== 'running') return false;
 
     task.status = 'paused';
-    
+
     if (task.intervalId) {
-      clearInterval(task.intervalId);
+      clearTimeout(task.intervalId);  // 使用 clearTimeout
       task.intervalId = undefined;
     }
 
@@ -541,9 +559,9 @@ export const useTaskStore = defineStore('task', () => {
     if (!task) return false;
 
     task.status = 'stopped';
-    
+
     if (task.intervalId) {
-      clearInterval(task.intervalId);
+      clearTimeout(task.intervalId);  // 使用 clearTimeout
       task.intervalId = undefined;
     }
 
@@ -629,7 +647,7 @@ export const useTaskStore = defineStore('task', () => {
     // 停止所有运行中的任务
     tasks.value.forEach(task => {
       if (task.intervalId) {
-        clearInterval(task.intervalId);
+        clearTimeout(task.intervalId);  // 使用 clearTimeout
       }
     });
     tasks.value = [];
