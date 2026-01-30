@@ -8,10 +8,13 @@ import { WalletDetector } from '../utils/walletDetector';
 import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX } from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
 import { useChainStore } from './chainStore';
+import * as walletApi from '../services/walletApi';
+import { ENABLE_LOGIN } from '../config';
 
 type WalletType = 'main' | 'normal';
 
 type LocalWallet = {
+  _id?: string; // Server-side ID
   address: string;
   encrypted?: string;
   nativeBalance?: string;
@@ -25,9 +28,11 @@ type LocalWallet = {
 type WalletBatchItem = {
   address: string;
   privateKey: string;
+  remark?: string;
 };
 
 type WalletBatch = {
+  _id?: string; // Server-side ID
   id: string;
   remark: string;
   createdAt: string;
@@ -36,6 +41,11 @@ type WalletBatch = {
   totalNativeBalance?: string;
   totalTokenBalance?: string;
 };
+
+// 检查是否应该使用服务器模式
+function shouldUseServerMode(): boolean {
+  return ENABLE_LOGIN && walletApi.isLoggedIn();
+}
 
 async function sha256(message: string): Promise<string> {
   const msgUint8 = new TextEncoder().encode(message);
@@ -183,16 +193,23 @@ export const useWalletStore = defineStore('wallet', {
   },
   actions: {
     async init() {
+      // 如果使用服务器模式，从服务器加载数据
+      if (shouldUseServerMode()) {
+        await this.loadFromServer();
+        return;
+      }
+
+      // 否则从本地存储加载
       const saved = localStorage.getItem('local-wallets');
-      if (!saved) return;
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          this.localWallets = parsed.map((wallet) => normalizeWallet(wallet));
-          this.persist();
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            this.localWallets = parsed.map((wallet) => normalizeWallet(wallet));
+          }
+        } catch (error) {
+          console.error('Failed to parse local wallets:', error);
         }
-      } catch (error) {
-        console.error('Failed to parse local wallets:', error);
       }
       // 加载钱包批次数据
       const savedBatches = localStorage.getItem('wallet-batches');
@@ -204,8 +221,96 @@ export const useWalletStore = defineStore('wallet', {
         }
       }
     },
-    persist() { localStorage.setItem('local-wallets', JSON.stringify(this.localWallets)); },
-    persistBatches() { localStorage.setItem('wallet-batches', JSON.stringify(this.walletBatches)); },
+
+    // 从服务器加载钱包数据
+    async loadFromServer() {
+      try {
+        console.log('从服务器加载钱包数据...');
+
+        // 加载普通钱包
+        const wallets = await walletApi.getWallets();
+        this.localWallets = wallets.map(w => ({
+          _id: w._id,
+          address: w.address,
+          walletType: w.walletType,
+          remark: w.remark,
+          nativeBalance: w.nativeBalance,
+          tokenBalance: w.tokenBalance,
+          createdAt: w.createdAt,
+        }));
+
+        // 加载钱包批次
+        const batches = await walletApi.getBatches();
+        this.walletBatches = batches.map(b => ({
+          _id: b._id,
+          id: b.batchId,
+          remark: b.remark || '',
+          walletType: b.walletType || 'normal',
+          wallets: (b.wallets || []).map(w => ({
+            address: w.address,
+            privateKey: '', // 私钥不从服务器返回
+            remark: w.remark || '',
+          })),
+          createdAt: b.createdAt || new Date().toISOString(),
+        }));
+
+        console.log(`从服务器加载了 ${this.localWallets.length} 个钱包和 ${this.walletBatches.length} 个批次`);
+      } catch (error) {
+        console.error('从服务器加载钱包数据失败:', error);
+      }
+    },
+
+    // 迁移本地钱包到服务器
+    async migrateToServer(): Promise<{ wallets: { added: number; skipped: number }; batches: { added: number; skipped: number } }> {
+      // 从本地存储读取数据
+      const savedWallets = localStorage.getItem('local-wallets');
+      const savedBatches = localStorage.getItem('wallet-batches');
+
+      const localWallets = savedWallets ? JSON.parse(savedWallets) : [];
+      const localBatches = savedBatches ? JSON.parse(savedBatches) : [];
+
+      if (localWallets.length === 0 && localBatches.length === 0) {
+        console.log('没有需要迁移的本地数据');
+        return { wallets: { added: 0, skipped: 0 }, batches: { added: 0, skipped: 0 } };
+      }
+
+      console.log(`开始迁移 ${localWallets.length} 个钱包和 ${localBatches.length} 个批次到服务器...`);
+
+      try {
+        const result = await walletApi.migrateWallets({
+          wallets: localWallets,
+          batches: localBatches,
+        });
+
+        console.log('迁移结果:', result);
+
+        // 迁移成功后清除本地存储
+        if (result.wallets.added > 0 || result.batches.added > 0) {
+          localStorage.removeItem('local-wallets');
+          localStorage.removeItem('wallet-batches');
+          console.log('本地钱包数据已清除');
+
+          // 重新从服务器加载
+          await this.loadFromServer();
+        }
+
+        return result;
+      } catch (error) {
+        console.error('迁移失败:', error);
+        throw error;
+      }
+    },
+
+    persist() {
+      // 服务器模式下不保存到本地存储
+      if (shouldUseServerMode()) return;
+      localStorage.setItem('local-wallets', JSON.stringify(this.localWallets));
+    },
+    persistBatches() {
+      // 服务器模式下不保存到本地存储
+      if (shouldUseServerMode()) return;
+      localStorage.setItem('wallet-batches', JSON.stringify(this.walletBatches));
+    },
 
     // ============ 钱包批次管理相关操作 ============
 
@@ -232,6 +337,26 @@ export const useWalletStore = defineStore('wallet', {
         wallets: wallets,
         walletType: walletType,
       };
+
+      // 服务器模式下同步到服务器
+      if (shouldUseServerMode()) {
+        try {
+          const serverBatch = await walletApi.addBatch({
+            batchId: batch.id,
+            remark: batch.remark,
+            walletType: batch.walletType,
+            wallets: batch.wallets.map(w => ({
+              address: w.address,
+              privateKey: w.privateKey,
+              remark: w.remark || '',
+            })),
+          });
+          batch._id = serverBatch._id;
+        } catch (error) {
+          console.error('同步批次到服务器失败:', error);
+          throw error;
+        }
+      }
 
       this.walletBatches.push(batch);
       this.persistBatches();
@@ -280,6 +405,26 @@ export const useWalletStore = defineStore('wallet', {
         walletType: walletType,
       };
 
+      // 服务器模式下同步到服务器
+      if (shouldUseServerMode()) {
+        try {
+          const serverBatch = await walletApi.addBatch({
+            batchId: batch.id,
+            remark: batch.remark,
+            walletType: batch.walletType,
+            wallets: batch.wallets.map(w => ({
+              address: w.address,
+              privateKey: w.privateKey,
+              remark: w.remark || '',
+            })),
+          });
+          batch._id = serverBatch._id;
+        } catch (error) {
+          console.error('同步批次到服务器失败:', error);
+          throw error;
+        }
+      }
+
       this.walletBatches.push(batch);
       this.persistBatches();
 
@@ -318,7 +463,19 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 删除批次
-    deleteBatch(batchId: string) {
+    async deleteBatch(batchId: string) {
+      const batch = this.walletBatches.find(b => b.id === batchId);
+
+      // 服务器模式下从服务器删除
+      if (shouldUseServerMode() && batch?._id) {
+        try {
+          await walletApi.deleteBatch(batch._id);
+        } catch (error) {
+          console.error('从服务器删除批次失败:', error);
+          throw error;
+        }
+      }
+
       this.walletBatches = this.walletBatches.filter(b => b.id !== batchId);
       this.persistBatches();
     },
@@ -329,10 +486,80 @@ export const useWalletStore = defineStore('wallet', {
       return batch ? batch.wallets.map(w => w.address) : [];
     },
 
-    // 获取批次的私钥列表
+    // 获取批次的私钥列表（服务器模式下需要异步获取）
     getBatchPrivateKeys(batchId: string): string[] {
       const batch = this.walletBatches.find(b => b.id === batchId);
       return batch ? batch.wallets.map(w => w.privateKey) : [];
+    },
+
+    // 异步获取私钥（支持服务器模式）
+    async getPrivateKeysForAddresses(addresses: string[]): Promise<Array<{ address: string; privateKey: string }>> {
+      if (shouldUseServerMode()) {
+        // 从服务器获取私钥
+        try {
+          return await walletApi.decryptPrivateKeys(addresses);
+        } catch (error) {
+          console.error('从服务器获取私钥失败:', error);
+          throw error;
+        }
+      }
+
+      // 本地模式：从本地数据获取
+      const result: Array<{ address: string; privateKey: string }> = [];
+      const normalizedAddresses = addresses.map(a => a.toLowerCase());
+
+      // 从普通钱包获取
+      for (const wallet of this.localWallets) {
+        if (normalizedAddresses.includes(wallet.address.toLowerCase()) && wallet.encrypted) {
+          result.push({
+            address: wallet.address,
+            privateKey: wallet.encrypted,
+          });
+        }
+      }
+
+      // 从批次钱包获取
+      for (const batch of this.walletBatches) {
+        for (const wallet of batch.wallets) {
+          if (normalizedAddresses.includes(wallet.address.toLowerCase()) && wallet.privateKey) {
+            result.push({
+              address: wallet.address,
+              privateKey: wallet.privateKey,
+            });
+          }
+        }
+      }
+
+      return result;
+    },
+
+    // 验证转账地址所有权（支持服务器模式）
+    async validateTransferOwnership(sourceAddresses: string[], targetAddresses: string[]): Promise<{ valid: boolean; missingAddresses?: string[] }> {
+      if (shouldUseServerMode()) {
+        return await walletApi.validateTransfer(sourceAddresses, targetAddresses);
+      }
+
+      // 本地模式：检查所有地址是否属于当前用户
+      const allAddresses = [...sourceAddresses, ...targetAddresses];
+      const ownedAddresses = new Set<string>();
+
+      // 收集所有拥有的地址
+      for (const wallet of this.localWallets) {
+        ownedAddresses.add(wallet.address.toLowerCase());
+      }
+      for (const batch of this.walletBatches) {
+        for (const wallet of batch.wallets) {
+          ownedAddresses.add(wallet.address.toLowerCase());
+        }
+      }
+
+      // 检查缺失的地址
+      const missingAddresses = allAddresses.filter(a => !ownedAddresses.has(a.toLowerCase()));
+
+      return {
+        valid: missingAddresses.length === 0,
+        missingAddresses: missingAddresses.length > 0 ? missingAddresses : undefined,
+      };
     },
 
     // 查询批次余额
@@ -635,6 +862,7 @@ export const useWalletStore = defineStore('wallet', {
     async generateLocalWallets(count: number, options?: { walletType?: 'main' | 'normal', remark?: string }) {
       const walletType = options?.walletType || 'normal';
       const remark = options?.remark || '';
+      const newWallets: LocalWallet[] = [];
 
       for (let i = 0; i < count; i++) {
         // 生成真正的随机私钥
@@ -648,19 +876,40 @@ export const useWalletStore = defineStore('wallet', {
           console.error('私钥和地址不匹配！');
         }
 
-        // 存储真正的私钥（实际应用中应该加密存储）
-        this.localWallets.push({
+        newWallets.push({
           address: account.address,
-          encrypted: privateKey, // 直接存储私钥，实际应用中应该加密
+          encrypted: privateKey,
           walletType: walletType,
           remark: remark,
           createdAt: new Date().toISOString(),
         });
       }
+
+      // 服务器模式下同步到服务器
+      if (shouldUseServerMode()) {
+        try {
+          const result = await walletApi.addWallets(newWallets.map(w => ({
+            address: w.address,
+            privateKey: w.encrypted!,
+            walletType: w.walletType,
+            remark: w.remark,
+          })));
+          console.log(`同步到服务器: 添加 ${result.added} 个，跳过 ${result.skipped} 个`);
+          // 重新从服务器加载以获取服务器端ID
+          await this.loadFromServer();
+          return;
+        } catch (error) {
+          console.error('同步钱包到服务器失败:', error);
+          throw error;
+        }
+      }
+
+      // 本地模式下直接添加
+      this.localWallets.push(...newWallets);
       this.persist();
     },
 
-    importWalletsFromPrivateKeys(
+    async importWalletsFromPrivateKeys(
       privateKeys: string[],
       options: { walletType: WalletType; remark: string }
     ) {
@@ -712,8 +961,26 @@ export const useWalletStore = defineStore('wallet', {
       }
 
       if (newWallets.length > 0) {
-        this.localWallets.push(...newWallets);
-        this.persist();
+        // 服务器模式下同步到服务器
+        if (shouldUseServerMode()) {
+          try {
+            const result = await walletApi.addWallets(newWallets.map(w => ({
+              address: w.address,
+              privateKey: w.encrypted!,
+              walletType: w.walletType,
+              remark: w.remark,
+            })));
+            console.log(`同步到服务器: 添加 ${result.added} 个，跳过 ${result.skipped} 个`);
+            // 重新从服务器加载以获取服务器端ID
+            await this.loadFromServer();
+          } catch (error) {
+            console.error('同步钱包到服务器失败:', error);
+            throw error;
+          }
+        } else {
+          this.localWallets.push(...newWallets);
+          this.persist();
+        }
       }
 
       return { added, duplicates, invalid };
@@ -738,12 +1005,37 @@ export const useWalletStore = defineStore('wallet', {
       this.persist();
     },
 
-    removeLocalWallet(addr: string) {
+    async removeLocalWallet(addr: string) {
+      const wallet = this.localWallets.find(w => w.address === addr);
+
+      // 服务器模式下从服务器删除
+      if (shouldUseServerMode() && wallet?._id) {
+        try {
+          await walletApi.deleteWallet(wallet._id);
+        } catch (error) {
+          console.error('从服务器删除钱包失败:', error);
+          throw error;
+        }
+      }
+
       this.localWallets = this.localWallets.filter((w) => w.address !== addr);
       this.persist();
     },
 
-    clearLocalWallets() {
+    async clearLocalWallets() {
+      // 服务器模式下从服务器删除所有
+      if (shouldUseServerMode()) {
+        const ids = this.localWallets.filter(w => w._id).map(w => w._id!);
+        if (ids.length > 0) {
+          try {
+            await walletApi.deleteWallets(ids);
+          } catch (error) {
+            console.error('从服务器删除钱包失败:', error);
+            throw error;
+          }
+        }
+      }
+
       this.localWallets = [];
       this.persist();
     },

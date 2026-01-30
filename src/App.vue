@@ -38,7 +38,9 @@ import TaskManagePanel from './components/panels/TaskManagePanel.vue';
 import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 import SnipePanel from './components/panels/SnipePanel.vue';
+import { useWalletStore } from './stores/walletStore';
 
+const walletStore = useWalletStore();
 const requireLogin = ENABLE_LOGIN;
 
 const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe'>('wallet');
@@ -85,6 +87,8 @@ const handleSelect = (key: string) => {
 const loadSession = async () => {
   // 如果不需要登录，直接设置为就绪状态
   if (!requireLogin) {
+    // 初始化钱包数据（本地模式）
+    await walletStore.init();
     ready.value = true;
     return;
   }
@@ -98,18 +102,36 @@ const loadSession = async () => {
     const response = await apiRequest<{ user: any }>('/api/auth/me');
     currentUser.value = response.data?.user;
     isAuthenticated.value = true;
+
+    // 已登录状态下，初始化钱包数据（从服务器加载）
+    await walletStore.init();
   } catch (error) {
     localStorage.removeItem('amm_token');
+    // 认证失败时，仍然初始化钱包数据（本地模式）
+    await walletStore.init();
   } finally {
     ready.value = true;
   }
 };
 
-const handleLoggedIn = (payload: { user: any; token: string }) => {
+const handleLoggedIn = async (payload: { user: any; token: string }) => {
   localStorage.setItem('amm_token', payload.token);
   currentUser.value = payload.user;
   isAuthenticated.value = true;
   ready.value = true;
+
+  // 迁移本地钱包数据到服务器
+  try {
+    const result = await walletStore.migrateToServer();
+    if (result.wallets.added > 0 || result.batches.added > 0) {
+      console.log(`钱包数据迁移完成: 钱包 ${result.wallets.added} 个, 批次 ${result.batches.added} 个`);
+    }
+  } catch (error) {
+    console.error('迁移钱包数据失败:', error);
+  }
+
+  // 初始化钱包数据（从服务器加载）
+  await walletStore.init();
 };
 
 const handleLogout = async () => {

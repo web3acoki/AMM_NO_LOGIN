@@ -128,8 +128,8 @@
         </div>
       </div>
 
-      <!-- 停止条件 -->
-      <div class="row g-2 mb-3">
+      <!-- 停止条件（仅外盘显示，内盘默认手动停止） -->
+      <div class="row g-2 mb-3" v-if="marketType === 'outer'">
         <div class="col-5">
           <label class="form-label small">停止条件</label>
           <select class="form-select form-select-sm" v-model="stopType">
@@ -146,6 +146,11 @@
             <input type="number" class="form-control" v-model.number="stopValue" :placeholder="stopTypePlaceholder" step="any">
             <span class="input-group-text">{{ stopTypeUnit }}</span>
           </div>
+        </div>
+      </div>
+      <div v-if="marketType === 'inner'" class="mb-3">
+        <div class="form-text small text-muted">
+          <i class="bi bi-infinity me-1"></i>内盘任务无停止条件，点击开始后持续运行，需手动停止
         </div>
       </div>
 
@@ -281,7 +286,7 @@ const innerTokenAddress = ref('');  // 内盘目标代币地址
 const tokenContract = ref('');
 const amountMin = ref<number>(0.01);
 const amountMax = ref<number>(0.05);
-const stopType = ref<'count' | 'amount' | 'time' | 'price' | 'marketcap'>('count');
+const stopType = ref<'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap'>('count');
 const stopValue = ref<number>(10);
 const interval = ref<number>(5);
 const threadCount = ref<number>(1); // 线程数：每个间隔内同时执行的钱包数量
@@ -309,6 +314,15 @@ watch(detectedInnerToken, (token) => {
     marketType.value = 'inner';
   }
 }, { immediate: true });
+
+// 切换盘口类型时自动设置停止条件
+watch(marketType, (type) => {
+  if (type === 'inner') {
+    stopType.value = 'none';
+  } else if (stopType.value === 'none') {
+    stopType.value = 'count';
+  }
+});
 
 // 自动生成任务名称
 watch(() => taskStore.taskCount, (count) => {
@@ -378,11 +392,14 @@ const canCreate = computed(() => {
     ? innerTokenAddress.value.match(/^0x[a-fA-F0-9]{40}$/)
     : tokenContract.value;
 
+  // 内盘不需要停止条件值
+  const stopValid = marketType.value === 'inner' || stopValue.value > 0;
+
   return (
     taskName.value &&
     tokenValid &&
     amountValid &&
-    stopValue.value > 0 &&
+    stopValid &&
     interval.value > 0 &&
     totalWalletCount.value > 0
   );

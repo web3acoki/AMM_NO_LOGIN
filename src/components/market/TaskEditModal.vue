@@ -61,7 +61,7 @@
               </div>
             </div>
 
-            <div class="row">
+            <div class="row" v-if="formData.stopType !== 'none'">
               <!-- 停止条件 -->
               <div class="col-md-6 mb-3">
                 <label class="form-label">停止条件</label>
@@ -84,6 +84,11 @@
                   min="0"
                   step="any"
                 >
+              </div>
+            </div>
+            <div v-else class="mb-3">
+              <div class="form-text text-muted">
+                <i class="bi bi-infinity me-1"></i>内盘任务无停止条件，持续运行直到手动停止
               </div>
             </div>
 
@@ -202,7 +207,7 @@ const formData = ref({
   tokenContract: '',
   amountMin: 0.01,
   amountMax: 0.05,
-  stopType: 'count' as 'count' | 'amount' | 'time' | 'price' | 'marketcap',
+  stopType: 'count' as 'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap',
   stopValue: 10,
   interval: 5,
   threadCount: 1,

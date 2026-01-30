@@ -31,6 +31,13 @@
               <button class="btn btn-outline-secondary btn-sm" @click="selectStopped" :disabled="stoppedTasks.length === 0">
                 <i class="bi bi-stop-circle me-1"></i>选择已停止
               </button>
+              <button
+                class="btn btn-outline-danger btn-sm"
+                @click="deleteSelectedTasks"
+                :disabled="deletableSelectedCount === 0"
+              >
+                <i class="bi bi-trash me-1"></i>删除选中 ({{ deletableSelectedCount }})
+              </button>
             </div>
             <div class="d-flex gap-2">
               <button
@@ -118,6 +125,14 @@ const stoppableSelectedCount = computed(() => {
   ).length;
 });
 
+// 选中的可删除任务数量（已停止的任务）
+const deletableSelectedCount = computed(() => {
+  return tasks.value.filter(t =>
+    selectedTaskIds.value.includes(t.id) &&
+    t.status === 'stopped'
+  ).length;
+});
+
 // 切换任务选择
 function toggleTaskSelect(taskId: string) {
   const index = selectedTaskIds.value.indexOf(taskId);
@@ -180,6 +195,34 @@ function stopSelectedTasks() {
   }
 }
 
+// 一键删除选中的任务（仅已停止）
+function deleteSelectedTasks() {
+  const tasksToDelete = tasks.value.filter(t =>
+    selectedTaskIds.value.includes(t.id) &&
+    t.status === 'stopped'
+  );
+
+  if (tasksToDelete.length === 0) return;
+
+  const runningSelected = tasks.value.filter(t =>
+    selectedTaskIds.value.includes(t.id) &&
+    t.status !== 'stopped'
+  ).length;
+
+  let msg = `确定要删除 ${tasksToDelete.length} 个已停止的任务吗？\n\n删除后无法恢复。`;
+  if (runningSelected > 0) {
+    msg += `\n\n注意：还有 ${runningSelected} 个运行中/暂停的任务不会被删除。`;
+  }
+
+  if (!confirm(msg)) return;
+
+  const idsToDelete = tasksToDelete.map(t => t.id);
+  const deleted = taskStore.deleteMultipleTasks(idsToDelete);
+
+  // 清理已删除的选中状态
+  selectedTaskIds.value = selectedTaskIds.value.filter(id => !idsToDelete.includes(id));
+}
+
 // 编辑任务
 function handleEditTask(task: Task) {
   editingTask.value = task;
@@ -193,21 +236,9 @@ function handleEditClose() {
 
 <style scoped>
 .task-cards-container {
-  max-height: 500px;
-  overflow-y: auto;
-}
-
-.task-cards-container::-webkit-scrollbar {
-  width: 6px;
-}
-
-.task-cards-container::-webkit-scrollbar-thumb {
-  background-color: #ccc;
-  border-radius: 3px;
-}
-
-.task-cards-container::-webkit-scrollbar-thumb:hover {
-  background-color: #999;
+  min-height: 400px;
+  max-height: none;
+  overflow-y: visible;
 }
 </style>
 

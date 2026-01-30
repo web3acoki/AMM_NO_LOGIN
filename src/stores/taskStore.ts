@@ -26,7 +26,7 @@ export interface TaskConfig {
   targetMarketCap?: number;   // 目标市值（BNB）
   amountMin: number;          // 金额区间最小值（BNB）
   amountMax: number;          // 金额区间最大值（BNB）
-  stopType: 'count' | 'amount' | 'time' | 'price' | 'marketcap';  // 停止类型
+  stopType: 'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap';  // 停止类型，none=永不停止
   stopValue: number;          // 停止条件值
   interval: number;           // 交易间隔(秒)
   threadCount: number;        // 线程数：每个间隔内同时执行的钱包数量
@@ -142,6 +142,9 @@ export const useTaskStore = defineStore('task', () => {
   function checkStopCondition(task: Task, currentPrice?: number, currentMarketCap?: number): boolean {
     const { stopType, stopValue } = task.config;
     const { executedCount, spentAmount, startTime, elapsedTime } = task.stats;
+
+    // none = 永不自动停止，只能手动停止
+    if (stopType === 'none') return false;
 
     switch (stopType) {
       case 'count':
@@ -654,10 +657,205 @@ export const useTaskStore = defineStore('task', () => {
     activeLogTaskId.value = null;
   }
 
+  // 批量删除任务
+  function deleteMultipleTasks(taskIds: string[]): number {
+    let deletedCount = 0;
+    for (const taskId of taskIds) {
+      if (deleteTask(taskId)) {
+        deletedCount++;
+      }
+    }
+    return deletedCount;
+  }
+
+  // 查询任务所有钱包的代币余额
+  async function queryTaskTokenBalances(taskId: string): Promise<{ address: string; balance: string; rawBalance: bigint }[]> {
+    const task = tasks.value.find(t => t.id === taskId);
+    if (!task) return [];
+
+    const chainStore = useChainStore();
+    const chainId = chainStore.selectedChainId;
+    const rpcUrl = chainStore.effectiveRpcUrl;
+    const chain = chainId === 97 ? bscTestnet : bsc;
+
+    const publicClient = createPublicClient({
+      chain,
+      transport: http(rpcUrl)
+    });
+
+    const tokenAddress = task.config.marketType === 'inner'
+      ? (task.config.innerTokenAddress || task.config.tokenContract)
+      : task.config.tokenContract;
+
+    if (!tokenAddress) {
+      addLog(taskId, 'error', '未设置代币合约地址');
+      return [];
+    }
+
+    // 获取代币精度
+    let decimals = 18;
+    try {
+      decimals = await publicClient.readContract({
+        address: tokenAddress as `0x${string}`,
+        abi: [{
+          name: 'decimals',
+          type: 'function',
+          stateMutability: 'view',
+          inputs: [],
+          outputs: [{ name: '', type: 'uint8' }]
+        }],
+        functionName: 'decimals'
+      }) as number;
+    } catch { /* use default 18 */ }
+
+    const results: { address: string; balance: string; rawBalance: bigint }[] = [];
+    let totalBalance = 0n;
+
+    addLog(taskId, 'info', `开始查询 ${task.walletAddresses.length} 个钱包的代币余额...`);
+
+    for (const addr of task.walletAddresses) {
+      try {
+        const balance = await publicClient.readContract({
+          address: tokenAddress as `0x${string}`,
+          abi: [{
+            name: 'balanceOf',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [{ name: 'account', type: 'address' }],
+            outputs: [{ name: '', type: 'uint256' }]
+          }],
+          functionName: 'balanceOf',
+          args: [addr as `0x${string}`]
+        }) as bigint;
+
+        const formatted = formatUnits(balance, decimals);
+        results.push({ address: addr, balance: formatted, rawBalance: balance });
+        totalBalance += balance;
+
+        if (balance > 0n) {
+          addLog(taskId, 'info', `${addr.slice(0, 10)}... 余额: ${formatted}`);
+        }
+      } catch (error: any) {
+        results.push({ address: addr, balance: '查询失败', rawBalance: 0n });
+        addLog(taskId, 'error', `查询 ${addr.slice(0, 10)}... 余额失败: ${error.message}`);
+      }
+    }
+
+    const totalFormatted = formatUnits(totalBalance, decimals);
+    addLog(taskId, 'success', `查询完成，总余额: ${totalFormatted}，有余额的钱包: ${results.filter(r => r.rawBalance > 0n).length}/${results.length}`);
+
+    return results;
+  }
+
+  // 批量卖出任务所有钱包的代币
+  async function batchSellForTask(taskId: string): Promise<void> {
+    const task = tasks.value.find(t => t.id === taskId);
+    if (!task) return;
+
+    const walletStore = useWalletStore();
+    const chainStore = useChainStore();
+    const dexStore = useDexStore();
+
+    const chainId = chainStore.selectedChainId;
+    const rpcUrl = chainStore.effectiveRpcUrl;
+
+    const tokenAddress = task.config.marketType === 'inner'
+      ? (task.config.innerTokenAddress || task.config.tokenContract)
+      : task.config.tokenContract;
+
+    if (!tokenAddress) {
+      addLog(taskId, 'error', '未设置代币合约地址');
+      return;
+    }
+
+    addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
+
+    // 所有钱包同时卖出（最大线程）
+    const promises = task.walletAddresses.map((walletAddress, index) => {
+      const delay = index * 100; // 递增延迟避免 nonce 冲突
+      return new Promise<void>((resolve) => {
+        setTimeout(async () => {
+          const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+          if (!privateKey) {
+            addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+            resolve();
+            return;
+          }
+
+          try {
+            if (task.config.marketType === 'inner') {
+              // 内盘卖出
+              const fourMemeService = createFourMemeService(chainId, rpcUrl);
+              const result = await fourMemeService.executeTrade({
+                chainId,
+                rpcUrl,
+                privateKey,
+                walletAddress,
+                tokenAddress,
+                amount: 0,
+                mode: 'sell',
+                gasPrice: task.config.gasPrice,
+                gasLimit: task.config.gasLimit,
+                sellPercent: 100, // 全部卖出
+              });
+
+              if (result.success) {
+                addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
+              } else {
+                addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
+              }
+            } else {
+              // 外盘卖出
+              const routerAddress = dexStore.currentRouterAddress;
+              if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
+                addLog(taskId, 'error', '当前DEX的Router地址未配置', walletAddress);
+                resolve();
+                return;
+              }
+
+              const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
+              const result = await tradingService.executeTrade({
+                chainId,
+                rpcUrl,
+                routerAddress,
+                privateKey,
+                walletAddress,
+                tokenAddress,
+                spendToken: 'BNB',
+                amount: 0,
+                amountType: 'amount',
+                mode: 'dump',
+                slippage: 30,
+                gasPrice: task.config.gasPrice,
+                gasLimit: task.config.gasLimit,
+                balancePercent: 100, // 全部卖出
+              });
+
+              if (result.success) {
+                addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
+              } else {
+                addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
+              }
+            }
+          } catch (error: any) {
+            addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
+          }
+
+          resolve();
+        }, delay);
+      });
+    });
+
+    await Promise.allSettled(promises);
+    addLog(taskId, 'info', `批量卖出操作完成`);
+  }
+
   // 获取任务的停止条件描述
   function getStopConditionText(task: Task): string {
     const { stopType, stopValue } = task.config;
     switch (stopType) {
+      case 'none':
+        return '手动停止';
       case 'count':
         return `执行 ${stopValue} 次`;
       case 'amount':
@@ -677,7 +875,9 @@ export const useTaskStore = defineStore('task', () => {
   function getTaskProgress(task: Task): number {
     const { stopType, stopValue } = task.config;
     const { executedCount, spentAmount, elapsedTime } = task.stats;
-    
+
+    if (stopType === 'none') return 0;
+
     switch (stopType) {
       case 'count':
         return Math.min((executedCount / stopValue) * 100, 100);
@@ -712,6 +912,7 @@ export const useTaskStore = defineStore('task', () => {
     resumeTask,
     stopTask,
     deleteTask,
+    deleteMultipleTasks,
     updateTask,
     setActiveLogTask,
     clearTaskLogs,
@@ -719,7 +920,9 @@ export const useTaskStore = defineStore('task', () => {
     addLog,
     getStopConditionText,
     getTaskProgress,
-    checkStopCondition
+    checkStopCondition,
+    queryTaskTokenBalances,
+    batchSellForTask
   };
 });
 

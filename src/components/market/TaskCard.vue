@@ -1,7 +1,7 @@
 <template>
-  <div class="task-card border rounded p-2 mb-2" :class="[statusClass, { 'border-info border-2': selected }]">
+  <div class="task-card border rounded px-2 py-2 mb-2" :class="[statusClass, { 'border-info border-2': selected }]">
     <!-- 任务头部 -->
-    <div class="d-flex justify-content-between align-items-center mb-2">
+    <div class="d-flex justify-content-between align-items-center mb-1">
       <div class="d-flex align-items-center gap-2">
         <input
           type="checkbox"
@@ -12,6 +12,7 @@
         <span class="badge" :class="modeBadgeClass">
           {{ task.mode === 'pump' ? '拉盘' : '砸盘' }}
         </span>
+        <span v-if="task.config.marketType === 'inner'" class="badge bg-info">内盘</span>
         <strong class="small">{{ task.name }}</strong>
       </div>
       <span class="badge" :class="statusBadgeClass">
@@ -20,105 +21,111 @@
       </span>
     </div>
 
-    <!-- 任务信息 -->
-    <div class="small text-muted mb-2">
+    <!-- 任务信息（单行紧凑） -->
+    <div class="small text-muted mb-1">
       <div class="d-flex flex-wrap gap-2">
-        <span><i class="bi bi-wallet2 me-1"></i>{{ task.walletAddresses.length }} 钱包</span>
-        <span><i class="bi bi-layers me-1"></i>{{ task.config.threadCount || 1 }} 线程</span>
+        <span><i class="bi bi-wallet2 me-1"></i>{{ task.walletAddresses.length }}钱包</span>
+        <span><i class="bi bi-layers me-1"></i>{{ task.config.threadCount || 1 }}线程</span>
         <span><i class="bi bi-clock me-1"></i>{{ task.config.interval }}s</span>
-      </div>
-      <div class="mt-1">
-        <span class="me-2">
+        <span>
           <i class="bi bi-stop-circle me-1"></i>{{ stopConditionText }}
         </span>
+        <span>执行:{{ task.stats.executedCount }}次</span>
+        <span>花费:{{ task.stats.spentAmount.toFixed(4) }} BNB</span>
+        <span>{{ formatTime(task.stats.elapsedTime) }}</span>
       </div>
     </div>
 
-    <!-- 进度条（非价格停止条件时显示） -->
-    <div v-if="task.config.stopType !== 'price'" class="progress mb-2" style="height: 4px;">
-      <div 
-        class="progress-bar" 
+    <!-- 进度条（非价格停止条件时显示，且不是none类型） -->
+    <div v-if="task.config.stopType !== 'price' && task.config.stopType !== 'none'" class="progress mb-1" style="height: 3px;">
+      <div
+        class="progress-bar"
         :class="task.status === 'running' ? 'progress-bar-striped progress-bar-animated' : ''"
         :style="{ width: progressPercent + '%' }"
       ></div>
     </div>
 
-    <!-- 统计信息 -->
-    <div class="d-flex justify-content-between small text-muted mb-2">
-      <span>执行: {{ task.stats.executedCount }} 次</span>
-      <span>花费: {{ task.stats.spentAmount.toFixed(4) }} BNB</span>
-      <span>时间: {{ formatTime(task.stats.elapsedTime) }}</span>
-    </div>
-
     <!-- 操作按钮 -->
-    <div class="d-flex gap-2 flex-wrap align-items-center">
+    <div class="d-flex gap-1 flex-wrap align-items-center">
       <!-- 主操作按钮 -->
-      <div class="d-flex gap-1">
-        <button
-          v-if="task.status === 'stopped' || task.status === 'paused'"
-          class="btn btn-success btn-sm"
-          @click="handleStart"
-        >
-          <i class="bi bi-play-fill me-1"></i>
-          {{ task.status === 'paused' ? '继续' : '开始' }}
-        </button>
+      <button
+        v-if="task.status === 'stopped' || task.status === 'paused'"
+        class="btn btn-success btn-sm"
+        @click="handleStart"
+      >
+        <i class="bi bi-play-fill me-1"></i>{{ task.status === 'paused' ? '继续' : '开始' }}
+      </button>
 
-        <button
-          v-if="task.status === 'running'"
-          class="btn btn-warning btn-sm"
-          @click="handlePause"
-        >
-          <i class="bi bi-pause-fill me-1"></i>暂停
-        </button>
+      <button
+        v-if="task.status === 'running'"
+        class="btn btn-warning btn-sm"
+        @click="handlePause"
+      >
+        <i class="bi bi-pause-fill me-1"></i>暂停
+      </button>
 
-        <button
-          v-if="task.status === 'running' || task.status === 'paused'"
-          class="btn btn-danger btn-sm"
-          @click="handleStop"
-          title="停止任务"
-        >
-          <i class="bi bi-stop-fill me-1"></i>停止
-        </button>
-      </div>
+      <button
+        v-if="task.status === 'running' || task.status === 'paused'"
+        class="btn btn-danger btn-sm"
+        @click="handleStop"
+        title="停止任务"
+      >
+        <i class="bi bi-stop-fill me-1"></i>停止
+      </button>
 
-      <!-- 分隔 -->
       <div class="flex-grow-1"></div>
 
       <!-- 辅助操作按钮 -->
-      <div class="d-flex gap-2">
-        <button
-          class="btn btn-outline-secondary btn-sm"
-          @click="handleViewLogs"
-          title="查看日志"
-          :class="{ 'active': isActiveLog }"
-        >
-          <i class="bi bi-journal-text me-1"></i>日志
-        </button>
+      <button
+        class="btn btn-outline-info btn-sm"
+        @click="handleQueryBalances"
+        :disabled="isQuerying"
+        title="查询代币余额"
+      >
+        <i class="bi bi-search me-1"></i>余额
+      </button>
 
-        <button
-          v-if="task.status === 'paused' || task.status === 'stopped'"
-          class="btn btn-outline-primary btn-sm"
-          @click="handleEdit"
-          title="编辑任务"
-        >
-          <i class="bi bi-pencil me-1"></i>编辑
-        </button>
+      <button
+        class="btn btn-outline-danger btn-sm"
+        @click="handleBatchSell"
+        :disabled="isBatchSelling"
+        title="批量卖出所有钱包的代币"
+      >
+        <i class="bi bi-cash-stack me-1"></i>{{ isBatchSelling ? '卖出中' : '批量卖' }}
+      </button>
 
-        <button
-          v-if="task.status === 'stopped'"
-          class="btn btn-outline-danger btn-sm"
-          @click="handleDelete"
-          title="删除任务"
-        >
-          <i class="bi bi-trash me-1"></i>删除
-        </button>
-      </div>
+      <button
+        class="btn btn-outline-secondary btn-sm"
+        @click="handleViewLogs"
+        title="查看日志"
+        :class="{ 'active': isActiveLog }"
+      >
+        <i class="bi bi-journal-text me-1"></i>日志
+      </button>
+
+      <button
+        v-if="task.status === 'paused' || task.status === 'stopped'"
+        class="btn btn-outline-primary btn-sm"
+        @click="handleEdit"
+        title="编辑任务"
+      >
+        <i class="bi bi-pencil me-1"></i>编辑
+      </button>
+
+      <button
+        v-if="task.status === 'stopped'"
+        class="btn btn-outline-danger btn-sm"
+        @click="handleDelete"
+        title="删除任务"
+      >
+        <i class="bi bi-trash me-1"></i>删除
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useTaskStore, type Task } from '../../stores/taskStore';
 import { storeToRefs } from 'pinia';
 
@@ -134,6 +141,9 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore();
 const { activeLogTaskId } = storeToRefs(taskStore);
+
+const isQuerying = ref(false);
+const isBatchSelling = ref(false);
 
 // 计算属性
 const isActiveLog = computed(() => activeLogTaskId.value === props.task.id);
@@ -227,6 +237,49 @@ function handleViewLogs() {
 function handleEdit() {
   emit('edit', props.task);
 }
+
+async function handleQueryBalances() {
+  isQuerying.value = true;
+  taskStore.setActiveLogTask(props.task.id);
+  try {
+    const results = await taskStore.queryTaskTokenBalances(props.task.id);
+    // 显示查询结果弹窗
+    const walletsWithBalance = results.filter(r => r.rawBalance > 0n);
+    const totalBalance = results.reduce((sum, r) => {
+      const val = parseFloat(r.balance) || 0;
+      return sum + val;
+    }, 0);
+
+    let msg = `代币余额查询完成\n\n`;
+    msg += `总钱包数: ${results.length}\n`;
+    msg += `有余额钱包: ${walletsWithBalance.length}\n`;
+    msg += `总余额: ${totalBalance.toFixed(6)}\n\n`;
+
+    if (walletsWithBalance.length > 0 && walletsWithBalance.length <= 10) {
+      msg += `有余额的钱包:\n`;
+      for (const w of walletsWithBalance) {
+        msg += `${w.address.slice(0, 10)}... : ${parseFloat(w.balance).toFixed(6)}\n`;
+      }
+    } else if (walletsWithBalance.length > 10) {
+      msg += `(详细列表请查看日志面板)`;
+    }
+
+    alert(msg);
+  } finally {
+    isQuerying.value = false;
+  }
+}
+
+async function handleBatchSell() {
+  if (!confirm(`确定要批量卖出任务 "${props.task.name}" 所有钱包的代币吗？\n\n将使用最大线程并行卖出所有钱包的全部代币。`)) return;
+  isBatchSelling.value = true;
+  taskStore.setActiveLogTask(props.task.id);
+  try {
+    await taskStore.batchSellForTask(props.task.id);
+  } finally {
+    isBatchSelling.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -235,11 +288,11 @@ function handleEdit() {
 }
 
 .task-card:hover {
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
 }
 
 .btn-sm {
-  padding: 0.25rem 0.5rem;
+  padding: 0.2rem 0.4rem;
   font-size: 0.75rem;
 }
 </style>
