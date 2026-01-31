@@ -2887,22 +2887,29 @@ export const useWalletStore = defineStore('wallet', {
 
       // 获取私钥（支持服务器模式）
       let batchKeyMap: Record<string, string> = {};
-      if (options?.privateKeyMap) {
-        batchKeyMap = options.privateKeyMap;
+
+      // 服务器模式下始终从服务器获取私钥
+      if (shouldUseServerMode()) {
+        console.log('服务器模式：从服务器获取私钥，地址数量:', sourceAddresses.length);
+        try {
+          const decryptedKeys = await this.getPrivateKeysForAddresses(sourceAddresses);
+          console.log('从服务器获取到私钥数量:', decryptedKeys.length);
+          for (const item of decryptedKeys) {
+            batchKeyMap[item.address.toLowerCase()] = item.privateKey;
+          }
+        } catch (error) {
+          console.error('从服务器获取私钥失败:', error);
+          throw new Error('从服务器获取私钥失败，请检查网络连接');
+        }
       } else {
-        // 先尝试从本地获取
-        const hasLocalBatchKeys = this.localWallets.some(w => w.encrypted);
-        if (hasLocalBatchKeys) {
+        // 本地模式：使用传入的私钥映射或从本地获取
+        if (options?.privateKeyMap && Object.keys(options.privateKeyMap).length > 0) {
+          batchKeyMap = options.privateKeyMap;
+        } else {
           for (const w of this.localWallets) {
             if (w.encrypted) {
               batchKeyMap[w.address.toLowerCase()] = w.encrypted;
             }
-          }
-        } else {
-          // 从服务器解密获取
-          const decryptedKeys = await this.getPrivateKeysForAddresses(sourceAddresses);
-          for (const item of decryptedKeys) {
-            batchKeyMap[item.address.toLowerCase()] = item.privateKey;
           }
         }
       }
@@ -2931,10 +2938,11 @@ export const useWalletStore = defineStore('wallet', {
           const privateKey = batchKeyMap[sourceAddr.toLowerCase()];
 
           if (!privateKey) {
+            console.warn(`地址 ${sourceAddr} 没有私钥，batchKeyMap keys:`, Object.keys(batchKeyMap));
             results.push({
               source: sourceAddr,
               target: targetAddr,
-              error: '源钱包未找到或没有私钥',
+              error: `地址 ${sourceAddr.slice(0, 10)}... 未找到私钥`,
               success: false
             });
             continue;

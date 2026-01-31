@@ -458,43 +458,17 @@ const sourceAddressError = computed(() => {
         return '存在无效的地址或私钥格式';
       }
     }
-
-    const walletsWithKey = addresses.filter(addr => {
-      // 如果选择了批次，信任批次数据（私钥会在执行时从服务器获取）
-      if (isUsingBatch.value) return true;
-      // 优先检查批次私钥映射
-      if (batchPrivateKeyMap.value[addr.toLowerCase()]) return true;
-      // 其次检查手动输入的私钥映射
-      if (sourcePrivateKeyMap.value[addr.toLowerCase()]) return true;
-      // 最后检查本地钱包
-      const wallet = walletStore.localWallets.find(w => w.address.toLowerCase() === addr.toLowerCase());
-      return wallet?.encrypted;
-    });
-
-    if (walletsWithKey.length < addresses.length) {
-      const missingCount = addresses.length - walletsWithKey.length;
-      return `${missingCount} 个地址没有私钥（请直接输入私钥而不是地址）`;
-    }
-
+    // 服务器模式下私钥会在执行时从服务器获取，不需要本地验证
     return '';
   }
 
-  // 一对多模式：检查格式
+  // 一对多模式：只检查地址格式
   const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
   if (invalidAddrs.length > 0) {
     return `${invalidAddrs.length} 个地址格式无效`;
   }
 
-  const walletsWithKey = addresses.filter(addr => {
-    if (batchPrivateKeyMap.value[addr.toLowerCase()]) return true;
-    const wallet = walletStore.localWallets.find(w => w.address.toLowerCase() === addr.toLowerCase());
-    return wallet?.encrypted;
-  });
-
-  if (walletsWithKey.length < addresses.length) {
-    const missingCount = addresses.length - walletsWithKey.length;
-    return `${missingCount} 个地址在本地钱包中不存在或无私钥`;
-  }
+  // 服务器模式下私钥会在执行时从服务器获取，不需要本地验证
 
   if (transferMode.value === 'oneToMany' && addresses.length > 1) {
     return '一对多模式只能填写一个源钱包地址';
