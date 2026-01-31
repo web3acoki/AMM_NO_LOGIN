@@ -331,12 +331,19 @@ const batchPrivateKeyMap = computed(() => {
     const batch = walletBatches.value.find(b => b.id === selectedSourceBatchId.value);
     if (batch) {
       for (const wallet of batch.wallets) {
-        map[wallet.address.toLowerCase()] = wallet.privateKey;
+        // 服务器模式下 privateKey 可能为空，但地址依然有效
+        // 私钥会在执行转账时从服务器获取
+        if (wallet.privateKey) {
+          map[wallet.address.toLowerCase()] = wallet.privateKey;
+        }
       }
     }
   }
   return map;
 });
+
+// 检查是否选择了批次（用于跳过私钥验证）
+const isUsingBatch = computed(() => !!selectedSourceBatchId.value);
 
 // 解析地址文本为地址数组
 function parseAddresses(text: string): string[] {
@@ -453,6 +460,8 @@ const sourceAddressError = computed(() => {
     }
 
     const walletsWithKey = addresses.filter(addr => {
+      // 如果选择了批次，信任批次数据（私钥会在执行时从服务器获取）
+      if (isUsingBatch.value) return true;
       // 优先检查批次私钥映射
       if (batchPrivateKeyMap.value[addr.toLowerCase()]) return true;
       // 其次检查手动输入的私钥映射
