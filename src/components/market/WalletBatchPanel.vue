@@ -384,8 +384,8 @@ async function queryBalances(batch: any) {
 }
 
 // 导出批次
-function exportBatch(batch: any) {
-  walletStore.exportBatchToFile(batch);
+async function exportBatch(batch: any) {
+  await walletStore.exportBatchToFile(batch);
 }
 
 // 删除批次

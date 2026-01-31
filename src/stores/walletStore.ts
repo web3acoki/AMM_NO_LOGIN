@@ -362,7 +362,7 @@ export const useWalletStore = defineStore('wallet', {
       this.persistBatches();
 
       // 自动导出私钥文件
-      this.exportBatchToFile(batch);
+      await this.exportBatchToFile(batch);
 
       return batch;
     },
@@ -432,11 +432,38 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 导出批次私钥到文件
-    exportBatchToFile(batch: WalletBatch) {
+    async exportBatchToFile(batch: WalletBatch) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+      // 获取私钥（支持服务器模式）
+      const addresses = batch.wallets.map(w => w.address);
+      let privateKeyMap: Record<string, string> = {};
+
+      // 先尝试从批次本地数据获取
+      const hasLocalKeys = batch.wallets.some(w => w.privateKey);
+      if (hasLocalKeys) {
+        for (const w of batch.wallets) {
+          if (w.privateKey) {
+            privateKeyMap[w.address.toLowerCase()] = w.privateKey;
+          }
+        }
+      } else {
+        // 从服务器解密获取
+        try {
+          const decryptedKeys = await this.getPrivateKeysForAddresses(addresses);
+          for (const item of decryptedKeys) {
+            privateKeyMap[item.address.toLowerCase()] = item.privateKey;
+          }
+        } catch (error) {
+          console.error('获取私钥失败:', error);
+          alert('获取私钥失败，无法导出');
+          return;
+        }
+      }
+
       const csvHeader = '序号,钱包地址,私钥\n';
       const csvRows = batch.wallets.map((wallet, index) =>
-        `${index + 1},"${wallet.address}","${wallet.privateKey}"`
+        `${index + 1},"${wallet.address}","${privateKeyMap[wallet.address.toLowerCase()] || ''}"`
       );
       const csvContent = csvHeader + csvRows.join('\n');
 
@@ -1089,12 +1116,31 @@ export const useWalletStore = defineStore('wallet', {
       }
 
       try {
-        // 简单验证私钥和地址是否匹配（仅在控制台显示）
         console.log(`准备导出 ${this.localWallets.length} 个钱包的私钥...`);
+
+        // 获取私钥（支持服务器模式）
+        const addresses = this.localWallets.map(w => w.address);
+        let privateKeyMap: Record<string, string> = {};
+
+        const hasLocalKeys = this.localWallets.some(w => w.encrypted);
+        if (hasLocalKeys) {
+          for (const w of this.localWallets) {
+            if (w.encrypted) {
+              privateKeyMap[w.address.toLowerCase()] = w.encrypted;
+            }
+          }
+        } else {
+          // 从服务器解密获取
+          const decryptedKeys = await this.getPrivateKeysForAddresses(addresses);
+          for (const item of decryptedKeys) {
+            privateKeyMap[item.address.toLowerCase()] = item.privateKey;
+          }
+        }
+
         // 创建 CSV 文件内容
         const csvHeader = '序号,钱包地址,私钥,备注\n';
-        const csvRows = this.localWallets.map((wallet, index) => 
-          `${index + 1},"${wallet.address}","${wallet.encrypted || '未存储私钥'}","${wallet.remark || ''}"`
+        const csvRows = this.localWallets.map((wallet, index) =>
+          `${index + 1},"${wallet.address}","${privateKeyMap[wallet.address.toLowerCase()] || '未存储私钥'}","${wallet.remark || ''}"`
         );
         const csvContent = csvHeader + csvRows.join('\n');
 
@@ -1892,8 +1938,17 @@ export const useWalletStore = defineStore('wallet', {
       if (!sourceWallet) {
         throw new Error('源钱包不存在');
       }
-      
-      if (!sourceWallet.encrypted) {
+
+      // 获取私钥（支持服务器模式）
+      let sourcePrivateKey = sourceWallet.encrypted;
+      if (!sourcePrivateKey) {
+        const decryptedKeys = await this.getPrivateKeysForAddresses([sourceAddress]);
+        const found = decryptedKeys.find(k => k.address.toLowerCase() === sourceAddress.toLowerCase());
+        if (found) {
+          sourcePrivateKey = found.privateKey;
+        }
+      }
+      if (!sourcePrivateKey) {
         throw new Error('源钱包没有私钥，无法执行转账');
       }
       
@@ -1961,7 +2016,7 @@ export const useWalletStore = defineStore('wallet', {
       const gasPrice = await publicClient.getGasPrice();
       
       // 创建源钱包客户端
-      const account = privateKeyToAccount(sourceWallet.encrypted as `0x${string}`);
+      const account = privateKeyToAccount(sourcePrivateKey as `0x${string}`);
       const walletClient = createWalletClient({
         account,
         chain: chainConfig,
@@ -2179,7 +2234,7 @@ export const useWalletStore = defineStore('wallet', {
       }
       
       const totalAmount = amountPerWallet * selectedWallets.length;
-      
+
       // 显示确认对话框
       const confirmed = confirm(
         `确认从选中钱包归集到目标地址？\n\n` +
@@ -2189,22 +2244,40 @@ export const useWalletStore = defineStore('wallet', {
         `预计总归集: ${totalAmount} ${tokenSymbol}\n\n` +
         `点击确定后，将开始归集。`
       );
-      
+
       if (!confirmed) {
         throw new Error('用户取消了归集');
       }
-      
+
       const results = [];
       const gasPrice = await publicClient.getGasPrice();
-      
+
+      // 获取私钥（支持服务器模式）
+      const collectAddresses = selectedWallets.map(w => w.address);
+      const collectKeyMap: Record<string, string> = {};
+      const hasLocalCollectKeys = selectedWallets.some(w => w.encrypted);
+      if (hasLocalCollectKeys) {
+        for (const w of selectedWallets) {
+          if (w.encrypted) {
+            collectKeyMap[w.address.toLowerCase()] = w.encrypted;
+          }
+        }
+      } else {
+        const decryptedKeys = await this.getPrivateKeysForAddresses(collectAddresses);
+        for (const item of decryptedKeys) {
+          collectKeyMap[item.address.toLowerCase()] = item.privateKey;
+        }
+      }
+
       for (let i = 0; i < selectedWallets.length; i++) {
         const wallet = selectedWallets[i];
-        
+
         try {
           console.log(`归集钱包 ${i + 1}/${selectedWallets.length}: ${wallet.address}`);
-          
+
           // 检查钱包是否有私钥
-          if (!wallet.encrypted) {
+          const walletPrivateKey = collectKeyMap[wallet.address.toLowerCase()];
+          if (!walletPrivateKey) {
             console.warn(`钱包 ${wallet.address} 没有私钥，跳过`);
             results.push({
               wallet: wallet.address,
@@ -2214,14 +2287,14 @@ export const useWalletStore = defineStore('wallet', {
             continue;
           }
           
-          // 使用本地私钥创建钱包客户端
-          const account = privateKeyToAccount(wallet.encrypted as `0x${string}`);
+          // 使用私钥创建钱包客户端
+          const account = privateKeyToAccount(walletPrivateKey as `0x${string}`);
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
             transport: http(chainConfig.rpcUrls.default.http[0])
           });
-          
+
           let txHash: string;
           let amountToSend: bigint;
           
@@ -2376,8 +2449,25 @@ export const useWalletStore = defineStore('wallet', {
         console.warn(`检测到 ${invalidTargets.length} 个无效目标地址，已自动过滤`);
       }
       
+      // 获取私钥（支持服务器模式）
+      const sourceAddrs = sourceWallets.map(w => w.address);
+      const manyKeyMap: Record<string, string> = {};
+      const hasLocalManyKeys = sourceWallets.some(w => w.encrypted);
+      if (hasLocalManyKeys) {
+        for (const w of sourceWallets) {
+          if (w.encrypted) {
+            manyKeyMap[w.address.toLowerCase()] = w.encrypted;
+          }
+        }
+      } else {
+        const decryptedKeys = await this.getPrivateKeysForAddresses(sourceAddrs);
+        for (const item of decryptedKeys) {
+          manyKeyMap[item.address.toLowerCase()] = item.privateKey;
+        }
+      }
+
       // 过滤出有私钥的源钱包
-      const walletsWithKey = sourceWallets.filter(w => w.encrypted);
+      const walletsWithKey = sourceWallets.filter(w => manyKeyMap[w.address.toLowerCase()]);
       if (walletsWithKey.length === 0) {
         throw new Error('源钱包中没有包含私钥的钱包，无法执行转账');
       }
@@ -2466,7 +2556,7 @@ export const useWalletStore = defineStore('wallet', {
         try {
           console.log(`转账 ${i + 1}/${tasks.length}: ${task.source.address} -> ${task.target}`);
           
-          if (!task.source.encrypted) {
+          if (!manyKeyMap[task.source.address.toLowerCase()]) {
             console.warn(`源钱包 ${task.source.address} 没有私钥，跳过`);
             results.push({
               source: task.source.address,
@@ -2478,8 +2568,8 @@ export const useWalletStore = defineStore('wallet', {
             continue;
           }
           
-          // 使用本地私钥创建钱包客户端
-          const account = privateKeyToAccount(task.source.encrypted as `0x${string}`);
+          // 使用私钥创建钱包客户端
+          const account = privateKeyToAccount(manyKeyMap[task.source.address.toLowerCase()] as `0x${string}`);
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
@@ -2641,14 +2731,32 @@ export const useWalletStore = defineStore('wallet', {
       
       const results = [];
       const gasPrice = await publicClient.getGasPrice();
-      
+
+      // 获取私钥（支持服务器模式）
+      const tokenCollectAddresses = selectedWallets.map(w => w.address);
+      const tokenKeyMap: Record<string, string> = {};
+      const hasLocalTokenKeys = selectedWallets.some(w => w.encrypted);
+      if (hasLocalTokenKeys) {
+        for (const w of selectedWallets) {
+          if (w.encrypted) {
+            tokenKeyMap[w.address.toLowerCase()] = w.encrypted;
+          }
+        }
+      } else {
+        const decryptedKeys = await this.getPrivateKeysForAddresses(tokenCollectAddresses);
+        for (const item of decryptedKeys) {
+          tokenKeyMap[item.address.toLowerCase()] = item.privateKey;
+        }
+      }
+
       for (let i = 0; i < selectedWallets.length; i++) {
         const wallet = selectedWallets[i];
-        
+
         try {
           console.log(`归集钱包 ${i + 1}/${selectedWallets.length}: ${wallet.address}`);
-          
-          if (!wallet.encrypted) {
+
+          const tokenWalletKey = tokenKeyMap[wallet.address.toLowerCase()];
+          if (!tokenWalletKey) {
             console.warn(`钱包 ${wallet.address} 没有私钥，跳过`);
             results.push({
               wallet: wallet.address,
@@ -2677,9 +2785,9 @@ export const useWalletStore = defineStore('wallet', {
           }
           
           console.log(`代币余额: ${formatUnits(tokenBalance, decimals)}`);
-          
-          // 使用本地私钥创建钱包客户端
-          const account = privateKeyToAccount(wallet.encrypted as `0x${string}`);
+
+          // 使用私钥创建钱包客户端
+          const account = privateKeyToAccount(tokenWalletKey as `0x${string}`);
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
@@ -2777,6 +2885,28 @@ export const useWalletStore = defineStore('wallet', {
       // Nonce 管理：每个源地址维护本地递增 Nonce，避免并发冲突
       const nonceMap = new Map<string, number>();
 
+      // 获取私钥（支持服务器模式）
+      let batchKeyMap: Record<string, string> = {};
+      if (options?.privateKeyMap) {
+        batchKeyMap = options.privateKeyMap;
+      } else {
+        // 先尝试从本地获取
+        const hasLocalBatchKeys = this.localWallets.some(w => w.encrypted);
+        if (hasLocalBatchKeys) {
+          for (const w of this.localWallets) {
+            if (w.encrypted) {
+              batchKeyMap[w.address.toLowerCase()] = w.encrypted;
+            }
+          }
+        } else {
+          // 从服务器解密获取
+          const decryptedKeys = await this.getPrivateKeysForAddresses(sourceAddresses);
+          for (const item of decryptedKeys) {
+            batchKeyMap[item.address.toLowerCase()] = item.privateKey;
+          }
+        }
+      }
+
       async function getNextNonce(address: string): Promise<number> {
         const key = address.toLowerCase();
         if (!nonceMap.has(key)) {
@@ -2797,15 +2927,8 @@ export const useWalletStore = defineStore('wallet', {
         const { sourceAddr, targetAddr } = tasks[i];
 
         try {
-          // 获取私钥：优先从options.privateKeyMap获取，其次从本地钱包获取
-          let privateKey: string | undefined;
-
-          if (options?.privateKeyMap && options.privateKeyMap[sourceAddr.toLowerCase()]) {
-            privateKey = options.privateKeyMap[sourceAddr.toLowerCase()];
-          } else {
-            const sourceWallet = this.localWallets.find(w => w.address.toLowerCase() === sourceAddr.toLowerCase());
-            privateKey = sourceWallet?.encrypted;
-          }
+          // 从预获取的私钥映射获取
+          const privateKey = batchKeyMap[sourceAddr.toLowerCase()];
 
           if (!privateKey) {
             results.push({
