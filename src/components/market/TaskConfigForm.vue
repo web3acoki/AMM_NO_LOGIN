@@ -295,7 +295,7 @@ const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
 
 // 钱包来源选择
-const useLocalWallets = ref(true);
+const useLocalWallets = ref(false);
 const useBatchWallets = ref(false);
 const selectedBatchIds = ref<string[]>([]);
 

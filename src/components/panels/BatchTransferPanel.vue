@@ -199,9 +199,19 @@
             {{ transferResults.filter(r => !r.success).length }} 失败
           </span>
         </span>
-        <button class="btn btn-outline-secondary btn-sm" @click="transferResults = []">
-          <i class="bi bi-x-lg me-1"></i>清除
-        </button>
+        <div>
+          <button
+            v-if="transferResults.filter(r => !r.success).length > 0"
+            class="btn btn-outline-danger btn-sm me-2"
+            :disabled="isTransferring"
+            @click="retryFailedTransfers"
+          >
+            <i class="bi bi-arrow-repeat me-1"></i>重试失败 ({{ transferResults.filter(r => !r.success).length }})
+          </button>
+          <button class="btn btn-outline-secondary btn-sm" @click="transferResults = []">
+            <i class="bi bi-x-lg me-1"></i>清除
+          </button>
+        </div>
       </div>
       <div class="card-body p-0">
         <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
@@ -558,10 +568,65 @@ async function executeTransfer() {
       alert(`转账全部失败！共 ${failCount} 笔\n\n失败原因: ${firstError}`);
     } else {
       const firstError = results.find(r => r.error)?.error || '未知错误';
-      alert(`转账部分完成\n\n成功: ${successCount} 笔\n失败: ${failCount} 笔\n\n失败原因: ${firstError}`);
+      alert(`转账部分完成\n\n成功: ${successCount} 笔\n失败: ${failCount} 笔\n\n失败原因: ${firstError}\n\n可点击"重试失败"按钮重新执行失败的转账`);
     }
   } catch (error: any) {
     alert(error.message || '转账失败');
+  } finally {
+    isTransferring.value = false;
+  }
+}
+
+// 重试失败的转账
+async function retryFailedTransfers() {
+  const failedResults = transferResults.value.filter(r => !r.success);
+  if (failedResults.length === 0) return;
+
+  isTransferring.value = true;
+
+  try {
+    // 提取失败的源地址和目标地址
+    const retrySources = failedResults.map(r => r.source).filter(Boolean);
+    const retryTargets = failedResults.map(r => r.target).filter(Boolean);
+
+    if (retrySources.length === 0 || retryTargets.length === 0) {
+      alert('无法获取失败转账的地址信息');
+      return;
+    }
+
+    const mergedPrivateKeyMap = {
+      ...batchPrivateKeyMap.value,
+      ...sourcePrivateKeyMap.value
+    };
+
+    // 重试模式：失败的都是一对一关系，用manyToMany
+    const retryResults = await walletStore.batchTransferByAddresses(
+      retrySources,
+      retryTargets,
+      transferAllBalance.value ? 0 : transferAmount.value,
+      transferTokenType.value,
+      'manyToMany',
+      {
+        privateKeyMap: mergedPrivateKeyMap,
+        transferAllBalance: transferAllBalance.value
+      }
+    );
+
+    // 合并结果：保留成功的，替换失败的
+    const successResults = transferResults.value.filter(r => r.success);
+    transferResults.value = [...successResults, ...retryResults];
+
+    const retrySuccess = retryResults.filter(r => r.success).length;
+    const retryFail = retryResults.filter(r => !r.success).length;
+
+    if (retryFail === 0) {
+      alert(`重试完成！全部 ${retrySuccess} 笔成功`);
+    } else {
+      const firstError = retryResults.find(r => r.error)?.error || '未知错误';
+      alert(`重试结果\n\n成功: ${retrySuccess} 笔\n仍失败: ${retryFail} 笔\n\n失败原因: ${firstError}`);
+    }
+  } catch (error: any) {
+    alert(error.message || '重试失败');
   } finally {
     isTransferring.value = false;
   }
