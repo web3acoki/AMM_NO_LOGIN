@@ -222,7 +222,7 @@ export const useWalletStore = defineStore('wallet', {
       }
     },
 
-    // 从服务器加载钱包数据
+    // 从服务器加载钱包数据（包含私钥，存到本地）
     async loadFromServer() {
       try {
         console.log('从服务器加载钱包数据...');
@@ -237,6 +237,7 @@ export const useWalletStore = defineStore('wallet', {
           nativeBalance: w.nativeBalance,
           tokenBalance: w.tokenBalance,
           createdAt: w.createdAt,
+          encrypted: '', // 稍后填充私钥
         }));
 
         // 加载钱包批次
@@ -248,11 +249,57 @@ export const useWalletStore = defineStore('wallet', {
           walletType: b.walletType || 'normal',
           wallets: (b.wallets || []).map(w => ({
             address: w.address,
-            privateKey: '', // 私钥不从服务器返回
+            privateKey: '', // 稍后填充私钥
             remark: w.remark || '',
           })),
           createdAt: b.createdAt || new Date().toISOString(),
         }));
+
+        // 收集所有钱包地址
+        const allAddresses: string[] = [];
+        for (const w of this.localWallets) {
+          allAddresses.push(w.address);
+        }
+        for (const batch of this.walletBatches) {
+          for (const w of batch.wallets) {
+            allAddresses.push(w.address);
+          }
+        }
+
+        // 一次性从服务器获取所有私钥
+        if (allAddresses.length > 0) {
+          console.log(`正在解密 ${allAddresses.length} 个钱包的私钥...`);
+          try {
+            const decryptedKeys = await walletApi.decryptPrivateKeys(allAddresses);
+            const keyMap: Record<string, string> = {};
+            for (const item of decryptedKeys) {
+              keyMap[item.address.toLowerCase()] = item.privateKey;
+            }
+
+            // 填充普通钱包的私钥
+            for (const wallet of this.localWallets) {
+              const key = keyMap[wallet.address.toLowerCase()];
+              if (key) {
+                wallet.encrypted = key;
+              }
+            }
+
+            // 填充批次钱包的私钥
+            for (const batch of this.walletBatches) {
+              for (const wallet of batch.wallets) {
+                const key = keyMap[wallet.address.toLowerCase()];
+                if (key) {
+                  wallet.privateKey = key;
+                }
+              }
+            }
+
+            console.log(`成功解密 ${decryptedKeys.length} 个私钥`);
+          } catch (error) {
+            console.error('解密私钥失败:', error);
+            // 解密失败不影响基本功能，只是无法执行转账
+          }
+        }
 
         console.log(`从服务器加载了 ${this.localWallets.length} 个钱包和 ${this.walletBatches.length} 个批次`);
       } catch (error) {
@@ -2885,30 +2932,24 @@ export const useWalletStore = defineStore('wallet', {
       // Nonce 管理：每个源地址维护本地递增 Nonce，避免并发冲突
       const nonceMap = new Map<string, number>();
 
-      // 获取私钥（支持服务器模式）
+      // 获取私钥：优先使用传入的私钥映射，否则从本地缓存获取（登录时已从服务器加载）
       let batchKeyMap: Record<string, string> = {};
 
-      // 服务器模式下始终从服务器获取私钥
-      if (shouldUseServerMode()) {
-        console.log('服务器模式：从服务器获取私钥，地址数量:', sourceAddresses.length);
-        try {
-          const decryptedKeys = await this.getPrivateKeysForAddresses(sourceAddresses);
-          console.log('从服务器获取到私钥数量:', decryptedKeys.length);
-          for (const item of decryptedKeys) {
-            batchKeyMap[item.address.toLowerCase()] = item.privateKey;
-          }
-        } catch (error) {
-          console.error('从服务器获取私钥失败:', error);
-          throw new Error('从服务器获取私钥失败，请检查网络连接');
-        }
+      if (options?.privateKeyMap && Object.keys(options.privateKeyMap).length > 0) {
+        // 使用传入的私钥映射
+        batchKeyMap = options.privateKeyMap;
       } else {
-        // 本地模式：使用传入的私钥映射或从本地获取
-        if (options?.privateKeyMap && Object.keys(options.privateKeyMap).length > 0) {
-          batchKeyMap = options.privateKeyMap;
-        } else {
-          for (const w of this.localWallets) {
-            if (w.encrypted) {
-              batchKeyMap[w.address.toLowerCase()] = w.encrypted;
+        // 从本地钱包缓存获取（服务器模式下登录时已加载）
+        for (const w of this.localWallets) {
+          if (w.encrypted) {
+            batchKeyMap[w.address.toLowerCase()] = w.encrypted;
+          }
+        }
+        // 从批次钱包缓存获取
+        for (const batch of this.walletBatches) {
+          for (const w of batch.wallets) {
+            if (w.privateKey) {
+              batchKeyMap[w.address.toLowerCase()] = w.privateKey;
             }
           }
         }
