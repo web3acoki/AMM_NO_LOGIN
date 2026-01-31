@@ -2774,6 +2774,24 @@ export const useWalletStore = defineStore('wallet', {
         }
       }
 
+      // Nonce 管理：每个源地址维护本地递增 Nonce，避免并发冲突
+      const nonceMap = new Map<string, number>();
+
+      async function getNextNonce(address: string): Promise<number> {
+        const key = address.toLowerCase();
+        if (!nonceMap.has(key)) {
+          // 首次使用该地址，从链上获取 pending nonce
+          const chainNonce = await publicClient.getTransactionCount({
+            address: key as `0x${string}`,
+            blockTag: 'pending'
+          });
+          nonceMap.set(key, chainNonce);
+        }
+        const nonce = nonceMap.get(key)!;
+        nonceMap.set(key, nonce + 1);
+        return nonce;
+      }
+
       // 执行转账任务
       for (let i = 0; i < tasks.length; i++) {
         const { sourceAddr, targetAddr } = tasks[i];
@@ -2837,6 +2855,7 @@ export const useWalletStore = defineStore('wallet', {
                 continue;
               }
 
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
                 abi: erc20Abi,
@@ -2844,6 +2863,7 @@ export const useWalletStore = defineStore('wallet', {
                 args: [targetAddr as `0x${string}`, balance as bigint],
                 gas: BigInt(65000),
                 gasPrice: gasPrice,
+                nonce: nonce,
               });
             } else {
               // 先检查代币余额是否足够
@@ -2866,6 +2886,7 @@ export const useWalletStore = defineStore('wallet', {
                 continue;
               }
 
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
                 abi: erc20Abi,
@@ -2873,6 +2894,7 @@ export const useWalletStore = defineStore('wallet', {
                 args: [targetAddr as `0x${string}`, amountToSend],
                 gas: BigInt(65000),
                 gasPrice: gasPrice,
+                nonce: nonce,
               });
             }
           } else {
@@ -2897,11 +2919,13 @@ export const useWalletStore = defineStore('wallet', {
               actualAmount = Number(formatEther(transferValue));
               console.log(`转全部余额: ${formatEther(balance)} BNB, Gas费: ${formatEther(gasCost)} BNB, 实际转账: ${actualAmount} BNB`);
 
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
                 value: transferValue,
                 gas: gasLimit,
                 gasPrice: gasPrice,
+                nonce: nonce,
               });
             } else {
               // 转固定金额，先检查余额是否足够
@@ -2920,11 +2944,13 @@ export const useWalletStore = defineStore('wallet', {
                 continue;
               }
 
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
                 value: amountToSend,
                 gas: gasLimit,
                 gasPrice: gasPrice,
+                nonce: nonce,
               });
             }
           }
