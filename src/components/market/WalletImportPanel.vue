@@ -141,7 +141,7 @@ async function importWallets() {
     return;
   }
 
-  result.value = walletStore.importWalletsFromPrivateKeys(privateKeys, {
+  result.value = await walletStore.importWalletsFromPrivateKeys(privateKeys, {
     walletType: walletType.value,
     remark: remark.value,
   });
