@@ -277,7 +277,7 @@ function selectRange() {
 }
 
 // 编辑选中钱包的备注
-function editSelectedRemark() {
+async function editSelectedRemark() {
   if (selectedCount.value === 0) return;
 
   const selectedWallets = walletStore.selectedWallets;
@@ -291,7 +291,7 @@ function editSelectedRemark() {
   );
 
   if (newRemark !== null) {
-    walletStore.updateSelectedWalletsRemark(newRemark);
+    await walletStore.updateSelectedWalletsRemark(newRemark);
     alert(`已更新 ${selectedCount.value} 个钱包的备注`);
   }
 }

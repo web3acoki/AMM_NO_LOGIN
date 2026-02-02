@@ -353,10 +353,10 @@ function toggleExpand(batchId: string) {
 }
 
 // 编辑备注
-function editRemark(batch: any) {
+async function editRemark(batch: any) {
   const newRemark = prompt('请输入新的备注：', batch.remark);
   if (newRemark !== null && newRemark !== batch.remark) {
-    walletStore.updateBatchRemark(batch.id, newRemark);
+    await walletStore.updateBatchRemark(batch.id, newRemark);
   }
 }
 

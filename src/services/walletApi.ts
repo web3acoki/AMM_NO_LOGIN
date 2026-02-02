@@ -136,6 +136,18 @@ export async function addBatch(batch: {
   return response.data!;
 }
 
+// 更新钱包批次
+export async function updateBatch(id: string, data: {
+  remark?: string;
+  walletType?: 'main' | 'normal';
+}): Promise<WalletBatchData> {
+  const response = await apiRequest<WalletBatchData>(`/api/wallets/batches/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data)
+  });
+  return response.data!;
+}
+
 // 删除钱包批次
 export async function deleteBatch(id: string): Promise<void> {
   await apiRequest(`/api/wallets/batches/${id}`, {

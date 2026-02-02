@@ -528,10 +528,20 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 更新批次备注
-    updateBatchRemark(batchId: string, remark: string) {
+    async updateBatchRemark(batchId: string, remark: string) {
       const batch = this.walletBatches.find(b => b.id === batchId);
       if (batch) {
         batch.remark = remark;
+
+        // 服务器模式下同步到服务器
+        if (shouldUseServerMode() && batch._id) {
+          try {
+            await walletApi.updateBatch(batch._id, { remark });
+          } catch (error) {
+            console.error('同步批次备注到服务器失败:', error);
+          }
+        }
+
         this.persistBatches();
       }
     },
@@ -1060,22 +1070,49 @@ export const useWalletStore = defineStore('wallet', {
       return { added, duplicates, invalid };
     },
 
-    updateWalletRemark(addr: string, remark: string) {
+    async updateWalletRemark(addr: string, remark: string) {
       const wallet = this.localWallets.find((w) => w.address === addr);
       if (!wallet) return;
       wallet.remark = remark.trim();
+
+      // 服务器模式下同步到服务器
+      if (shouldUseServerMode() && wallet._id) {
+        try {
+          await walletApi.updateWallet(wallet._id, { remark: wallet.remark });
+        } catch (error) {
+          console.error('同步钱包备注到服务器失败:', error);
+        }
+      }
+
       this.persist();
     },
 
     // 批量更新选中钱包的备注
-    updateSelectedWalletsRemark(remark: string) {
+    async updateSelectedWalletsRemark(remark: string) {
       const trimmedRemark = remark.trim();
+      const walletsToUpdate: { id: string; remark: string }[] = [];
+
       for (const address of this.selectedWalletAddresses) {
         const wallet = this.localWallets.find((w) => w.address === address);
         if (wallet) {
           wallet.remark = trimmedRemark;
+          if (shouldUseServerMode() && wallet._id) {
+            walletsToUpdate.push({ id: wallet._id, remark: trimmedRemark });
+          }
         }
       }
+
+      // 服务器模式下批量同步到服务器
+      if (walletsToUpdate.length > 0) {
+        for (const item of walletsToUpdate) {
+          try {
+            await walletApi.updateWallet(item.id, { remark: item.remark });
+          } catch (error) {
+            console.error('同步钱包备注到服务器失败:', error);
+          }
+        }
+      }
+
       this.persist();
     },
 
