@@ -297,10 +297,10 @@ async function editSelectedRemark() {
 }
 
 // 删除选中钱包
-function removeSelected() {
+async function removeSelected() {
   if (selectedCount.value === 0) return;
   if (confirm(`确定要删除选中的 ${selectedCount.value} 个钱包吗？`)) {
-    walletStore.removeSelectedWallets();
+    await walletStore.removeSelectedWallets();
   }
 }
 

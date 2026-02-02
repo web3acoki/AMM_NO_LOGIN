@@ -839,7 +839,23 @@ export const useWalletStore = defineStore('wallet', {
     },
     
     // 删除选中的钱包
-    removeSelectedWallets() {
+    async removeSelectedWallets() {
+      // 服务器模式下从服务器删除
+      if (shouldUseServerMode()) {
+        const idsToDelete = this.localWallets
+          .filter(w => this.selectedWalletAddresses.includes(w.address) && w._id)
+          .map(w => w._id!);
+
+        if (idsToDelete.length > 0) {
+          try {
+            await walletApi.deleteWallets(idsToDelete);
+          } catch (error) {
+            console.error('从服务器批量删除钱包失败:', error);
+            throw error;
+          }
+        }
+      }
+
       this.localWallets = this.localWallets.filter(
         w => !this.selectedWalletAddresses.includes(w.address)
       );
