@@ -533,16 +533,42 @@ export const useWalletStore = defineStore('wallet', {
       if (batch) {
         batch.remark = remark;
 
+        // 同时更新该批次中钱包在 localWallets 中的备注
+        const batchAddresses = new Set(batch.wallets.map(w => w.address.toLowerCase()));
+        const walletsToUpdate: { id: string; remark: string }[] = [];
+
+        for (const wallet of this.localWallets) {
+          if (batchAddresses.has(wallet.address.toLowerCase())) {
+            wallet.remark = remark;
+            if (shouldUseServerMode() && wallet._id) {
+              walletsToUpdate.push({ id: wallet._id, remark });
+            }
+          }
+        }
+
         // 服务器模式下同步到服务器
-        if (shouldUseServerMode() && batch._id) {
-          try {
-            await walletApi.updateBatch(batch._id, { remark });
-          } catch (error) {
-            console.error('同步批次备注到服务器失败:', error);
+        if (shouldUseServerMode()) {
+          // 更新批次备注
+          if (batch._id) {
+            try {
+              await walletApi.updateBatch(batch._id, { remark });
+            } catch (error) {
+              console.error('同步批次备注到服务器失败:', error);
+            }
+          }
+
+          // 更新钱包列表中对应钱包的备注
+          for (const item of walletsToUpdate) {
+            try {
+              await walletApi.updateWallet(item.id, { remark: item.remark });
+            } catch (error) {
+              console.error('同步钱包备注到服务器失败:', error);
+            }
           }
         }
 
         this.persistBatches();
+        this.persist();
       }
     },
 
