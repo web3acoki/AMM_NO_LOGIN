@@ -75,6 +75,16 @@ export interface FourMemeTradeResult {
   amountOut?: string;
 }
 
+// 卖出准备结果接口
+export interface SellPrepareResult {
+  success: boolean;
+  error?: string;
+  walletAddress: string;
+  sellAmount: bigint;
+  needsApproval: boolean;
+  approved: boolean;
+}
+
 // ==================== 服务类 ====================
 
 export class FourMemeService {
@@ -371,6 +381,161 @@ export class FourMemeService {
       }
     } catch (error: any) {
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 准备卖出（第一阶段）：检查余额、处理授权
+   * 返回准备结果，包括卖出数量和授权状态
+   */
+  async prepareSell(params: FourMemeTradeParams): Promise<SellPrepareResult> {
+    try {
+      const chain = this.chainId === 97 ? bscTestnet : bsc;
+      const tokenAddress = params.tokenAddress as Address;
+      const walletAddress = params.walletAddress as Address;
+
+      // 创建钱包客户端
+      const account = privateKeyToAccount(params.privateKey as `0x${string}`);
+      const walletClient = createWalletClient({
+        account,
+        chain,
+        transport: http(this.rpcUrl)
+      });
+
+      // 获取代币余额
+      const tokenBalance = await this.getTokenBalance(tokenAddress, walletAddress);
+      if (tokenBalance <= 0n) {
+        return {
+          success: false,
+          error: '代币余额为零',
+          walletAddress: params.walletAddress,
+          sellAmount: 0n,
+          needsApproval: false,
+          approved: false
+        };
+      }
+
+      // 计算卖出数量
+      let sellAmount: bigint;
+      if (params.sellPercent && params.sellPercent > 0) {
+        sellAmount = (tokenBalance * BigInt(params.sellPercent)) / 100n;
+      } else {
+        sellAmount = tokenBalance;
+      }
+
+      if (sellAmount <= 0n) {
+        return {
+          success: false,
+          error: '卖出数量为零',
+          walletAddress: params.walletAddress,
+          sellAmount: 0n,
+          needsApproval: false,
+          approved: false
+        };
+      }
+
+      // 检查授权
+      const allowance = await this.getTokenAllowance(tokenAddress, walletAddress, FOURMEME_CONTRACT);
+      const needsApproval = allowance < sellAmount;
+
+      // 如果需要授权，执行授权并等待确认
+      if (needsApproval) {
+        const approveResult = await this.approveToken(walletClient, tokenAddress, FOURMEME_CONTRACT);
+        if (!approveResult.success) {
+          return {
+            success: false,
+            error: `授权失败: ${approveResult.error}`,
+            walletAddress: params.walletAddress,
+            sellAmount,
+            needsApproval: true,
+            approved: false
+          };
+        }
+      }
+
+      return {
+        success: true,
+        walletAddress: params.walletAddress,
+        sellAmount,
+        needsApproval,
+        approved: true
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message || '准备卖出失败',
+        walletAddress: params.walletAddress,
+        sellAmount: 0n,
+        needsApproval: false,
+        approved: false
+      };
+    }
+  }
+
+  /**
+   * 直接执行卖出（第二阶段）：只发送卖出交易，假设已经授权
+   * 用于批量卖出时所有钱包同时发送
+   */
+  async executeSellDirect(params: FourMemeTradeParams, sellAmount: bigint): Promise<FourMemeTradeResult> {
+    try {
+      const chain = this.chainId === 97 ? bscTestnet : bsc;
+      const tokenAddress = params.tokenAddress as Address;
+      const walletAddress = params.walletAddress as Address;
+
+      // 创建钱包客户端
+      const account = privateKeyToAccount(params.privateKey as `0x${string}`);
+      const walletClient = createWalletClient({
+        account,
+        chain,
+        transport: http(this.rpcUrl)
+      });
+
+      // 使用 ABI 编码卖出交易数据
+      const callData = encodeFunctionData({
+        abi: FOURMEME_ABI,
+        functionName: 'sellToken',
+        args: [
+          tokenAddress,
+          sellAmount,
+          0n
+        ]
+      });
+
+      // 获取 gas 设置
+      const gasPrice = params.gasPrice
+        ? BigInt(params.gasPrice * 1e9)
+        : undefined;
+
+      const gasLimit = params.gasLimit
+        ? BigInt(params.gasLimit)
+        : BigInt(300000);
+
+      // 获取当前 nonce
+      const nonce = await this.publicClient.getTransactionCount({
+        address: walletAddress,
+        blockTag: 'pending'
+      });
+
+      // 发送交易
+      const txHash = await walletClient.sendTransaction({
+        to: FOURMEME_CONTRACT,
+        data: callData,
+        value: 0n,
+        gas: gasLimit,
+        gasPrice: gasPrice,
+        nonce: nonce
+      });
+
+      return {
+        success: true,
+        txHash: txHash,
+        amountIn: formatEther(sellAmount) + ' Token'
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message || '卖出执行失败'
+      };
     }
   }
 }

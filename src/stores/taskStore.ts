@@ -4,7 +4,7 @@ import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
 import { useDexStore } from './dexStore';
 import { createTradingService, type TradeParams } from '../services/tradingService';
-import { createFourMemeService, FourMemeService, type FourMemeTradeParams } from '../services/fourMemeService';
+import { createFourMemeService, FourMemeService, type FourMemeTradeParams, type SellPrepareResult } from '../services/fourMemeService';
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
@@ -748,7 +748,7 @@ export const useTaskStore = defineStore('task', () => {
     return results;
   }
 
-  // 批量卖出任务所有钱包的代币
+  // 批量卖出任务所有钱包的代币（两阶段执行，确保同时上链）
   async function batchSellForTask(taskId: string): Promise<void> {
     const task = tasks.value.find(t => t.id === taskId);
     if (!task) return;
@@ -769,44 +769,92 @@ export const useTaskStore = defineStore('task', () => {
       return;
     }
 
-    addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
+    // 内盘模式：使用两阶段卖出，确保所有交易同时发送
+    if (task.config.marketType === 'inner') {
+      const sharedFourMemeService = createFourMemeService(chainId, rpcUrl);
 
-    // 复用一个 FourMemeService 实例（内盘模式），避免重复创建
-    const sharedFourMemeService = task.config.marketType === 'inner'
-      ? createFourMemeService(chainId, rpcUrl)
-      : null;
+      addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);
 
-    // 所有钱包同时卖出（最大线程，不同钱包有不同地址和nonce，无需递增延迟）
-    const promises = task.walletAddresses.map(async (walletAddress) => {
-      const privateKey = getWalletPrivateKey(walletStore, walletAddress);
-      if (!privateKey) {
-        addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+      // ========== 第一阶段：准备（检查余额、处理授权）==========
+      const preparePromises = task.walletAddresses.map(async (walletAddress) => {
+        const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+        if (!privateKey) {
+          addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+          return null;
+        }
+
+        const prepareResult = await sharedFourMemeService.prepareSell({
+          chainId,
+          rpcUrl,
+          privateKey,
+          walletAddress,
+          tokenAddress,
+          amount: 0,
+          mode: 'sell',
+          gasPrice: task.config.gasPrice,
+          gasLimit: task.config.gasLimit,
+          sellPercent: 100,
+        });
+
+        if (prepareResult.success) {
+          if (prepareResult.needsApproval) {
+            addLog(taskId, 'info', `${walletAddress.slice(0, 10)}... 授权完成`, walletAddress);
+          } else {
+            addLog(taskId, 'info', `${walletAddress.slice(0, 10)}... 已授权，准备就绪`, walletAddress);
+          }
+          return { walletAddress, privateKey, sellAmount: prepareResult.sellAmount };
+        } else {
+          addLog(taskId, 'error', `${walletAddress.slice(0, 10)}... 准备失败: ${prepareResult.error}`, walletAddress);
+          return null;
+        }
+      });
+
+      const prepareResults = await Promise.all(preparePromises);
+      const readyWallets = prepareResults.filter((r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null);
+
+      if (readyWallets.length === 0) {
+        addLog(taskId, 'warning', '没有钱包准备成功，取消批量卖出');
         return;
       }
 
-      try {
-        if (task.config.marketType === 'inner') {
-          // 内盘卖出（复用共享实例）
-          const result = await sharedFourMemeService!.executeTrade({
-            chainId,
-            rpcUrl,
-            privateKey,
-            walletAddress,
-            tokenAddress,
-            amount: 0,
-            mode: 'sell',
-            gasPrice: task.config.gasPrice,
-            gasLimit: task.config.gasLimit,
-            sellPercent: 100, // 全部卖出
-          });
+      addLog(taskId, 'info', `[阶段2] 准备完成，${readyWallets.length} 个钱包同时发送卖出交易...`);
 
-          if (result.success) {
-            addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
-          } else {
-            addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
-          }
+      // ========== 第二阶段：同时发送所有卖出交易 ==========
+      const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
+        const result = await sharedFourMemeService.executeSellDirect({
+          chainId,
+          rpcUrl,
+          privateKey,
+          walletAddress,
+          tokenAddress,
+          amount: 0,
+          mode: 'sell',
+          gasPrice: task.config.gasPrice,
+          gasLimit: task.config.gasLimit,
+        }, sellAmount);
+
+        if (result.success) {
+          addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
         } else {
-          // 外盘卖出
+          addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
+        }
+      });
+
+      await Promise.allSettled(sellPromises);
+      addLog(taskId, 'info', `批量卖出操作完成，共发送 ${readyWallets.length} 笔交易`);
+
+    } else {
+      // 外盘模式：保持原有逻辑
+      addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
+
+      const promises = task.walletAddresses.map(async (walletAddress) => {
+        const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+        if (!privateKey) {
+          addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+          return;
+        }
+
+        try {
           const routerAddress = dexStore.currentRouterAddress;
           if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
             addLog(taskId, 'error', '当前DEX的Router地址未配置', walletAddress);
@@ -828,7 +876,7 @@ export const useTaskStore = defineStore('task', () => {
             slippage: 30,
             gasPrice: task.config.gasPrice,
             gasLimit: task.config.gasLimit,
-            balancePercent: 100, // 全部卖出
+            balancePercent: 100,
           });
 
           if (result.success) {
@@ -836,14 +884,14 @@ export const useTaskStore = defineStore('task', () => {
           } else {
             addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
           }
+        } catch (error: any) {
+          addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
         }
-      } catch (error: any) {
-        addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
-      }
-    });
+      });
 
-    await Promise.allSettled(promises);
-    addLog(taskId, 'info', `批量卖出操作完成`);
+      await Promise.allSettled(promises);
+      addLog(taskId, 'info', `批量卖出操作完成`);
+    }
   }
 
   // 获取任务的停止条件描述
