@@ -4,7 +4,7 @@ import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
 import { useDexStore } from './dexStore';
 import { createTradingService, type TradeParams } from '../services/tradingService';
-import { createFourMemeService, type FourMemeTradeParams } from '../services/fourMemeService';
+import { createFourMemeService, FourMemeService, type FourMemeTradeParams } from '../services/fourMemeService';
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
@@ -195,8 +195,8 @@ export const useTaskStore = defineStore('task', () => {
     return null;
   }
 
-  // 执行单个钱包的交易
-  async function executeWalletTrade(task: Task, walletAddress: string): Promise<boolean> {
+  // 执行单个钱包的交易（可传入共享的 FourMemeService 实例避免重复创建）
+  async function executeWalletTrade(task: Task, walletAddress: string, sharedFourMemeService?: InstanceType<typeof FourMemeService>): Promise<boolean> {
     const walletStore = useWalletStore();
     const chainStore = useChainStore();
     const dexStore = useDexStore();
@@ -232,8 +232,8 @@ export const useTaskStore = defineStore('task', () => {
 
       // 根据盘口类型选择不同的交易服务
       if (task.config.marketType === 'inner') {
-        // 内盘交易：使用 FourMeme 服务
-        return await executeInnerMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount);
+        // 内盘交易：使用 FourMeme 服务（优先使用共享实例）
+        return await executeInnerMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, sharedFourMemeService);
       } else {
         // 外盘交易：使用 DEX 服务
         return await executeOuterMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, dexStore);
@@ -252,9 +252,10 @@ export const useTaskStore = defineStore('task', () => {
     privateKey: string,
     chainId: number,
     rpcUrl: string,
-    amount: number
+    amount: number,
+    sharedService?: InstanceType<typeof FourMemeService>
   ): Promise<boolean> {
-    const fourMemeService = createFourMemeService(chainId, rpcUrl);
+    const fourMemeService = sharedService || createFourMemeService(chainId, rpcUrl);
 
     // 砸盘模式：如果 sellAll 为 true 则卖出100%
     const sellAll = task.mode === 'dump' && task.config.sellAll;
@@ -453,15 +454,15 @@ export const useTaskStore = defineStore('task', () => {
 
     addLog(task.id, 'info', `执行 ${walletsToExecute.length} 个钱包 (线程数: ${threadCount})`);
 
-    // 并行执行选中的钱包（添加递增延迟避免 nonce 冲突）
-    const promises = walletsToExecute.map((addr, index) => {
-      const delay = index * 100; // 递增延迟：0ms, 100ms, 200ms...
-      return new Promise<void>((resolve) => {
-        setTimeout(async () => {
-          await executeWalletTrade(task, addr);
-          resolve();
-        }, delay);
-      });
+    // 内盘模式：创建共享的 FourMemeService 实例，避免每个钱包重复创建
+    const chainStore = useChainStore();
+    const sharedFourMemeService = task.config.marketType === 'inner'
+      ? createFourMemeService(chainStore.selectedChainId, chainStore.effectiveRpcUrl)
+      : undefined;
+
+    // 并行执行选中的钱包（不同钱包有不同地址和nonce，无需递增延迟）
+    const promises = walletsToExecute.map((addr) => {
+      return executeWalletTrade(task, addr, sharedFourMemeService);
     });
     await Promise.allSettled(promises);
 
@@ -770,80 +771,75 @@ export const useTaskStore = defineStore('task', () => {
 
     addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
 
-    // 所有钱包同时卖出（最大线程）
-    const promises = task.walletAddresses.map((walletAddress, index) => {
-      const delay = index * 100; // 递增延迟避免 nonce 冲突
-      return new Promise<void>((resolve) => {
-        setTimeout(async () => {
-          const privateKey = getWalletPrivateKey(walletStore, walletAddress);
-          if (!privateKey) {
-            addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
-            resolve();
+    // 复用一个 FourMemeService 实例（内盘模式），避免重复创建
+    const sharedFourMemeService = task.config.marketType === 'inner'
+      ? createFourMemeService(chainId, rpcUrl)
+      : null;
+
+    // 所有钱包同时卖出（最大线程，不同钱包有不同地址和nonce，无需递增延迟）
+    const promises = task.walletAddresses.map(async (walletAddress) => {
+      const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+      if (!privateKey) {
+        addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+        return;
+      }
+
+      try {
+        if (task.config.marketType === 'inner') {
+          // 内盘卖出（复用共享实例）
+          const result = await sharedFourMemeService!.executeTrade({
+            chainId,
+            rpcUrl,
+            privateKey,
+            walletAddress,
+            tokenAddress,
+            amount: 0,
+            mode: 'sell',
+            gasPrice: task.config.gasPrice,
+            gasLimit: task.config.gasLimit,
+            sellPercent: 100, // 全部卖出
+          });
+
+          if (result.success) {
+            addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
+          } else {
+            addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
+          }
+        } else {
+          // 外盘卖出
+          const routerAddress = dexStore.currentRouterAddress;
+          if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
+            addLog(taskId, 'error', '当前DEX的Router地址未配置', walletAddress);
             return;
           }
 
-          try {
-            if (task.config.marketType === 'inner') {
-              // 内盘卖出
-              const fourMemeService = createFourMemeService(chainId, rpcUrl);
-              const result = await fourMemeService.executeTrade({
-                chainId,
-                rpcUrl,
-                privateKey,
-                walletAddress,
-                tokenAddress,
-                amount: 0,
-                mode: 'sell',
-                gasPrice: task.config.gasPrice,
-                gasLimit: task.config.gasLimit,
-                sellPercent: 100, // 全部卖出
-              });
+          const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
+          const result = await tradingService.executeTrade({
+            chainId,
+            rpcUrl,
+            routerAddress,
+            privateKey,
+            walletAddress,
+            tokenAddress,
+            spendToken: 'BNB',
+            amount: 0,
+            amountType: 'amount',
+            mode: 'dump',
+            slippage: 30,
+            gasPrice: task.config.gasPrice,
+            gasLimit: task.config.gasLimit,
+            balancePercent: 100, // 全部卖出
+          });
 
-              if (result.success) {
-                addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
-              } else {
-                addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
-              }
-            } else {
-              // 外盘卖出
-              const routerAddress = dexStore.currentRouterAddress;
-              if (!routerAddress || routerAddress === '0x0000000000000000000000000000000000000000') {
-                addLog(taskId, 'error', '当前DEX的Router地址未配置', walletAddress);
-                resolve();
-                return;
-              }
-
-              const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
-              const result = await tradingService.executeTrade({
-                chainId,
-                rpcUrl,
-                routerAddress,
-                privateKey,
-                walletAddress,
-                tokenAddress,
-                spendToken: 'BNB',
-                amount: 0,
-                amountType: 'amount',
-                mode: 'dump',
-                slippage: 30,
-                gasPrice: task.config.gasPrice,
-                gasLimit: task.config.gasLimit,
-                balancePercent: 100, // 全部卖出
-              });
-
-              if (result.success) {
-                addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
-              } else {
-                addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
-              }
-            }
-          } catch (error: any) {
-            addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
+          if (result.success) {
+            addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
+          } else {
+            addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
           }
-
-          resolve();
-        }, delay);
-      });
+        }
+      } catch (error: any) {
+        addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
+      }
     });
 
     await Promise.allSettled(promises);

@@ -170,25 +170,12 @@ export class FourMemeService {
         nonce: nonce
       });
 
-      // 等待交易确认
-      const receipt = await this.publicClient.waitForTransactionReceipt({
-        hash: txHash,
-        timeout: 60000
-      });
-
-      if (receipt.status === 'success') {
-        return {
-          success: true,
-          txHash: txHash,
-          amountIn: `${params.amount} BNB`
-        };
-      } else {
-        return {
-          success: false,
-          txHash: txHash,
-          error: '交易失败 (reverted)'
-        };
-      }
+      // 交易已发送，不等待链上确认，直接返回成功
+      return {
+        success: true,
+        txHash: txHash,
+        amountIn: `${params.amount} BNB`
+      };
     } catch (error: any) {
       return {
         success: false,
@@ -282,25 +269,12 @@ export class FourMemeService {
         nonce: nonce
       });
 
-      // 等待交易确认
-      const receipt = await this.publicClient.waitForTransactionReceipt({
-        hash: txHash,
-        timeout: 60000
-      });
-
-      if (receipt.status === 'success') {
-        return {
-          success: true,
-          txHash: txHash,
-          amountIn: formatEther(sellAmount) + ' Token'
-        };
-      } else {
-        return {
-          success: false,
-          txHash: txHash,
-          error: '交易失败 (reverted)'
-        };
-      }
+      // 交易已发送，不等待链上确认，直接返回成功
+      return {
+        success: true,
+        txHash: txHash,
+        amountIn: formatEther(sellAmount) + ' Token'
+      };
     } catch (error: any) {
       return {
         success: false,
