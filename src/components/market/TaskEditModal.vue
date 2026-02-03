@@ -25,13 +25,19 @@
             <div class="row">
               <!-- 代币合约地址 -->
               <div class="col-12 mb-3">
-                <label class="form-label">代币合约地址</label>
+                <label class="form-label">
+                  {{ props.task.config.marketType === 'inner' ? '内盘目标代币地址' : '代币合约地址' }}
+                  <span class="badge bg-secondary ms-1">{{ props.task.config.marketType === 'inner' ? '内盘' : '外盘' }}</span>
+                </label>
                 <input
                   type="text"
                   class="form-control font-monospace"
                   v-model="formData.tokenContract"
                   placeholder="0x..."
                 >
+                <div v-if="props.task.config.marketType === 'inner'" class="form-text text-muted">
+                  <i class="bi bi-info-circle me-1"></i>修改此地址将更新内盘交易的目标代币
+                </div>
               </div>
             </div>
 
@@ -205,6 +211,7 @@ const taskStore = useTaskStore();
 const formData = ref({
   name: '',
   tokenContract: '',
+  innerTokenAddress: '',  // 内盘代币地址
   amountMin: 0.01,
   amountMax: 0.05,
   stopType: 'count' as 'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap',
@@ -229,9 +236,17 @@ const walletAddressCount = computed(() => {
 // 初始化表单数据
 onMounted(() => {
   const task = props.task;
+  // 内盘模式优先使用 innerTokenAddress，外盘使用 tokenContract
+  const isInner = task.config.marketType === 'inner';
+  // 显示的代币地址：内盘用 innerTokenAddress，外盘用 tokenContract
+  const displayTokenAddress = isInner
+    ? (task.config.innerTokenAddress || task.config.tokenContract)
+    : task.config.tokenContract;
+
   formData.value = {
     name: task.name,
-    tokenContract: task.config.tokenContract,
+    tokenContract: displayTokenAddress,
+    innerTokenAddress: task.config.innerTokenAddress || '',
     amountMin: task.config.amountMin,
     amountMax: task.config.amountMax,
     stopType: task.config.stopType,
@@ -258,11 +273,16 @@ function handleSave() {
     .map(addr => addr.trim())
     .filter(addr => /^0x[0-9a-fA-F]{40}$/.test(addr));
 
+  // 判断是否是内盘任务
+  const isInner = props.task.config.marketType === 'inner';
+
   // 构建更新数据
   const updates = {
     name: formData.value.name,
     config: {
       tokenContract: formData.value.tokenContract,
+      // 内盘模式同时更新 innerTokenAddress
+      innerTokenAddress: isInner ? formData.value.tokenContract : formData.value.innerTokenAddress,
       amountMin: formData.value.amountMin,
       amountMax: formData.value.amountMax,
       stopType: formData.value.stopType,
