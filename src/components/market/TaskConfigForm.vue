@@ -205,6 +205,30 @@
         </div>
       </div>
 
+      <!-- 防夹节点设置（仅内盘模式显示） -->
+      <div class="mb-3" v-if="marketType === 'inner'">
+        <label class="form-label small">
+          <i class="bi bi-shield-lock me-1"></i>防夹节点
+        </label>
+        <select class="form-select form-select-sm" v-model="antiSandwichRpcType">
+          <option value="blocksec">BlockSec (推荐，针对 Four.meme 优化)</option>
+          <option value="48club">48 Club (BSC 最大 Builder)</option>
+          <option value="blockrazor">BlockRazor</option>
+          <option value="custom">自定义节点</option>
+        </select>
+        <div v-if="antiSandwichRpcType === 'custom'" class="mt-2">
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            v-model="customAntiSandwichRpc"
+            placeholder="输入自定义 RPC URL，例如 https://..."
+          >
+        </div>
+        <div class="form-text small text-muted">
+          <i class="bi bi-info-circle me-1"></i>防夹节点通过私有 mempool 保护交易不被 MEV 机器人攻击
+        </div>
+      </div>
+
       <!-- 选中的钱包 -->
       <div class="mb-3">
         <label class="form-label small">
@@ -308,6 +332,25 @@ const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
+
+// 防夹节点设置
+const antiSandwichRpcType = ref<'blocksec' | '48club' | 'blockrazor' | 'custom'>('blocksec');
+const customAntiSandwichRpc = ref('');
+
+// 防夹节点 URL 映射
+const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
+  blocksec: 'https://bsc.rpc.blocksec.com',
+  '48club': 'https://rpc-bsc.48.club',
+  blockrazor: 'https://meme.bsc.blockrazor.xyz',
+};
+
+// 计算实际使用的防夹节点 URL
+const antiSandwichRpcUrl = computed(() => {
+  if (antiSandwichRpcType.value === 'custom') {
+    return customAntiSandwichRpc.value || ANTI_SANDWICH_RPC_MAP.blocksec;
+  }
+  return ANTI_SANDWICH_RPC_MAP[antiSandwichRpcType.value];
+});
 
 // 钱包来源选择
 const useLocalWallets = ref(false);
@@ -470,6 +513,7 @@ function handleCreateTask() {
     marketType: marketType.value, // 盘口类型
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
     innerSlippage: (marketType.value === 'inner' && mode.value === 'pump') ? innerSlippage.value : undefined, // 内盘买入滑点（卖出不需要）
+    antiSandwichRpc: marketType.value === 'inner' ? antiSandwichRpcUrl.value : undefined, // 内盘防夹节点
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）

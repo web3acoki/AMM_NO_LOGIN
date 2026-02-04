@@ -36,6 +36,7 @@ export interface TaskConfig {
   marketType: 'inner' | 'outer';  // 盘口类型：inner=内盘(FourMeme), outer=外盘(DEX)
   innerTokenAddress?: string; // 内盘目标代币地址（仅内盘模式使用）
   innerSlippage?: number;     // 内盘滑点百分比（例如: 10 表示 10%）
+  antiSandwichRpc?: string;   // 内盘防夹节点 RPC URL
 }
 
 // 任务统计接口
@@ -256,8 +257,8 @@ export const useTaskStore = defineStore('task', () => {
     amount: number,
     sharedService?: InstanceType<typeof FourMemeService>
   ): Promise<boolean> {
-    // 内盘交易使用防夹节点
-    const antiSandwichRpc = ANTI_SANDWICH_RPC;
+    // 内盘交易使用配置的防夹节点，未配置则使用默认
+    const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
     const fourMemeService = sharedService || createFourMemeService(chainId, antiSandwichRpc);
 
     // 砸盘模式：如果 sellAll 为 true 则卖出100%
@@ -458,10 +459,11 @@ export const useTaskStore = defineStore('task', () => {
 
     addLog(task.id, 'info', `执行 ${walletsToExecute.length} 个钱包 (线程数: ${threadCount})`);
 
-    // 内盘模式：创建共享的 FourMemeService 实例，使用防夹节点
+    // 内盘模式：创建共享的 FourMemeService 实例，使用配置的防夹节点
     const chainStore = useChainStore();
+    const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
     const sharedFourMemeService = task.config.marketType === 'inner'
-      ? createFourMemeService(chainStore.selectedChainId, ANTI_SANDWICH_RPC)
+      ? createFourMemeService(chainStore.selectedChainId, antiSandwichRpc)
       : undefined;
 
     // 并行执行选中的钱包（不同钱包有不同地址和nonce，无需递增延迟）
@@ -773,9 +775,10 @@ export const useTaskStore = defineStore('task', () => {
       return;
     }
 
-    // 内盘模式：使用两阶段卖出，确保所有交易同时发送，使用防夹节点
+    // 内盘模式：使用两阶段卖出，确保所有交易同时发送，使用配置的防夹节点
     if (task.config.marketType === 'inner') {
-      const sharedFourMemeService = createFourMemeService(chainId, ANTI_SANDWICH_RPC);
+      const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      const sharedFourMemeService = createFourMemeService(chainId, antiSandwichRpc);
 
       addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);
 
@@ -789,7 +792,7 @@ export const useTaskStore = defineStore('task', () => {
 
         const prepareResult = await sharedFourMemeService.prepareSell({
           chainId,
-          rpcUrl: ANTI_SANDWICH_RPC,
+          rpcUrl: antiSandwichRpc,
           privateKey,
           walletAddress,
           tokenAddress,
@@ -828,7 +831,7 @@ export const useTaskStore = defineStore('task', () => {
       const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
         const result = await sharedFourMemeService.executeSellDirect({
           chainId,
-          rpcUrl: ANTI_SANDWICH_RPC,
+          rpcUrl: antiSandwichRpc,
           privateKey,
           walletAddress,
           tokenAddress,

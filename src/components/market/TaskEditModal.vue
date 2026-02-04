@@ -174,6 +174,30 @@
               </div>
             </div>
 
+            <!-- 防夹节点设置（仅内盘任务显示） -->
+            <div class="mb-3" v-if="props.task.config.marketType === 'inner'">
+              <label class="form-label">
+                <i class="bi bi-shield-lock me-1"></i>防夹节点
+              </label>
+              <select class="form-select" v-model="formData.antiSandwichRpcType">
+                <option value="blocksec">BlockSec (推荐，针对 Four.meme 优化)</option>
+                <option value="48club">48 Club (BSC 最大 Builder)</option>
+                <option value="blockrazor">BlockRazor</option>
+                <option value="custom">自定义节点</option>
+              </select>
+              <div v-if="formData.antiSandwichRpcType === 'custom'" class="mt-2">
+                <input
+                  type="text"
+                  class="form-control"
+                  v-model="formData.customAntiSandwichRpc"
+                  placeholder="输入自定义 RPC URL"
+                >
+              </div>
+              <div class="form-text text-muted">
+                <i class="bi bi-info-circle me-1"></i>防夹节点通过私有 mempool 保护交易不被 MEV 机器人攻击
+              </div>
+            </div>
+
             <!-- 砸盘模式：卖出全部选项 -->
             <div class="mb-3" v-if="props.task.mode === 'dump'">
               <div class="form-check">
@@ -228,6 +252,22 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore();
 
+// 防夹节点 URL 映射
+const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
+  blocksec: 'https://bsc.rpc.blocksec.com',
+  '48club': 'https://rpc-bsc.48.club',
+  blockrazor: 'https://meme.bsc.blockrazor.xyz',
+};
+
+// 根据 URL 反推类型
+function getRpcTypeFromUrl(url: string | undefined): 'blocksec' | '48club' | 'blockrazor' | 'custom' {
+  if (!url) return 'blocksec';
+  for (const [type, rpcUrl] of Object.entries(ANTI_SANDWICH_RPC_MAP)) {
+    if (url === rpcUrl) return type as 'blocksec' | '48club' | 'blockrazor';
+  }
+  return 'custom';
+}
+
 // 表单数据
 const formData = ref({
   name: '',
@@ -242,6 +282,8 @@ const formData = ref({
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
   innerSlippage: undefined as number | undefined,  // 内盘滑点
+  antiSandwichRpcType: 'blocksec' as 'blocksec' | '48club' | 'blockrazor' | 'custom',  // 防夹节点类型
+  customAntiSandwichRpc: '',  // 自定义防夹节点 URL
   sellAll: true,
   walletAddressesText: ''
 });
@@ -265,6 +307,10 @@ onMounted(() => {
     ? (task.config.innerTokenAddress || task.config.tokenContract)
     : task.config.tokenContract;
 
+  // 解析防夹节点配置
+  const rpcType = getRpcTypeFromUrl(task.config.antiSandwichRpc);
+  const customRpc = rpcType === 'custom' ? (task.config.antiSandwichRpc || '') : '';
+
   formData.value = {
     name: task.name,
     tokenContract: displayTokenAddress,
@@ -278,6 +324,8 @@ onMounted(() => {
     gasPrice: task.config.gasPrice,
     gasLimit: task.config.gasLimit,
     innerSlippage: task.config.innerSlippage,
+    antiSandwichRpcType: rpcType,
+    customAntiSandwichRpc: customRpc,
     sellAll: task.config.sellAll ?? true,
     walletAddressesText: task.walletAddresses.join('\n')
   };
@@ -299,6 +347,11 @@ function handleSave() {
   // 判断是否是内盘任务
   const isInner = props.task.config.marketType === 'inner';
 
+  // 计算防夹节点 URL
+  const antiSandwichRpc = formData.value.antiSandwichRpcType === 'custom'
+    ? (formData.value.customAntiSandwichRpc || ANTI_SANDWICH_RPC_MAP.blocksec)
+    : ANTI_SANDWICH_RPC_MAP[formData.value.antiSandwichRpcType];
+
   // 构建更新数据
   const updates = {
     name: formData.value.name,
@@ -315,6 +368,7 @@ function handleSave() {
       gasPrice: formData.value.gasPrice || undefined,
       gasLimit: formData.value.gasLimit || undefined,
       innerSlippage: (isInner && props.task.mode === 'pump') ? formData.value.innerSlippage : undefined,
+      antiSandwichRpc: isInner ? antiSandwichRpc : undefined,
       sellAll: formData.value.sellAll
     } as Partial<TaskConfig>,
     walletAddresses
