@@ -26,7 +26,12 @@ import { privateKeyToAccount } from 'viem/accounts';
 export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
 
 // 防夹 RPC 节点（用于内盘交易）
-export const ANTI_SANDWICH_RPC = 'https://meme.bsc.blockrazor.xyz' as const;
+// 可选节点：
+// - BlockRazor: https://meme.bsc.blockrazor.xyz
+// - BlockSec: 需要注册获取 https://anti-mev.blocksec.com/
+// - 48 Club: https://rpc-bsc.48.club (免费公共防夹节点)
+// - Merkle: 需要注册
+export const ANTI_SANDWICH_RPC = 'https://rpc-bsc.48.club' as const;
 
 // FourMeme 合约 ABI (只包含我们需要的函数)
 const FOURMEME_ABI = [
