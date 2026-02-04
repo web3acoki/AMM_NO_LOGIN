@@ -590,6 +590,36 @@ export const useWalletStore = defineStore('wallet', {
       this.persistBatches();
     },
 
+    // 批量删除批次
+    async deleteBatches(batchIds: string[]) {
+      if (batchIds.length === 0) return { deleted: 0 };
+
+      // 找到需要删除的批次
+      const batchesToDelete = this.walletBatches.filter(b => batchIds.includes(b.id));
+
+      // 服务器模式下批量删除
+      if (shouldUseServerMode()) {
+        const serverIds = batchesToDelete
+          .filter(b => b._id)
+          .map(b => b._id!);
+
+        if (serverIds.length > 0) {
+          try {
+            await walletApi.deleteBatches(serverIds);
+          } catch (error) {
+            console.error('从服务器批量删除批次失败:', error);
+            throw error;
+          }
+        }
+      }
+
+      // 从本地删除
+      this.walletBatches = this.walletBatches.filter(b => !batchIds.includes(b.id));
+      this.persistBatches();
+
+      return { deleted: batchesToDelete.length };
+    },
+
     // 获取批次的钱包地址列表
     getBatchAddresses(batchId: string): string[] {
       const batch = this.walletBatches.find(b => b.id === batchId);

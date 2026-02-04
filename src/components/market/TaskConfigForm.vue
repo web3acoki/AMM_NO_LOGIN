@@ -128,11 +128,12 @@
         </div>
       </div>
 
-      <!-- 停止条件（仅外盘显示，内盘默认手动停止） -->
-      <div class="row g-2 mb-3" v-if="marketType === 'outer'">
+      <!-- 停止条件 -->
+      <div class="row g-2 mb-3">
         <div class="col-5">
           <label class="form-label small">停止条件</label>
           <select class="form-select form-select-sm" v-model="stopType">
+            <option value="none">手动停止</option>
             <option value="count">按次数</option>
             <option value="amount">按花费金额</option>
             <option value="time">按时间(秒)</option>
@@ -140,17 +141,18 @@
             <option value="marketcap">达到目标市值</option>
           </select>
         </div>
-        <div class="col-7">
+        <div class="col-7" v-if="stopType !== 'none'">
           <label class="form-label small">{{ stopTypeLabel }}</label>
           <div class="input-group input-group-sm">
             <input type="number" class="form-control" v-model.number="stopValue" :placeholder="stopTypePlaceholder" step="any">
             <span class="input-group-text">{{ stopTypeUnit }}</span>
           </div>
         </div>
-      </div>
-      <div v-if="marketType === 'inner'" class="mb-3">
-        <div class="form-text small text-muted">
-          <i class="bi bi-infinity me-1"></i>内盘任务无停止条件，点击开始后持续运行，需手动停止
+        <div class="col-7" v-else>
+          <label class="form-label small">&nbsp;</label>
+          <div class="form-text small text-muted">
+            <i class="bi bi-infinity me-1"></i>持续运行直到手动停止
+          </div>
         </div>
       </div>
 
@@ -188,6 +190,18 @@
         <div class="col-6">
           <label class="form-label small">Gas Limit (可选)</label>
           <input type="number" class="form-control form-control-sm" v-model.number="gasLimit" placeholder="自动">
+        </div>
+      </div>
+
+      <!-- 内盘滑点设置（仅内盘买入模式显示） -->
+      <div class="mb-3" v-if="marketType === 'inner' && mode === 'pump'">
+        <label class="form-label small">内盘滑点保护 (可选)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" class="form-control" v-model.number="innerSlippage" min="0" max="100" placeholder="0">
+          <span class="input-group-text">%</span>
+        </div>
+        <div class="form-text small text-muted">
+          <i class="bi bi-shield-check me-1"></i>设置滑点保护，0 表示不限制。例如 10 表示允许最多 10% 的价格滑动
         </div>
       </div>
 
@@ -286,13 +300,14 @@ const innerTokenAddress = ref('');  // 内盘目标代币地址
 const tokenContract = ref('');
 const amountMin = ref<number>(0.01);
 const amountMax = ref<number>(0.05);
-const stopType = ref<'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap'>('count');
+const stopType = ref<'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap'>('none');
 const stopValue = ref<number>(10);
 const interval = ref<number>(5);
 const threadCount = ref<number>(1); // 线程数：每个间隔内同时执行的钱包数量
 const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
+const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
 
 // 钱包来源选择
 const useLocalWallets = ref(false);
@@ -314,15 +329,6 @@ watch(detectedInnerToken, (token) => {
     marketType.value = 'inner';
   }
 }, { immediate: true });
-
-// 切换盘口类型时自动设置停止条件
-watch(marketType, (type) => {
-  if (type === 'inner') {
-    stopType.value = 'none';
-  } else if (stopType.value === 'none') {
-    stopType.value = 'count';
-  }
-});
 
 // 自动生成任务名称
 watch(() => taskStore.taskCount, (count) => {
@@ -392,8 +398,8 @@ const canCreate = computed(() => {
     ? innerTokenAddress.value.match(/^0x[a-fA-F0-9]{40}$/)
     : tokenContract.value;
 
-  // 内盘不需要停止条件值
-  const stopValid = marketType.value === 'inner' || stopValue.value > 0;
+  // 手动停止不需要停止条件值，其他停止类型需要
+  const stopValid = stopType.value === 'none' || stopValue.value > 0;
 
   return (
     taskName.value &&
@@ -463,6 +469,7 @@ function handleCreateTask() {
     sellAll: sellAll.value, // 砸盘时是否卖出全部
     marketType: marketType.value, // 盘口类型
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
+    innerSlippage: (marketType.value === 'inner' && mode.value === 'pump') ? innerSlippage.value : undefined, // 内盘买入滑点（卖出不需要）
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）

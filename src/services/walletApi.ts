@@ -155,6 +155,15 @@ export async function deleteBatch(id: string): Promise<void> {
   });
 }
 
+// 批量删除钱包批次
+export async function deleteBatches(ids: string[]): Promise<{ deleted: number }> {
+  const response = await apiRequest<{ deleted: number }>('/api/wallets/batches/batch-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ids })
+  });
+  return response.data!;
+}
+
 // 解密私钥（用于交易）
 export async function decryptPrivateKeys(addresses: string[]): Promise<Array<{
   address: string;

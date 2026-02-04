@@ -67,11 +67,12 @@
               </div>
             </div>
 
-            <div class="row" v-if="formData.stopType !== 'none'">
+            <div class="row">
               <!-- 停止条件 -->
               <div class="col-md-6 mb-3">
                 <label class="form-label">停止条件</label>
                 <select class="form-select" v-model="formData.stopType">
+                  <option value="none">手动停止</option>
                   <option value="count">执行次数</option>
                   <option value="amount">花费金额</option>
                   <option value="time">运行时间(秒)</option>
@@ -81,7 +82,7 @@
               </div>
 
               <!-- 停止条件值 -->
-              <div class="col-md-6 mb-3">
+              <div class="col-md-6 mb-3" v-if="formData.stopType !== 'none'">
                 <label class="form-label">条件值</label>
                 <input
                   type="number"
@@ -91,10 +92,11 @@
                   step="any"
                 >
               </div>
-            </div>
-            <div v-else class="mb-3">
-              <div class="form-text text-muted">
-                <i class="bi bi-infinity me-1"></i>内盘任务无停止条件，持续运行直到手动停止
+              <div class="col-md-6 mb-3" v-else>
+                <label class="form-label">&nbsp;</label>
+                <div class="form-text text-muted">
+                  <i class="bi bi-infinity me-1"></i>持续运行直到手动停止
+                </div>
               </div>
             </div>
 
@@ -150,6 +152,25 @@
                   step="1000"
                   placeholder="留空使用默认值"
                 >
+              </div>
+            </div>
+
+            <!-- 内盘滑点设置（仅内盘买入任务显示） -->
+            <div class="mb-3" v-if="props.task.config.marketType === 'inner' && props.task.mode === 'pump'">
+              <label class="form-label">内盘滑点保护 (%)</label>
+              <div class="input-group">
+                <input
+                  type="number"
+                  class="form-control"
+                  v-model.number="formData.innerSlippage"
+                  min="0"
+                  max="100"
+                  placeholder="0 表示不限制"
+                >
+                <span class="input-group-text">%</span>
+              </div>
+              <div class="form-text text-muted">
+                <i class="bi bi-shield-check me-1"></i>设置滑点保护，0 表示不限制。例如 10 表示允许最多 10% 的价格滑动
               </div>
             </div>
 
@@ -220,6 +241,7 @@ const formData = ref({
   threadCount: 1,
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
+  innerSlippage: undefined as number | undefined,  // 内盘滑点
   sellAll: true,
   walletAddressesText: ''
 });
@@ -255,6 +277,7 @@ onMounted(() => {
     threadCount: task.config.threadCount || 1,
     gasPrice: task.config.gasPrice,
     gasLimit: task.config.gasLimit,
+    innerSlippage: task.config.innerSlippage,
     sellAll: task.config.sellAll ?? true,
     walletAddressesText: task.walletAddresses.join('\n')
   };
@@ -291,6 +314,7 @@ function handleSave() {
       threadCount: formData.value.threadCount,
       gasPrice: formData.value.gasPrice || undefined,
       gasLimit: formData.value.gasLimit || undefined,
+      innerSlippage: (isInner && props.task.mode === 'pump') ? formData.value.innerSlippage : undefined,
       sellAll: formData.value.sellAll
     } as Partial<TaskConfig>,
     walletAddresses

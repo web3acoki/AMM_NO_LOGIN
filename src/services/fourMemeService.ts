@@ -25,6 +25,9 @@ import { privateKeyToAccount } from 'viem/accounts';
 // FourMeme 主合约地址
 export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
 
+// 防夹 RPC 节点（用于内盘交易）
+export const ANTI_SANDWICH_RPC = 'https://meme.bsc.blockrazor.xyz' as const;
+
 // FourMeme 合约 ABI (只包含我们需要的函数)
 const FOURMEME_ABI = [
   {
@@ -49,6 +52,17 @@ const FOURMEME_ABI = [
       { name: 'minEthAmount', type: 'uint256' }
     ],
     outputs: []
+  },
+  {
+    name: 'getAmountOut',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'amountIn', type: 'uint256' },
+      { name: 'isBuy', type: 'bool' }
+    ],
+    outputs: [{ name: '', type: 'uint256' }]
   }
 ] as const;
 
@@ -65,6 +79,7 @@ export interface FourMemeTradeParams {
   gasPrice?: number;          // Gas Price (Gwei)
   gasLimit?: number;          // Gas Limit
   sellPercent?: number;       // 卖出百分比 (1-100)
+  slippage?: number;          // 滑点百分比 (例如: 10 表示 10%)
 }
 
 export interface FourMemeTradeResult {
@@ -101,6 +116,37 @@ export class FourMemeService {
       chain,
       transport: http(rpcUrl)
     });
+  }
+
+  /**
+   * 计算滑点保护的最小输出金额
+   */
+  private calculateMinAmountOut(expectedOut: bigint, slippage: number): bigint {
+    if (slippage <= 0 || slippage >= 100) return 0n;
+    const slippageFactor = BigInt(Math.floor((100 - slippage) * 100));
+    return (expectedOut * slippageFactor) / BigInt(10000);
+  }
+
+  /**
+   * 尝试获取预期输出金额（查询合约）
+   * @param tokenAddress 代币地址
+   * @param amountIn 输入金额
+   * @param isBuy true=买入(BNB->Token), false=卖出(Token->BNB)
+   * @returns 预期输出金额，如果查询失败返回 0n
+   */
+  private async tryGetAmountOut(tokenAddress: Address, amountIn: bigint, isBuy: boolean): Promise<bigint> {
+    try {
+      const result = await this.publicClient.readContract({
+        address: FOURMEME_CONTRACT,
+        abi: FOURMEME_ABI,
+        functionName: 'getAmountOut',
+        args: [tokenAddress, amountIn, isBuy]
+      });
+      return result as bigint;
+    } catch {
+      // 合约可能不支持 getAmountOut 函数，返回 0
+      return 0n;
+    }
   }
 
   /**
@@ -141,6 +187,16 @@ export class FourMemeService {
     try {
       const tokenAddress = params.tokenAddress as Address;
       const buyAmountWei = BigInt(Math.floor(params.amount * 1e18));
+      const slippage = params.slippage || 0;
+
+      // 计算滑点保护的最小获得代币数量
+      let minAmount = 0n;
+      if (slippage > 0) {
+        const expectedOut = await this.tryGetAmountOut(tokenAddress, buyAmountWei, true);
+        if (expectedOut > 0n) {
+          minAmount = this.calculateMinAmountOut(expectedOut, slippage);
+        }
+      }
 
       // 使用 ABI 编码买入交易数据
       // buyTokenAMAP(uint256 origin, address token, uint256 funds, uint256 minAmount)
@@ -151,7 +207,7 @@ export class FourMemeService {
           0n,            // origin: 0 (直接购买，无推荐)
           tokenAddress,  // token: 代币地址
           buyAmountWei,  // funds: BNB 金额
-          0n             // minAmount: 0 (不设滑点保护)
+          minAmount      // minAmount: 滑点保护
         ]
       });
 
@@ -242,6 +298,16 @@ export class FourMemeService {
         }
       }
 
+      // 计算滑点保护的最小获得 BNB 数量
+      const slippage = params.slippage || 0;
+      let minEthAmount = 0n;
+      if (slippage > 0) {
+        const expectedOut = await this.tryGetAmountOut(tokenAddress, sellAmount, false);
+        if (expectedOut > 0n) {
+          minEthAmount = this.calculateMinAmountOut(expectedOut, slippage);
+        }
+      }
+
       // 使用 ABI 编码卖出交易数据
       // sellToken(address token, uint256 amount, uint256 minEthAmount)
       const callData = encodeFunctionData({
@@ -250,7 +316,7 @@ export class FourMemeService {
         args: [
           tokenAddress,  // token: 代币地址
           sellAmount,    // amount: 卖出数量
-          0n             // minEthAmount: 0 (不设滑点保护)
+          minEthAmount   // minEthAmount: 滑点保护
         ]
       });
 
@@ -490,6 +556,16 @@ export class FourMemeService {
         transport: http(this.rpcUrl)
       });
 
+      // 计算滑点保护的最小获得 BNB 数量
+      const slippage = params.slippage || 0;
+      let minEthAmount = 0n;
+      if (slippage > 0) {
+        const expectedOut = await this.tryGetAmountOut(tokenAddress, sellAmount, false);
+        if (expectedOut > 0n) {
+          minEthAmount = this.calculateMinAmountOut(expectedOut, slippage);
+        }
+      }
+
       // 使用 ABI 编码卖出交易数据
       const callData = encodeFunctionData({
         abi: FOURMEME_ABI,
@@ -497,7 +573,7 @@ export class FourMemeService {
         args: [
           tokenAddress,
           sellAmount,
-          0n
+          minEthAmount
         ]
       });
 

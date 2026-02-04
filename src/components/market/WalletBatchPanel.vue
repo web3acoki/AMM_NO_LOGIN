@@ -64,16 +64,59 @@
 
     <!-- 批次列表 -->
     <div v-if="walletBatches.length > 0" class="batch-list">
+      <!-- 批量操作栏 -->
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="d-flex align-items-center gap-2">
+          <div class="form-check">
+            <input
+              type="checkbox"
+              class="form-check-input"
+              id="selectAllBatches"
+              :checked="isAllSelected"
+              :indeterminate="isPartiallySelected"
+              @change="toggleSelectAll"
+            >
+            <label class="form-check-label small" for="selectAllBatches">全选</label>
+          </div>
+          <span v-if="selectedBatchIds.length > 0" class="badge bg-primary">
+            已选 {{ selectedBatchIds.length }} 个
+          </span>
+        </div>
+        <button
+          v-if="selectedBatchIds.length > 0"
+          class="btn btn-danger btn-sm"
+          @click="deleteSelectedBatches"
+          :disabled="isDeletingBatches"
+        >
+          <span v-if="isDeletingBatches">
+            <span class="spinner-border spinner-border-sm me-1"></span>删除中...
+          </span>
+          <span v-else>
+            <i class="bi bi-trash me-1"></i>删除选中 ({{ selectedBatchIds.length }})
+          </span>
+        </button>
+      </div>
+
       <div
         v-for="batch in walletBatches"
         :key="batch.id"
         class="card mb-2 batch-card"
-        :class="{ 'border-primary': expandedBatchId === batch.id }"
+        :class="{ 'border-primary': expandedBatchId === batch.id, 'border-danger': selectedBatchIds.includes(batch.id) }"
       >
         <div class="card-body py-2 px-3">
           <!-- 批次信息 -->
           <div class="d-flex justify-content-between align-items-center mb-2">
-            <div class="batch-info">
+            <div class="batch-info d-flex align-items-center">
+              <div class="form-check me-2">
+                <input
+                  type="checkbox"
+                  class="form-check-input"
+                  :id="'batch-' + batch.id"
+                  :value="batch.id"
+                  v-model="selectedBatchIds"
+                  @click.stop
+                >
+              </div>
               <span class="fw-bold">{{ batch.remark }}</span>
               <span class="badge ms-2" :class="batch.walletType === 'main' ? 'bg-danger' : 'bg-secondary'">
                 {{ batch.walletType === 'main' ? '主钱包' : '普通钱包' }}
@@ -313,6 +356,50 @@ const expandedBatchId = ref<string | null>(null);
 const queryingBatchId = ref<string | null>(null);
 const showPrivateKeyModal = ref(false);
 const selectedBatch = ref<any>(null);
+
+// 批量选择删除相关
+const selectedBatchIds = ref<string[]>([]);
+const isDeletingBatches = ref(false);
+
+// 计算属性：是否全选
+const isAllSelected = computed(() => {
+  return walletBatches.value.length > 0 && selectedBatchIds.value.length === walletBatches.value.length;
+});
+
+// 计算属性：是否部分选中
+const isPartiallySelected = computed(() => {
+  return selectedBatchIds.value.length > 0 && selectedBatchIds.value.length < walletBatches.value.length;
+});
+
+// 切换全选
+function toggleSelectAll() {
+  if (isAllSelected.value) {
+    selectedBatchIds.value = [];
+  } else {
+    selectedBatchIds.value = walletBatches.value.map(b => b.id);
+  }
+}
+
+// 批量删除选中的批次
+async function deleteSelectedBatches() {
+  if (selectedBatchIds.value.length === 0) return;
+
+  const count = selectedBatchIds.value.length;
+  if (!confirm(`确定要删除选中的 ${count} 个批次吗？\n\n注意：删除后无法恢复，请确保已备份私钥！`)) {
+    return;
+  }
+
+  isDeletingBatches.value = true;
+  try {
+    const result = await walletStore.deleteBatches([...selectedBatchIds.value]);
+    alert(`成功删除 ${result.deleted} 个批次`);
+    selectedBatchIds.value = [];
+  } catch (error: any) {
+    alert(error.message || '删除失败');
+  } finally {
+    isDeletingBatches.value = false;
+  }
+}
 
 // 导入钱包相关
 const showImportModal = ref(false);
