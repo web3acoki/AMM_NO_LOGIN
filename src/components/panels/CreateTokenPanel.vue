@@ -965,8 +965,12 @@ async function launchAndBuy() {
     const selectedWallets = selectedBatch.value.wallets
       .filter(w => selectedWalletAddresses.value.includes(w.address));
 
+    // Gas Price 最低保护（BSC 最低 3 Gwei）
+    const actualCreateGas = Math.max(createGasPrice.value || 5, 3);
+    const actualBuyGas = Math.max(buyGasPrice.value || 3, 3);
+
     addLog('info', `主钱包创建代币，${selectedWallets.length} 个钱包准备买入`);
-    addLog('info', `创建 Gas: ${createGasPrice.value} Gwei, 买入 Gas: ${buyGasPrice.value} Gwei`);
+    addLog('info', `创建 Gas: ${actualCreateGas} Gwei, 买入 Gas: ${actualBuyGas} Gwei`);
 
     const presaleWei = parseEther(String(tokenInfo.presaleBNB || 0));
     const totalValue = CREATE_FEE + presaleWei;
@@ -1002,7 +1006,7 @@ async function launchAndBuy() {
       args: [apiStatus.createArgs as `0x${string}`, apiStatus.signature as `0x${string}`],
       value: totalValue,
       account: mainAddress,
-      gasPrice: parseGwei(String(createGasPrice.value)),
+      gasPrice: parseGwei(String(actualCreateGas)),
       gas: 3000000n
     });
 
@@ -1020,7 +1024,7 @@ async function launchAndBuy() {
             to: FOURMEME_ADDRESS,
             data: buyCalldata,
             value: buyAmount,
-            gasPrice: parseGwei(String(buyGasPrice.value)),
+            gasPrice: parseGwei(String(actualBuyGas)),
             gas: 300000n
           }).then(hash => {
             addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
@@ -1072,7 +1076,7 @@ async function launchAndBuy() {
             to: FOURMEME_ADDRESS,
             data: buyCalldata,
             value: buyAmount,
-            gasPrice: parseGwei(String(buyGasPrice.value)),
+            gasPrice: parseGwei(String(actualBuyGas)),
             gas: 300000n
           }).then(hash => {
             addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
