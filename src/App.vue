@@ -18,7 +18,7 @@
       </header>
 
       <section class="content-area">
-        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel">
+        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel,CreateTokenPanel">
           <component :is="currentComponent" />
         </keep-alive>
       </section>
@@ -38,12 +38,13 @@ import TaskManagePanel from './components/panels/TaskManagePanel.vue';
 import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 import SnipePanel from './components/panels/SnipePanel.vue';
+import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
 import { useWalletStore } from './stores/walletStore';
 
 const walletStore = useWalletStore();
 const requireLogin = ENABLE_LOGIN;
 
-const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe'>('wallet');
+const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken'>('wallet');
 const sidebarCollapsed = ref(false);
 const currentUser = ref<any>(null);
 const isAuthenticated = ref(false);
@@ -59,6 +60,7 @@ const sidebarItems = [
   { key: 'transfer', label: '批量转账', icon: '💸' },
   { key: 'task', label: '任务管理', icon: '📋' },
   { key: 'snipe', label: '代币狙击', icon: '🎯' },
+  { key: 'createToken', label: '创建代币', icon: '🪙' },
   { key: 'users', label: '用户管理', icon: '👥' },
   { key: 'analysis', label: '分析面板', icon: '📈' }
 ];
@@ -74,6 +76,7 @@ const currentComponent = computed(() => {
     case 'transfer': return BatchTransferPanel;
     case 'task': return TaskManagePanel;
     case 'snipe': return SnipePanel;
+    case 'createToken': return CreateTokenPanel;
     case 'users': return UserManagement;
     case 'analysis': return AnalysisPanel;
     default: return WalletManagePanel;
@@ -81,7 +84,7 @@ const currentComponent = computed(() => {
 });
 
 const handleSelect = (key: string) => {
-  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe';
+  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken';
 };
 
 const loadSession = async () => {
