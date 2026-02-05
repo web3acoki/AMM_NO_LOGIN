@@ -36,7 +36,7 @@
               @click="connectWallet"
               :disabled="isLoading"
             >
-              连接 MetaMask
+              连接钱包
             </button>
             <span v-else class="badge bg-success">
               {{ connectedWallet.slice(0, 6) }}...{{ connectedWallet.slice(-4) }}
@@ -592,25 +592,62 @@ function formatTime(timestamp: number): string {
   });
 }
 
+// 获取钱包提供者
+function getWalletProvider() {
+  // 检查各种钱包提供者
+  if (window.ethereum) {
+    return window.ethereum;
+  }
+  // OKX Wallet
+  if ((window as any).okxwallet) {
+    return (window as any).okxwallet;
+  }
+  // Trust Wallet
+  if ((window as any).trustwallet) {
+    return (window as any).trustwallet;
+  }
+  // Coinbase Wallet
+  if ((window as any).coinbaseWalletExtension) {
+    return (window as any).coinbaseWalletExtension;
+  }
+  return null;
+}
+
+// 检测钱包名称
+function detectWalletName(): string {
+  if (!window.ethereum) return 'Unknown';
+
+  if (window.ethereum.isMetaMask) return 'MetaMask';
+  if ((window.ethereum as any).isOkxWallet || (window as any).okxwallet) return 'OKX Wallet';
+  if ((window.ethereum as any).isTrust || (window as any).trustwallet) return 'Trust Wallet';
+  if ((window.ethereum as any).isCoinbaseWallet) return 'Coinbase Wallet';
+  if ((window.ethereum as any).isTokenPocket) return 'TokenPocket';
+  if ((window.ethereum as any).isBitKeep) return 'BitKeep';
+  if ((window.ethereum as any).isSafePal) return 'SafePal';
+
+  return 'Web3 Wallet';
+}
+
 // 连接钱包
 async function connectWallet() {
-  if (!window.ethereum) {
-    addLog('error', '请安装 MetaMask 钱包');
+  const provider = getWalletProvider();
+  if (!provider) {
+    addLog('error', '请安装 Web3 钱包（如 MetaMask、OKX Wallet、Trust Wallet 等）');
     return;
   }
 
   isLoading.value = true;
   try {
-    await window.ethereum.request({ method: 'eth_requestAccounts' });
+    await provider.request({ method: 'eth_requestAccounts' });
 
     const network = NETWORKS[currentNetwork.value];
 
     // 检查网络
-    const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+    const chainId = await provider.request({ method: 'eth_chainId' });
     if (chainId !== network.chainId) {
       addLog('warning', `请切换到 ${network.name}`);
       try {
-        await window.ethereum.request({
+        await provider.request({
           method: 'wallet_switchEthereumChain',
           params: [{ chainId: network.chainId }]
         });
@@ -618,7 +655,7 @@ async function connectWallet() {
         // 如果网络不存在，尝试添加
         if (switchError.code === 4902) {
           try {
-            await window.ethereum.request({
+            await provider.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId: network.chainId,
@@ -641,10 +678,11 @@ async function connectWallet() {
       }
     }
 
-    const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+    const accounts = await provider.request({ method: 'eth_accounts' });
     if (accounts && accounts.length > 0) {
       connectedWallet.value = accounts[0];
-      addLog('success', `钱包已连接: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`);
+      const walletName = detectWalletName();
+      addLog('success', `${walletName} 已连接: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`);
       addLog('info', `当前网络: ${network.name}`);
     }
   } catch (error: any) {
@@ -656,7 +694,8 @@ async function connectWallet() {
 
 // 获取钱包客户端
 async function getWalletClient() {
-  if (!window.ethereum || !connectedWallet.value) {
+  const provider = getWalletProvider();
+  if (!provider || !connectedWallet.value) {
     throw new Error('请先连接钱包');
   }
 
@@ -672,7 +711,7 @@ async function getWalletClient() {
 
   const walletClient = createWalletClient({
     chain,
-    transport: custom(window.ethereum)
+    transport: custom(provider)
   });
 
   return { walletClient, address: connectedWallet.value as `0x${string}` };
@@ -739,13 +778,19 @@ async function loginToFourMeme() {
     const message = `You are sign in Meme ${nonce}`;
     addLog('info', '请在钱包中签名...');
 
-    const signature = await window.ethereum.request({
+    const provider = getWalletProvider();
+    if (!provider) {
+      throw new Error('钱包未连接');
+    }
+
+    const signature = await provider.request({
       method: 'personal_sign',
       params: [message, connectedWallet.value]
     });
 
     // 3. 登录
-    addLog('info', '正在登录 FourMeme API...');
+    const walletName = detectWalletName();
+    addLog('info', `正在登录 FourMeme API (${walletName})...`);
     const loginResponse = await fetch(`${FOURMEME_API_BASE}/private/user/login/dex`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -760,7 +805,7 @@ async function loginToFourMeme() {
           signature: signature,
           verifyType: 'LOGIN'
         },
-        walletName: 'MetaMask'
+        walletName: walletName
       })
     });
     const loginData = await loginResponse.json();
@@ -1152,9 +1197,10 @@ async function batchWithdrawTokens() {
 // 初始化
 onMounted(async () => {
   // 检查是否已连接钱包
-  if (window.ethereum) {
+  const provider = getWalletProvider();
+  if (provider) {
     try {
-      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      const accounts = await provider.request({ method: 'eth_accounts' });
       if (accounts && accounts.length > 0) {
         connectedWallet.value = accounts[0];
       }
