@@ -4,7 +4,7 @@
     <div class="panel-header">
       <h5 class="mb-0">
         <i class="bi bi-coin me-2"></i>
-        创建代币1.0.0
+        创建代币
       </h5>
       <div class="d-flex align-items-center gap-2">
         <select
