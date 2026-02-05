@@ -758,7 +758,7 @@ async function loginToFourMeme() {
 
     // 1. 获取 nonce
     addLog('info', '正在获取登录 nonce...');
-    const nonceResponse = await fetch(`${FOURMEME_API_BASE}/private/user/nonce/generate`, {
+    const nonceResponse = await fetch('/api/fourmeme/nonce', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -792,7 +792,7 @@ async function loginToFourMeme() {
     // 3. 登录
     const walletName = detectWalletName();
     addLog('info', `正在登录 FourMeme API (${walletName})...`);
-    const loginResponse = await fetch(`${FOURMEME_API_BASE}/private/user/login/dex`, {
+    const loginResponse = await fetch('/api/fourmeme/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -902,7 +902,7 @@ async function prepareTokenCreate() {
     if (tokenInfo.twitterUrl) payload.twitterUrl = tokenInfo.twitterUrl;
     if (tokenInfo.telegramUrl) payload.telegramUrl = tokenInfo.telegramUrl;
 
-    const response = await fetch(`${FOURMEME_API_BASE}/private/token/create`, {
+    const response = await fetch('/api/fourmeme/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
