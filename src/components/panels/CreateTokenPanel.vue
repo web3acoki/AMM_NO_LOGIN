@@ -449,7 +449,8 @@ import FourMemeBundlerABI from '../../contracts/FourMemeBundler.json';
 const walletStore = useWalletStore();
 
 // FourMeme API 配置
-const FOURMEME_API_BASE = 'https://four.meme/meme-api/v1';
+// 使用 Vercel API 代理解决 CORS 问题
+const FOURMEME_API_BASE = '/api/fourmeme';
 
 // 网络配置
 const NETWORKS = {
@@ -837,7 +838,8 @@ async function uploadTokenImage() {
     const formData = new FormData();
     formData.append('file', selectedImage.value);
 
-    const response = await fetch(`${FOURMEME_API_BASE}/private/token/upload`, {
+    // 使用专门的上传代理端点
+    const response = await fetch('/api/fourmeme/upload', {
       method: 'POST',
       headers: {
         'meme-web-access': apiStatus.accessToken
