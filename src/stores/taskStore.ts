@@ -776,9 +776,9 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     // 内盘模式：使用两阶段卖出，确保所有交易同时发送
-    // 批量卖出强制使用 blocksec 节点（支持 CORS，稳定）
+    // 批量卖出使用 Binance 官方节点（支持 CORS，不限流）
     if (task.config.marketType === 'inner') {
-      const antiSandwichRpc = 'https://bsc.rpc.blocksec.com';
+      const antiSandwichRpc = 'https://bsc-dataseed.binance.org';
       const sharedFourMemeService = createFourMemeService(chainId, antiSandwichRpc);
 
       addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);

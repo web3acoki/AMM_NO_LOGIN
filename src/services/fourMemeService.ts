@@ -25,14 +25,10 @@ import { privateKeyToAccount } from 'viem/accounts';
 // FourMeme 主合约地址
 export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
 
-// 防夹 RPC 节点（用于内盘交易）
-// 注意：必须选择支持 CORS 的节点，否则浏览器无法直接访问
-// 推荐节点：
-// 1. BlockSec (支持 CORS，针对 Four.meme 优化): https://bsc.rpc.blocksec.com
-// 2. 48 Club (支持 CORS，BSC最大builder): https://rpc-bsc.48.club
-// 3. BlockRazor meme (支持 CORS): https://meme.bsc.blockrazor.xyz
-// 不支持 CORS: https://bsc.rpc.blxrbdn.com (不能在浏览器中使用)
-export const ANTI_SANDWICH_RPC = 'https://bsc.rpc.blocksec.com' as const;
+// 防夹 RPC 节点（用于内盘买入交易）
+// blxrbdn 是专业防夹节点，速度快，但 CORS 支持不稳定
+// 批量卖出在 taskStore 中强制使用 Binance 官方节点
+export const ANTI_SANDWICH_RPC = 'https://bsc.rpc.blxrbdn.com' as const;
 
 // FourMeme 合约 ABI (只包含我们需要的函数)
 const FOURMEME_ABI = [

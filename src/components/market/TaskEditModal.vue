@@ -180,9 +180,10 @@
                 <i class="bi bi-shield-lock me-1"></i>防夹节点
               </label>
               <select class="form-select" v-model="formData.antiSandwichRpcType">
+                <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
+                <option value="binance">https://bsc-dataseed.binance.org</option>
                 <option value="blocksec">https://bsc.rpc.blocksec.com</option>
                 <option value="48club">https://rpc-bsc.48.club</option>
-                <option value="blockrazor">https://meme.bsc.blockrazor.xyz</option>
                 <option value="custom">自定义节点</option>
               </select>
               <div v-if="formData.antiSandwichRpcType === 'custom'" class="mt-2">
@@ -252,18 +253,19 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore();
 
-// 防夹节点 URL 映射（必须支持 CORS）
+// 防夹节点 URL 映射
 const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
+  blxrbdn: 'https://bsc.rpc.blxrbdn.com',
+  binance: 'https://bsc-dataseed.binance.org',
   blocksec: 'https://bsc.rpc.blocksec.com',
   '48club': 'https://rpc-bsc.48.club',
-  blockrazor: 'https://meme.bsc.blockrazor.xyz',
 };
 
 // 根据 URL 反推类型
-function getRpcTypeFromUrl(url: string | undefined): 'blocksec' | '48club' | 'blockrazor' | 'custom' {
-  if (!url) return 'blocksec';
+function getRpcTypeFromUrl(url: string | undefined): 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom' {
+  if (!url) return 'blxrbdn';
   for (const [type, rpcUrl] of Object.entries(ANTI_SANDWICH_RPC_MAP)) {
-    if (url === rpcUrl) return type as 'blocksec' | '48club' | 'blockrazor';
+    if (url === rpcUrl) return type as 'blxrbdn' | 'binance' | 'blocksec' | '48club';
   }
   return 'custom';
 }
@@ -282,7 +284,7 @@ const formData = ref({
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
   innerSlippage: undefined as number | undefined,  // 内盘滑点
-  antiSandwichRpcType: 'blocksec' as 'blocksec' | '48club' | 'blockrazor' | 'custom',  // 防夹节点类型
+  antiSandwichRpcType: 'blxrbdn' as 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // 防夹节点类型
   customAntiSandwichRpc: '',  // 自定义防夹节点 URL
   sellAll: true,
   walletAddressesText: ''
@@ -349,7 +351,7 @@ function handleSave() {
 
   // 计算防夹节点 URL
   const antiSandwichRpc = formData.value.antiSandwichRpcType === 'custom'
-    ? (formData.value.customAntiSandwichRpc || ANTI_SANDWICH_RPC_MAP.blocksec)
+    ? (formData.value.customAntiSandwichRpc || ANTI_SANDWICH_RPC_MAP.blxrbdn)
     : ANTI_SANDWICH_RPC_MAP[formData.value.antiSandwichRpcType];
 
   // 构建更新数据
