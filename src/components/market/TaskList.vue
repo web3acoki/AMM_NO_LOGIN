@@ -2,17 +2,17 @@
   <div class="task-list">
     <div class="row g-3">
       <!-- 左侧：新建任务表单 -->
-      <div class="col-lg-4">
+      <div class="col-lg-3">
         <div class="sticky-top" style="top: 1rem;">
           <TaskConfigForm />
         </div>
       </div>
 
-      <!-- 右侧：任务列表 -->
-      <div class="col-lg-8">
-        <!-- 任务列表 -->
-        <div v-if="tasks.length > 0">
-          <div class="d-flex justify-content-between align-items-center mb-2">
+      <!-- 右侧：任务列表（拉盘和砸盘分开） -->
+      <div class="col-lg-9">
+        <!-- 批量操作栏 -->
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+          <div class="d-flex align-items-center gap-2">
             <h6 class="fw-semibold mb-0">
               <i class="bi bi-list-task me-1"></i>任务列表
               <span class="badge bg-primary ms-1">{{ tasks.length }}</span>
@@ -20,52 +20,89 @@
               <span v-if="selectedTaskIds.length > 0" class="badge bg-info ms-1">已选 {{ selectedTaskIds.length }}</span>
             </h6>
           </div>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-secondary btn-sm" @click="toggleSelectAll">
+              <i class="bi" :class="isAllSelected ? 'bi-check-square' : 'bi-square'"></i>
+              {{ isAllSelected ? '取消全选' : '全选' }}
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" @click="selectStopped" :disabled="stoppedTasks.length === 0">
+              <i class="bi bi-stop-circle me-1"></i>选已停止
+            </button>
+            <button
+              class="btn btn-outline-danger btn-sm"
+              @click="deleteSelectedTasks"
+              :disabled="deletableSelectedCount === 0"
+            >
+              <i class="bi bi-trash me-1"></i>删除 ({{ deletableSelectedCount }})
+            </button>
+            <button
+              class="btn btn-success btn-sm"
+              @click="startSelectedTasks"
+              :disabled="startableSelectedCount === 0"
+            >
+              <i class="bi bi-play-fill me-1"></i>启动 ({{ startableSelectedCount }})
+            </button>
+            <button
+              class="btn btn-danger btn-sm"
+              @click="stopSelectedTasks"
+              :disabled="stoppableSelectedCount === 0"
+            >
+              <i class="bi bi-stop-fill me-1"></i>停止 ({{ stoppableSelectedCount }})
+            </button>
+          </div>
+        </div>
 
-          <!-- 批量操作栏 -->
-          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-            <div class="d-flex gap-2">
-              <button class="btn btn-outline-secondary btn-sm" @click="toggleSelectAll">
-                <i class="bi" :class="isAllSelected ? 'bi-check-square' : 'bi-square'"></i>
-                {{ isAllSelected ? '取消全选' : '全选' }}
-              </button>
-              <button class="btn btn-outline-secondary btn-sm" @click="selectStopped" :disabled="stoppedTasks.length === 0">
-                <i class="bi bi-stop-circle me-1"></i>选择已停止
-              </button>
-              <button
-                class="btn btn-outline-danger btn-sm"
-                @click="deleteSelectedTasks"
-                :disabled="deletableSelectedCount === 0"
-              >
-                <i class="bi bi-trash me-1"></i>删除选中 ({{ deletableSelectedCount }})
-              </button>
-            </div>
-            <div class="d-flex gap-2">
-              <button
-                class="btn btn-success btn-sm"
-                @click="startSelectedTasks"
-                :disabled="startableSelectedCount === 0"
-              >
-                <i class="bi bi-play-fill me-1"></i>一键启动 ({{ startableSelectedCount }})
-              </button>
-              <button
-                class="btn btn-danger btn-sm"
-                @click="stopSelectedTasks"
-                :disabled="stoppableSelectedCount === 0"
-              >
-                <i class="bi bi-stop-fill me-1"></i>一键停止 ({{ stoppableSelectedCount }})
-              </button>
+        <div v-if="tasks.length > 0" class="row g-3">
+          <!-- 拉盘任务（左列） -->
+          <div class="col-md-6">
+            <div class="task-column pump-column">
+              <div class="column-header pump-header">
+                <i class="bi bi-graph-up-arrow me-1"></i>
+                拉盘任务
+                <span class="badge bg-success ms-1">{{ pumpTasks.length }}</span>
+                <span v-if="runningPumpCount > 0" class="badge bg-light text-success ms-1">{{ runningPumpCount }} 运行</span>
+              </div>
+              <div class="task-cards-container">
+                <TaskCard
+                  v-for="task in pumpTasks"
+                  :key="task.id"
+                  :task="task"
+                  :selected="selectedTaskIds.includes(task.id)"
+                  @toggle-select="toggleTaskSelect(task.id)"
+                  @edit="handleEditTask"
+                />
+                <div v-if="pumpTasks.length === 0" class="text-center text-muted py-4">
+                  <i class="bi bi-inbox d-block mb-1"></i>
+                  <small>暂无拉盘任务</small>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="task-cards-container">
-            <TaskCard
-              v-for="task in tasks"
-              :key="task.id"
-              :task="task"
-              :selected="selectedTaskIds.includes(task.id)"
-              @toggle-select="toggleTaskSelect(task.id)"
-              @edit="handleEditTask"
-            />
+          <!-- 砸盘任务（右列） -->
+          <div class="col-md-6">
+            <div class="task-column dump-column">
+              <div class="column-header dump-header">
+                <i class="bi bi-graph-down-arrow me-1"></i>
+                砸盘任务
+                <span class="badge bg-danger ms-1">{{ dumpTasks.length }}</span>
+                <span v-if="runningDumpCount > 0" class="badge bg-light text-danger ms-1">{{ runningDumpCount }} 运行</span>
+              </div>
+              <div class="task-cards-container">
+                <TaskCard
+                  v-for="task in dumpTasks"
+                  :key="task.id"
+                  :task="task"
+                  :selected="selectedTaskIds.includes(task.id)"
+                  @toggle-select="toggleTaskSelect(task.id)"
+                  @edit="handleEditTask"
+                />
+                <div v-if="dumpTasks.length === 0" class="text-center text-muted py-4">
+                  <i class="bi bi-inbox d-block mb-1"></i>
+                  <small>暂无砸盘任务</small>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -100,6 +137,16 @@ const { tasks, runningTasks } = storeToRefs(taskStore);
 const selectedTaskIds = ref<string[]>([]);
 const editingTask = ref<Task | null>(null);
 const runningCount = computed(() => runningTasks.value.length);
+
+// 拉盘任务
+const pumpTasks = computed(() => tasks.value.filter(t => t.mode === 'pump'));
+// 砸盘任务
+const dumpTasks = computed(() => tasks.value.filter(t => t.mode === 'dump'));
+
+// 运行中的拉盘任务数
+const runningPumpCount = computed(() => pumpTasks.value.filter(t => t.status === 'running').length);
+// 运行中的砸盘任务数
+const runningDumpCount = computed(() => dumpTasks.value.filter(t => t.status === 'running').length);
 
 // 已停止的任务
 const stoppedTasks = computed(() => tasks.value.filter(t => t.status === 'stopped'));
@@ -235,10 +282,49 @@ function handleEditClose() {
 </script>
 
 <style scoped>
+.task-column {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.column-header {
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pump-header {
+  background: rgba(25, 135, 84, 0.2);
+  color: #198754;
+  border-bottom: 2px solid rgba(25, 135, 84, 0.3);
+}
+
+.dump-header {
+  background: rgba(220, 53, 69, 0.2);
+  color: #dc3545;
+  border-bottom: 2px solid rgba(220, 53, 69, 0.3);
+}
+
 .task-cards-container {
-  min-height: 400px;
-  max-height: none;
-  overflow-y: visible;
+  padding: 0.5rem;
+  min-height: 200px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.task-cards-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.task-cards-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.task-cards-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 </style>
-

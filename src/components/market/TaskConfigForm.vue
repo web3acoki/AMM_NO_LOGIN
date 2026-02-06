@@ -211,9 +211,10 @@
           <i class="bi bi-shield-lock me-1"></i>防夹节点
         </label>
         <select class="form-select form-select-sm" v-model="antiSandwichRpcType">
-          <option value="blocksec">BlockSec (推荐，针对 Four.meme 优化)</option>
-          <option value="48club">48 Club (BSC 最大 Builder)</option>
-          <option value="blockrazor">BlockRazor</option>
+          <option value="blxrbdn">https://bsc.rpc.blxrbdn.com</option>
+          <option value="blocksec">https://bsc.rpc.blocksec.com</option>
+          <option value="48club">https://rpc-bsc.48.club</option>
+          <option value="blockrazor">https://meme.bsc.blockrazor.xyz</option>
           <option value="custom">自定义节点</option>
         </select>
         <div v-if="antiSandwichRpcType === 'custom'" class="mt-2">
@@ -334,11 +335,12 @@ const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
 
 // 防夹节点设置
-const antiSandwichRpcType = ref<'blocksec' | '48club' | 'blockrazor' | 'custom'>('blocksec');
+const antiSandwichRpcType = ref<'blxrbdn' | 'blocksec' | '48club' | 'blockrazor' | 'custom'>('blxrbdn');
 const customAntiSandwichRpc = ref('');
 
 // 防夹节点 URL 映射
 const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
+  blxrbdn: 'https://bsc.rpc.blxrbdn.com',
   blocksec: 'https://bsc.rpc.blocksec.com',
   '48club': 'https://rpc-bsc.48.club',
   blockrazor: 'https://meme.bsc.blockrazor.xyz',
@@ -347,7 +349,7 @@ const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
 // 计算实际使用的防夹节点 URL
 const antiSandwichRpcUrl = computed(() => {
   if (antiSandwichRpcType.value === 'custom') {
-    return customAntiSandwichRpc.value || ANTI_SANDWICH_RPC_MAP.blocksec;
+    return customAntiSandwichRpc.value || ANTI_SANDWICH_RPC_MAP.blxrbdn;
   }
   return ANTI_SANDWICH_RPC_MAP[antiSandwichRpcType.value];
 });

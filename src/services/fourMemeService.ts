@@ -27,10 +27,11 @@ export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as
 
 // 防夹 RPC 节点（用于内盘交易）
 // 推荐节点（按优先级）：
-// 1. BlockSec (专门针对 Four.meme 优化): https://bsc.rpc.blocksec.com
-// 2. 48 Club (BSC最大builder): https://rpc-bsc.48.club
-// 3. BlockRazor: https://meme.bsc.blockrazor.xyz
-export const ANTI_SANDWICH_RPC = 'https://bsc.rpc.blocksec.com' as const;
+// 1. BlockRazor blxrbdn (高性能): https://bsc.rpc.blxrbdn.com
+// 2. BlockSec (专门针对 Four.meme 优化): https://bsc.rpc.blocksec.com
+// 3. 48 Club (BSC最大builder): https://rpc-bsc.48.club
+// 4. BlockRazor meme: https://meme.bsc.blockrazor.xyz
+export const ANTI_SANDWICH_RPC = 'https://bsc.rpc.blxrbdn.com' as const;
 
 // FourMeme 合约 ABI (只包含我们需要的函数)
 const FOURMEME_ABI = [
