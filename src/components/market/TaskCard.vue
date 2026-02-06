@@ -276,6 +276,9 @@ async function handleBatchSell() {
   taskStore.setActiveLogTask(props.task.id);
   try {
     await taskStore.batchSellForTask(props.task.id);
+  } catch (error: any) {
+    console.error('批量卖出异常:', error);
+    alert(`批量卖出失败: ${error.message || '未知错误'}`);
   } finally {
     isBatchSelling.value = false;
   }
