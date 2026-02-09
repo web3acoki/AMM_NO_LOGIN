@@ -664,14 +664,39 @@ export const useTaskStore = defineStore('task', () => {
     activeLogTaskId.value = null;
   }
 
-  // 批量删除任务
+  // 批量删除任务（一次性删除，避免多次触发Vue响应式更新导致渲染问题）
   function deleteMultipleTasks(taskIds: string[]): number {
-    let deletedCount = 0;
+    if (taskIds.length === 0) return 0;
+
+    // 先停止所有运行中的任务
     for (const taskId of taskIds) {
-      if (deleteTask(taskId)) {
-        deletedCount++;
+      const task = tasks.value.find(t => t.id === taskId);
+      if (task) {
+        if (task.intervalId) {
+          clearTimeout(task.intervalId);
+          task.intervalId = undefined;
+        }
+        task.status = 'stopped';
       }
     }
+
+    // 记录删除前的数量
+    const originalLength = tasks.value.length;
+
+    // 创建要删除的ID集合（用于快速查找）
+    const taskIdSet = new Set(taskIds);
+
+    // 一次性过滤掉所有要删除的任务（只触发一次响应式更新）
+    tasks.value = tasks.value.filter(t => !taskIdSet.has(t.id));
+
+    // 计算实际删除数量
+    const deletedCount = originalLength - tasks.value.length;
+
+    // 如果删除的任务包含当前查看日志的任务，切换到另一个
+    if (activeLogTaskId.value && taskIdSet.has(activeLogTaskId.value)) {
+      activeLogTaskId.value = tasks.value.length > 0 ? tasks.value[0].id : null;
+    }
+
     return deletedCount;
   }
 
