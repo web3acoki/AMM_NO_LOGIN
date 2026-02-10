@@ -21,6 +21,20 @@
       </span>
     </div>
 
+    <!-- 代币地址 -->
+    <div class="small mb-1">
+      <code class="text-info token-address" :title="tokenAddress">
+        <i class="bi bi-coin me-1"></i>{{ formatTokenAddress(tokenAddress) }}
+      </code>
+      <button
+        class="btn btn-link btn-sm p-0 ms-1 text-muted"
+        @click="copyTokenAddress"
+        title="复制地址"
+      >
+        <i class="bi bi-clipboard"></i>
+      </button>
+    </div>
+
     <!-- 任务信息（单行紧凑） -->
     <div class="small text-muted mb-1">
       <div class="d-flex flex-wrap gap-2">
@@ -147,6 +161,37 @@ const isBatchSelling = ref(false);
 
 // 计算属性
 const isActiveLog = computed(() => activeLogTaskId.value === props.task.id);
+
+// 获取代币地址（内盘优先用 innerTokenAddress，外盘用 tokenContract）
+const tokenAddress = computed(() => {
+  if (props.task.config.marketType === 'inner') {
+    return props.task.config.innerTokenAddress || props.task.config.tokenContract || '';
+  }
+  return props.task.config.tokenContract || '';
+});
+
+// 格式化代币地址显示
+function formatTokenAddress(address: string): string {
+  if (!address) return '未设置';
+  return `${address.slice(0, 10)}...${address.slice(-8)}`;
+}
+
+// 复制代币地址
+function copyTokenAddress() {
+  if (!tokenAddress.value) return;
+  navigator.clipboard.writeText(tokenAddress.value).then(() => {
+    alert('代币地址已复制');
+  }).catch(() => {
+    // 降级方案
+    const input = document.createElement('input');
+    input.value = tokenAddress.value;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    document.body.removeChild(input);
+    alert('代币地址已复制');
+  });
+}
 
 const statusClass = computed(() => {
   switch (props.task.status) {
@@ -297,6 +342,14 @@ async function handleBatchSell() {
 .btn-sm {
   padding: 0.2rem 0.4rem;
   font-size: 0.75rem;
+}
+
+.token-address {
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.25rem;
+  user-select: all;
 }
 </style>
 
