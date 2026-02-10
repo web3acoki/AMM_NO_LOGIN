@@ -352,10 +352,10 @@ async function handleBatchSell() {
 
 .token-address {
   font-size: 0.75rem;
-  color: #e0e0e0;
-  background: rgba(100, 150, 200, 0.15);
-  border: 1px solid rgba(100, 150, 200, 0.25);
-  padding: 0.15rem 0.5rem;
+  color: #ccc;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  padding: 0.2rem 0.5rem;
   border-radius: 0.25rem;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -363,8 +363,8 @@ async function handleBatchSell() {
 
 .token-address:hover {
   color: #fff;
-  background: rgba(100, 150, 200, 0.25);
-  border-color: rgba(100, 150, 200, 0.4);
+  background: #333;
+  border-color: #555;
 }
 
 .copy-btn {
