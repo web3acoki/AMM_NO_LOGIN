@@ -22,12 +22,12 @@
     </div>
 
     <!-- 代币地址 -->
-    <div class="small mb-1">
-      <code class="text-info token-address" :title="tokenAddress">
-        <i class="bi bi-coin me-1"></i>{{ formatTokenAddress(tokenAddress) }}
+    <div class="small mb-1 token-address-wrap">
+      <code class="token-address" @mouseenter="showFullAddress = true" @mouseleave="showFullAddress = false">
+        <i class="bi bi-coin me-1"></i>{{ showFullAddress ? tokenAddress : formatTokenAddress(tokenAddress) }}
       </code>
       <button
-        class="btn btn-link btn-sm p-0 ms-1 text-muted"
+        class="btn btn-link btn-sm p-0 ms-1 copy-btn"
         @click="copyTokenAddress"
         title="复制地址"
       >
@@ -158,6 +158,7 @@ const { activeLogTaskId } = storeToRefs(taskStore);
 
 const isQuerying = ref(false);
 const isBatchSelling = ref(false);
+const showFullAddress = ref(false);
 
 // 计算属性
 const isActiveLog = computed(() => activeLogTaskId.value === props.task.id);
@@ -344,12 +345,33 @@ async function handleBatchSell() {
   font-size: 0.75rem;
 }
 
+.token-address-wrap {
+  display: flex;
+  align-items: center;
+}
+
 .token-address {
   font-size: 0.75rem;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 0.15rem 0.4rem;
+  color: #a0a0a0;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.15rem 0.5rem;
   border-radius: 0.25rem;
-  user-select: all;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.token-address:hover {
+  color: #d0d0d0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.copy-btn {
+  color: #888;
+  font-size: 0.7rem;
+}
+
+.copy-btn:hover {
+  color: #aaa;
 }
 </style>
 
