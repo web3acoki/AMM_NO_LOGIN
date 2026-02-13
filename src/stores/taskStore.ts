@@ -219,13 +219,15 @@ export const useTaskStore = defineStore('task', () => {
       const amountMin = task.config.amountMin || 0;
       const amountMax = task.config.amountMax || amountMin;
       const randomAmount = amountMin + Math.random() * (amountMax - amountMin);
-      // 保留18位小数精度（与以太坊精度一致），避免小数被截断为0
-      const roundedAmount = Number(randomAmount.toFixed(18));
+      // 保留8位小数精度（避免 JavaScript 浮点数精度问题）
+      // 0.1.toFixed(18) = "0.100000000000000006"（错误）
+      // 0.1.toFixed(8) = "0.10000000"（正确）
+      const roundedAmount = Number(randomAmount.toFixed(8));
 
       // 格式化显示金额，避免科学计数法
       const formatAmount = (num: number): string => {
         if (num === 0) return '0';
-        return num.toFixed(18).replace(/\.?0+$/, '');
+        return num.toFixed(8).replace(/\.?0+$/, '');
       };
 
       const marketTypeText = task.config.marketType === 'inner' ? '内盘' : '外盘';

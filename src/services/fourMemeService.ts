@@ -107,8 +107,8 @@ export interface SellPrepareResult {
 // 全局 nonce 管理器（追踪每个钱包的 pending nonce，避免快速发送时冲突）
 const nonceManager: Map<string, number> = new Map();
 
-// 获取下一个可用的 nonce（不递增，仅查询）
-async function getNextNonce(
+// 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
+async function acquireNonce(
   publicClient: PublicClient,
   address: string
 ): Promise<number> {
@@ -124,16 +124,25 @@ async function getNextNonce(
   const localNonce = nonceManager.get(key) || 0;
 
   // 使用两者中较大的值（确保不会重复使用已发送的 nonce）
-  return Math.max(chainNonce, localNonce);
+  const nonce = Math.max(chainNonce, localNonce);
+
+  // 立即递增本地追踪的 nonce（乐观锁：假设交易会成功）
+  nonceManager.set(key, nonce + 1);
+
+  return nonce;
 }
 
-// 确认 nonce 已使用（交易发送成功后调用）
-function confirmNonceUsed(address: string, usedNonce: number) {
+// 回滚 nonce（交易发送失败时调用，将 nonce 减回去）
+function rollbackNonce(address: string, failedNonce: number) {
   const key = address.toLowerCase();
-  nonceManager.set(key, usedNonce + 1);
+  const currentNonce = nonceManager.get(key) || 0;
+  // 只有当本地 nonce 比失败的 nonce 大时才回滚
+  if (currentNonce > failedNonce) {
+    nonceManager.set(key, failedNonce);
+  }
 }
 
-// 重置钱包的 nonce 追踪（交易失败或需要刷新时调用）
+// 重置钱包的 nonce 追踪（需要刷新时调用）
 export function resetNonceForAddress(address: string) {
   nonceManager.delete(address.toLowerCase());
 }
@@ -261,9 +270,9 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取下一个可用的 nonce（不预先递增，避免失败时产生 gap）
+      // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
       const walletAddress = walletClient.account!.address;
-      const nonce = await getNextNonce(this.publicClient, walletAddress);
+      const nonce = await acquireNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -275,8 +284,7 @@ export class FourMemeService {
         nonce: nonce
       });
 
-      // 交易发送成功后，确认 nonce 已使用
-      confirmNonceUsed(walletAddress, nonce);
+      // 交易发送成功，nonce 已在 acquireNonce 中递增，无需额外操作
 
       // 交易已发送，不等待链上确认，直接返回成功
       return {
@@ -285,8 +293,11 @@ export class FourMemeService {
         amountIn: `${params.amount} BNB`
       };
     } catch (error: any) {
-      // 交易发送失败，重置 nonce 追踪，下次重新从链上获取
-      resetNonceForAddress(walletClient.account!.address);
+      // 交易发送失败，回滚 nonce（如果已获取）
+      if (walletClient.account?.address) {
+        rollbackNonce(walletClient.account.address, 0); // 回滚到重新从链上获取
+        resetNonceForAddress(walletClient.account.address);
+      }
       return {
         success: false,
         error: error.message || '买入执行失败'
@@ -373,8 +384,8 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取下一个可用的 nonce（不预先递增，避免失败时产生 gap）
-      const nonce = await getNextNonce(this.publicClient, walletAddress);
+      // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
+      const nonce = await acquireNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -386,8 +397,7 @@ export class FourMemeService {
         nonce: nonce
       });
 
-      // 交易发送成功后，确认 nonce 已使用
-      confirmNonceUsed(walletAddress, nonce);
+      // 交易发送成功，nonce 已在 acquireNonce 中递增，无需额外操作
 
       // 交易已发送，不等待链上确认，直接返回成功
       return {
@@ -632,8 +642,8 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取下一个可用的 nonce（不预先递增，避免失败时产生 gap）
-      const nonce = await getNextNonce(this.publicClient, walletAddress);
+      // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
+      const nonce = await acquireNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -645,8 +655,7 @@ export class FourMemeService {
         nonce: nonce
       });
 
-      // 交易发送成功后，确认 nonce 已使用
-      confirmNonceUsed(walletAddress, nonce);
+      // 交易发送成功，nonce 已在 acquireNonce 中递增，无需额外操作
 
       return {
         success: true,
