@@ -931,9 +931,10 @@ export class SnipeService {
       // 构建 calldata
       const calldata = buildBuyCalldata(tokenAddress);
 
-      // 构建交易参数 - 彻底解决科学计数法问题
-      // 将数字转换为最小单位 (wei)，避免任何浮点数问题
-      const buyAmountWei = BigInt(Math.floor(this.task.buyAmount * 1e18));
+      // 构建交易参数 - 修复 JavaScript 浮点数精度丢失问题
+      // 使用 parseEther 替代直接乘法，避免金额 >= 0.01 BNB 时的精度问题
+      const buyAmountStr = this.task.buyAmount.toFixed(18).replace(/\.?0+$/, '');
+      const buyAmountWei = parseEther(buyAmountStr);
 
       // 获取最新 nonce（使用 pending 状态，包含未确认交易）
       let nonce: number | undefined;

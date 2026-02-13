@@ -188,7 +188,10 @@ export class FourMemeService {
   ): Promise<FourMemeTradeResult> {
     try {
       const tokenAddress = params.tokenAddress as Address;
-      const buyAmountWei = BigInt(Math.floor(params.amount * 1e18));
+      // 修复: 使用 parseEther 避免 JavaScript 浮点数精度丢失问题
+      // 原代码 BigInt(Math.floor(params.amount * 1e18)) 在金额 >= 0.01 时会有精度问题
+      const amountStr = params.amount.toFixed(18).replace(/\.?0+$/, '');
+      const buyAmountWei = parseEther(amountStr);
       const slippage = params.slippage || 0;
 
       // 计算滑点保护的最小获得代币数量
