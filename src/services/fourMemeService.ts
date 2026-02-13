@@ -102,6 +102,41 @@ export interface SellPrepareResult {
   approved: boolean;
 }
 
+// ==================== Nonce 管理器 ====================
+
+// 全局 nonce 管理器（追踪每个钱包的 pending nonce，避免快速发送时冲突）
+const nonceManager: Map<string, number> = new Map();
+
+// 获取并递增 nonce（线程安全）
+async function getAndIncrementNonce(
+  publicClient: PublicClient,
+  address: string
+): Promise<number> {
+  const key = address.toLowerCase();
+
+  // 获取链上的 pending nonce
+  const chainNonce = await publicClient.getTransactionCount({
+    address: address as `0x${string}`,
+    blockTag: 'pending'
+  });
+
+  // 获取本地追踪的 nonce
+  const localNonce = nonceManager.get(key) || 0;
+
+  // 使用两者中较大的值（确保不会重复使用已发送的 nonce）
+  const nonce = Math.max(chainNonce, localNonce);
+
+  // 更新本地追踪的 nonce
+  nonceManager.set(key, nonce + 1);
+
+  return nonce;
+}
+
+// 重置钱包的 nonce 追踪（交易失败时调用）
+export function resetNonceForAddress(address: string) {
+  nonceManager.delete(address.toLowerCase());
+}
+
 // ==================== 服务类 ====================
 
 export class FourMemeService {
@@ -225,11 +260,11 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取当前 nonce
-      const nonce = await this.publicClient.getTransactionCount({
-        address: walletClient.account!.address,
-        blockTag: 'pending'
-      });
+      // 使用 nonce 管理器获取并递增 nonce（避免快速发送时冲突）
+      const nonce = await getAndIncrementNonce(
+        this.publicClient,
+        walletClient.account!.address
+      );
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -334,11 +369,8 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取当前 nonce
-      const nonce = await this.publicClient.getTransactionCount({
-        address: walletAddress,
-        blockTag: 'pending'
-      });
+      // 使用 nonce 管理器获取并递增 nonce（避免快速发送时冲突）
+      const nonce = await getAndIncrementNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -591,11 +623,8 @@ export class FourMemeService {
         ? BigInt(params.gasLimit)
         : BigInt(300000);
 
-      // 获取当前 nonce
-      const nonce = await this.publicClient.getTransactionCount({
-        address: walletAddress,
-        blockTag: 'pending'
-      });
+      // 使用 nonce 管理器获取并递增 nonce（避免快速发送时冲突）
+      const nonce = await getAndIncrementNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
