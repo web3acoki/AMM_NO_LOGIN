@@ -174,8 +174,8 @@
               </div>
             </div>
 
-            <!-- 防夹节点设置（仅内盘任务显示） -->
-            <div class="mb-3" v-if="props.task.config.marketType === 'inner'">
+            <!-- 防夹节点设置（内盘和外盘都显示） -->
+            <div class="mb-3">
               <label class="form-label">
                 <i class="bi bi-shield-lock me-1"></i>防夹节点
               </label>

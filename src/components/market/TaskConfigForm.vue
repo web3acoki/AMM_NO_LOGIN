@@ -205,8 +205,8 @@
         </div>
       </div>
 
-      <!-- 防夹节点设置（仅内盘模式显示） -->
-      <div class="mb-3" v-if="marketType === 'inner'">
+      <!-- 防夹节点设置（内盘和外盘都显示） -->
+      <div class="mb-3">
         <label class="form-label small">
           <i class="bi bi-shield-lock me-1"></i>防夹节点
         </label>
@@ -515,7 +515,7 @@ function handleCreateTask() {
     marketType: marketType.value, // 盘口类型
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
     innerSlippage: (marketType.value === 'inner' && mode.value === 'pump') ? innerSlippage.value : undefined, // 内盘买入滑点（卖出不需要）
-    antiSandwichRpc: marketType.value === 'inner' ? antiSandwichRpcUrl.value : undefined, // 内盘防夹节点
+    antiSandwichRpc: antiSandwichRpcUrl.value, // 防夹节点（内盘和外盘都使用）
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）

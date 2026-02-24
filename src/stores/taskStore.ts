@@ -36,7 +36,7 @@ export interface TaskConfig {
   marketType: 'inner' | 'outer';  // 盘口类型：inner=内盘(FourMeme), outer=外盘(DEX)
   innerTokenAddress?: string; // 内盘目标代币地址（仅内盘模式使用）
   innerSlippage?: number;     // 内盘滑点百分比（例如: 10 表示 10%）
-  antiSandwichRpc?: string;   // 内盘防夹节点 RPC URL
+  antiSandwichRpc?: string;   // 防夹节点 RPC URL（内盘和外盘都使用）
 }
 
 // 任务统计接口
@@ -316,14 +316,16 @@ export const useTaskStore = defineStore('task', () => {
       return false;
     }
 
-    const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
+    // 外盘交易优先使用配置的防夹节点，未配置则使用默认防夹节点
+    const effectiveRpcUrl = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+    const tradingService = createTradingService(chainId, effectiveRpcUrl, routerAddress);
 
     // 砸盘模式：如果 sellAll 为 true 则卖出100%
     const sellAll = task.mode === 'dump' && task.config.sellAll;
 
     const tradeParams: TradeParams = {
       chainId,
-      rpcUrl,
+      rpcUrl: effectiveRpcUrl,
       routerAddress,
       privateKey,
       walletAddress,
@@ -881,7 +883,8 @@ export const useTaskStore = defineStore('task', () => {
       addLog(taskId, 'info', `批量卖出操作完成，共发送 ${readyWallets.length} 笔交易`);
 
     } else {
-      // 外盘模式：保持原有逻辑
+      // 外盘模式：使用配置的防夹节点
+      const effectiveRpcUrl = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
       addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
 
       const promises = task.walletAddresses.map(async (walletAddress) => {
@@ -898,10 +901,10 @@ export const useTaskStore = defineStore('task', () => {
             return;
           }
 
-          const tradingService = createTradingService(chainId, rpcUrl, routerAddress);
+          const tradingService = createTradingService(chainId, effectiveRpcUrl, routerAddress);
           const result = await tradingService.executeTrade({
             chainId,
-            rpcUrl,
+            rpcUrl: effectiveRpcUrl,
             routerAddress,
             privateKey,
             walletAddress,
