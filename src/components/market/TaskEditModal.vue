@@ -177,9 +177,10 @@
             <!-- 防夹节点设置（内盘和外盘都显示） -->
             <div class="mb-3">
               <label class="form-label">
-                <i class="bi bi-shield-lock me-1"></i>防夹节点
+                <i class="bi bi-shield-lock me-1"></i>RPC 节点
               </label>
               <select class="form-select" v-model="formData.antiSandwichRpcType">
+                <option value="network">跟随网络设置</option>
                 <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
                 <option value="binance">https://bsc-dataseed.binance.org</option>
                 <option value="blocksec">https://bsc.rpc.blocksec.com</option>
@@ -195,7 +196,7 @@
                 >
               </div>
               <div class="form-text text-muted">
-                <i class="bi bi-info-circle me-1"></i>防夹节点通过私有 mempool 保护交易不被 MEV 机器人攻击
+                <i class="bi bi-info-circle me-1"></i>选择防夹节点可保护交易不被 MEV 机器人攻击
               </div>
             </div>
 
@@ -262,8 +263,8 @@ const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
 };
 
 // 根据 URL 反推类型
-function getRpcTypeFromUrl(url: string | undefined): 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom' {
-  if (!url) return 'blxrbdn';
+function getRpcTypeFromUrl(url: string | undefined): 'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom' {
+  if (!url) return 'network'; // 未设置时跟随网络设置
   for (const [type, rpcUrl] of Object.entries(ANTI_SANDWICH_RPC_MAP)) {
     if (url === rpcUrl) return type as 'blxrbdn' | 'binance' | 'blocksec' | '48club';
   }
@@ -284,8 +285,8 @@ const formData = ref({
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
   innerSlippage: undefined as number | undefined,  // 内盘滑点
-  antiSandwichRpcType: 'blxrbdn' as 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // 防夹节点类型
-  customAntiSandwichRpc: '',  // 自定义防夹节点 URL
+  antiSandwichRpcType: 'network' as 'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // RPC节点类型
+  customAntiSandwichRpc: '',  // 自定义 RPC URL
   sellAll: true,
   walletAddressesText: ''
 });
@@ -349,10 +350,15 @@ function handleSave() {
   // 判断是否是内盘任务
   const isInner = props.task.config.marketType === 'inner';
 
-  // 计算防夹节点 URL
-  const antiSandwichRpc = formData.value.antiSandwichRpcType === 'custom'
-    ? (formData.value.customAntiSandwichRpc || ANTI_SANDWICH_RPC_MAP.blxrbdn)
-    : ANTI_SANDWICH_RPC_MAP[formData.value.antiSandwichRpcType];
+  // 计算 RPC URL（'network' 返回 undefined 表示跟随网络设置）
+  let antiSandwichRpc: string | undefined;
+  if (formData.value.antiSandwichRpcType === 'network') {
+    antiSandwichRpc = undefined;
+  } else if (formData.value.antiSandwichRpcType === 'custom') {
+    antiSandwichRpc = formData.value.customAntiSandwichRpc || undefined;
+  } else {
+    antiSandwichRpc = ANTI_SANDWICH_RPC_MAP[formData.value.antiSandwichRpcType];
+  }
 
   // 构建更新数据
   const updates = {
@@ -370,7 +376,7 @@ function handleSave() {
       gasPrice: formData.value.gasPrice || undefined,
       gasLimit: formData.value.gasLimit || undefined,
       innerSlippage: (isInner && props.task.mode === 'pump') ? formData.value.innerSlippage : undefined,
-      antiSandwichRpc: isInner ? antiSandwichRpc : undefined,
+      antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
       sellAll: formData.value.sellAll
     } as Partial<TaskConfig>,
     walletAddresses

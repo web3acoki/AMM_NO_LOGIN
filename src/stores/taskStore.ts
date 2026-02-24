@@ -316,8 +316,8 @@ export const useTaskStore = defineStore('task', () => {
       return false;
     }
 
-    // 外盘交易优先使用配置的防夹节点，未配置则使用默认防夹节点
-    const effectiveRpcUrl = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+    // 外盘交易：优先使用配置的节点，未配置则跟随网络设置
+    const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
     const tradingService = createTradingService(chainId, effectiveRpcUrl, routerAddress);
 
     // 砸盘模式：如果 sellAll 为 true 则卖出100%
@@ -883,8 +883,8 @@ export const useTaskStore = defineStore('task', () => {
       addLog(taskId, 'info', `批量卖出操作完成，共发送 ${readyWallets.length} 笔交易`);
 
     } else {
-      // 外盘模式：使用配置的防夹节点
-      const effectiveRpcUrl = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      // 外盘模式：优先使用配置的节点，未配置则跟随网络设置
+      const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
       addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
 
       const promises = task.walletAddresses.map(async (walletAddress) => {

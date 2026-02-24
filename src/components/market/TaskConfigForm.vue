@@ -208,9 +208,10 @@
       <!-- 防夹节点设置（内盘和外盘都显示） -->
       <div class="mb-3">
         <label class="form-label small">
-          <i class="bi bi-shield-lock me-1"></i>防夹节点
+          <i class="bi bi-shield-lock me-1"></i>RPC 节点
         </label>
         <select class="form-select form-select-sm" v-model="antiSandwichRpcType">
+          <option value="network">跟随网络设置</option>
           <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
           <option value="binance">https://bsc-dataseed.binance.org</option>
           <option value="blocksec">https://bsc.rpc.blocksec.com</option>
@@ -226,7 +227,7 @@
           >
         </div>
         <div class="form-text small text-muted">
-          <i class="bi bi-info-circle me-1"></i>防夹节点通过私有 mempool 保护交易不被 MEV 机器人攻击
+          <i class="bi bi-info-circle me-1"></i>选择防夹节点可保护交易不被 MEV 机器人攻击，"跟随网络设置"使用网络选择器中的节点
         </div>
       </div>
 
@@ -334,8 +335,8 @@ const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
 
-// 防夹节点设置
-const antiSandwichRpcType = ref<'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('blxrbdn');
+// 防夹节点设置（外盘默认跟随网络设置，内盘默认使用防夹节点）
+const antiSandwichRpcType = ref<'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('network');
 const customAntiSandwichRpc = ref('');
 
 // 防夹节点 URL 映射
@@ -346,10 +347,13 @@ const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
   '48club': 'https://rpc-bsc.48.club',
 };
 
-// 计算实际使用的防夹节点 URL
+// 计算实际使用的 RPC URL（undefined 表示跟随网络设置）
 const antiSandwichRpcUrl = computed(() => {
+  if (antiSandwichRpcType.value === 'network') {
+    return undefined; // 跟随网络设置
+  }
   if (antiSandwichRpcType.value === 'custom') {
-    return customAntiSandwichRpc.value || ANTI_SANDWICH_RPC_MAP.blxrbdn;
+    return customAntiSandwichRpc.value || undefined;
   }
   return ANTI_SANDWICH_RPC_MAP[antiSandwichRpcType.value];
 });
@@ -372,6 +376,16 @@ watch(detectedInnerToken, (token) => {
     innerTokenAddress.value = token;
     // 自动切换到内盘模式
     marketType.value = 'inner';
+  }
+}, { immediate: true });
+
+// 监听盘口类型变化，自动切换默认节点
+// 内盘默认使用防夹节点，外盘默认跟随网络设置
+watch(marketType, (type) => {
+  if (type === 'inner') {
+    antiSandwichRpcType.value = 'blxrbdn';
+  } else {
+    antiSandwichRpcType.value = 'network';
   }
 }, { immediate: true });
 
