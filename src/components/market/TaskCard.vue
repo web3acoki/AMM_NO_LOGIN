@@ -13,6 +13,7 @@
           买{{ task.config.buyThreadCount || 0 }}/卖{{ task.config.sellThreadCount || 0 }}
         </span>
         <span v-if="task.config.marketType === 'inner'" class="badge bg-info">内盘</span>
+        <span v-if="task.config.poolBaseToken" class="badge bg-warning text-dark">ASTER底池</span>
         <strong class="small">{{ task.name }}</strong>
       </div>
       <span class="badge" :class="statusBadgeClass">
@@ -45,7 +46,7 @@
         </span>
         <span>买:{{ task.stats.buyCount }}次</span>
         <span>卖:{{ task.stats.sellCount }}次</span>
-        <span>花费:{{ task.stats.spentAmount.toFixed(4) }} BNB</span>
+        <span>花费:{{ task.stats.spentAmount.toFixed(4) }} {{ task.config.poolBaseToken ? 'ASTER' : 'BNB' }}</span>
         <span>{{ formatTime(task.stats.elapsedTime) }}</span>
       </div>
     </div>

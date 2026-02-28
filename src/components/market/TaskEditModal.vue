@@ -39,12 +39,39 @@
                   <i class="bi bi-info-circle me-1"></i>修改此地址将更新内盘交易的目标代币
                 </div>
               </div>
+
+              <!-- 底池类型选择（仅内盘任务显示） -->
+              <div class="col-12 mb-3" v-if="props.task.config.marketType === 'inner'">
+                <label class="form-label">底池类型</label>
+                <div class="btn-group w-100">
+                  <button
+                    type="button"
+                    class="btn"
+                    :class="formData.poolType === 'BNB' ? 'btn-primary' : 'btn-outline-primary'"
+                    @click="formData.poolType = 'BNB'"
+                  >
+                    BNB底池
+                  </button>
+                  <button
+                    type="button"
+                    class="btn"
+                    :class="formData.poolType === 'ASTER' ? 'btn-primary' : 'btn-outline-primary'"
+                    @click="formData.poolType = 'ASTER'"
+                  >
+                    ASTER底池
+                  </button>
+                </div>
+                <div class="form-text text-muted">
+                  <i class="bi bi-info-circle me-1"></i>
+                  {{ formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权' }}
+                </div>
+              </div>
             </div>
 
             <div class="row">
               <!-- 金额区间最小值 -->
               <div class="col-md-6 mb-3">
-                <label class="form-label">金额区间最小值 (BNB)</label>
+                <label class="form-label">金额区间最小值 ({{ amountUnitLabel }})</label>
                 <input
                   type="number"
                   class="form-control"
@@ -56,7 +83,7 @@
 
               <!-- 金额区间最大值 -->
               <div class="col-md-6 mb-3">
-                <label class="form-label">金额区间最大值 (BNB)</label>
+                <label class="form-label">金额区间最大值 ({{ amountUnitLabel }})</label>
                 <input
                   type="number"
                   class="form-control"
@@ -267,6 +294,9 @@ const emit = defineEmits<{
 
 const taskStore = useTaskStore();
 
+// ASTER 代币地址常量
+const ASTER_TOKEN_ADDRESS = '0x000ae314e2a2172a039b26378814c252734f556a';
+
 // 防夹节点 URL 映射
 const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
   blxrbdn: 'https://bsc.rpc.blxrbdn.com',
@@ -302,6 +332,7 @@ const formData = ref({
   antiSandwichRpcType: 'network' as 'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // RPC节点类型
   customAntiSandwichRpc: '',  // 自定义 RPC URL
   sellAll: true,
+  poolType: 'BNB' as 'BNB' | 'ASTER',  // 底池类型
   walletAddressesText: ''
 });
 
@@ -312,6 +343,14 @@ const walletAddressCount = computed(() => {
     .map(addr => addr.trim())
     .filter(addr => /^0x[0-9a-fA-F]{40}$/.test(addr));
   return addresses.length;
+});
+
+// 金额单位标签（根据底池类型变化）
+const amountUnitLabel = computed(() => {
+  if (props.task.config.marketType === 'inner' && formData.value.poolType === 'ASTER') {
+    return 'ASTER';
+  }
+  return 'BNB';
 });
 
 // 初始化表单数据
@@ -345,6 +384,7 @@ onMounted(() => {
     antiSandwichRpcType: rpcType,
     customAntiSandwichRpc: customRpc,
     sellAll: task.config.sellAll ?? true,
+    poolType: task.config.poolBaseToken ? 'ASTER' : 'BNB',
     walletAddressesText: task.walletAddresses.join('\n')
   };
 });
@@ -393,7 +433,8 @@ function handleSave() {
       gasLimit: formData.value.gasLimit || undefined,
       innerSlippage: isInner ? formData.value.innerSlippage : undefined,
       antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
-      sellAll: formData.value.sellAll
+      sellAll: formData.value.sellAll,
+      poolBaseToken: (isInner && formData.value.poolType === 'ASTER') ? ASTER_TOKEN_ADDRESS : undefined,
     } as Partial<TaskConfig>,
     walletAddresses
   };

@@ -82,6 +82,7 @@ export interface FourMemeTradeParams {
   gasLimit?: number;          // Gas Limit
   sellPercent?: number;       // 卖出百分比 (1-100)
   slippage?: number;          // 滑点百分比 (例如: 10 表示 10%)
+  poolBaseToken?: string;     // 底池基础代币地址（设置时表示非BNB底池，如ASTER）
 }
 
 export interface FourMemeTradeResult {
@@ -233,11 +234,28 @@ export class FourMemeService {
   ): Promise<FourMemeTradeResult> {
     try {
       const tokenAddress = params.tokenAddress as Address;
+      const walletAddress = walletClient.account!.address;
+      const isNonBnbPool = !!params.poolBaseToken;
+
       // 修复: 使用 parseEther 避免 JavaScript 浮点数精度丢失问题
-      // 原代码 BigInt(Math.floor(params.amount * 1e18)) 在金额 >= 0.01 时会有精度问题
       const amountStr = params.amount.toFixed(18).replace(/\.?0+$/, '');
       const buyAmountWei = parseEther(amountStr);
       const slippage = params.slippage || 0;
+
+      // 非 BNB 底池（如 ASTER）：需要先 approve 底池代币给 FourMeme 合约
+      if (isNonBnbPool) {
+        const baseTokenAddress = params.poolBaseToken as Address;
+        const allowance = await this.getTokenAllowance(baseTokenAddress, walletAddress, FOURMEME_CONTRACT);
+        if (allowance < buyAmountWei) {
+          const approveResult = await this.approveToken(walletClient, baseTokenAddress, FOURMEME_CONTRACT);
+          if (!approveResult.success) {
+            return {
+              success: false,
+              error: `底池代币授权失败: ${approveResult.error}`
+            };
+          }
+        }
+      }
 
       // 计算滑点保护的最小获得代币数量
       let minAmount = 0n;
@@ -256,7 +274,7 @@ export class FourMemeService {
         args: [
           0n,            // origin: 0 (直接购买，无推荐)
           tokenAddress,  // token: 代币地址
-          buyAmountWei,  // funds: BNB 金额
+          buyAmountWei,  // funds: 底池代币金额
           minAmount      // minAmount: 滑点保护
         ]
       });
@@ -271,14 +289,15 @@ export class FourMemeService {
         : BigInt(300000);
 
       // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
-      const walletAddress = walletClient.account!.address;
       const nonce = await acquireNonce(this.publicClient, walletAddress);
 
       // 发送交易
+      // 非 BNB 底池：value = 0（通过 transferFrom 转底池代币）
+      // BNB 底池：value = buyAmountWei（发送 BNB）
       const txHash = await walletClient.sendTransaction({
         to: FOURMEME_CONTRACT,
         data: callData,
-        value: buyAmountWei,
+        value: isNonBnbPool ? 0n : buyAmountWei,
         gas: gasLimit,
         gasPrice: gasPrice,
         nonce: nonce
@@ -287,10 +306,11 @@ export class FourMemeService {
       // 交易发送成功，nonce 已在 acquireNonce 中递增，无需额外操作
 
       // 交易已发送，不等待链上确认，直接返回成功
+      const unit = isNonBnbPool ? '底池代币' : 'BNB';
       return {
         success: true,
         txHash: txHash,
-        amountIn: `${params.amount} BNB`
+        amountIn: `${params.amount} ${unit}`
       };
     } catch (error: any) {
       // 交易发送失败，回滚 nonce（如果已获取）

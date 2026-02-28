@@ -50,7 +50,7 @@
               <i class="bi bi-stop-fill me-1"></i>停止 ({{ stoppableSelectedCount }})
             </button>
             <button
-              class="btn btn-outline-warning btn-sm"
+              class="btn btn-primary btn-sm"
               @click="handleBatchUpdateToken"
               :disabled="innerSelectedCount === 0"
               title="批量更改选中内盘任务的代币地址"

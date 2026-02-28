@@ -55,6 +55,33 @@
         </div>
       </div>
 
+      <!-- 底池类型选择（仅内盘模式显示） -->
+      <div class="mb-3" v-if="marketType === 'inner'">
+        <label class="form-label small">底池类型</label>
+        <div class="btn-group btn-group-sm w-100">
+          <button
+            type="button"
+            class="btn"
+            :class="poolType === 'BNB' ? 'btn-primary' : 'btn-outline-primary'"
+            @click="poolType = 'BNB'"
+          >
+            BNB底池
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :class="poolType === 'ASTER' ? 'btn-primary' : 'btn-outline-primary'"
+            @click="poolType = 'ASTER'"
+          >
+            ASTER底池
+          </button>
+        </div>
+        <div class="form-text small text-muted">
+          <i class="bi bi-info-circle me-1"></i>
+          {{ poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权' }}
+        </div>
+      </div>
+
       <!-- 代币合约地址（仅外盘模式显示） -->
       <div class="mb-3" v-if="marketType === 'outer'">
         <label class="form-label small">
@@ -81,7 +108,7 @@
       <div class="mb-3">
         <label class="form-label small">
           交易金额区间
-          <span class="text-muted">({{ currentGovernanceToken }})</span>
+          <span class="text-muted">({{ amountUnitLabel }})</span>
         </label>
         <div class="row g-2">
           <div class="col-6">
@@ -99,7 +126,7 @@
         </div>
         <div class="form-text small">
           <i class="bi bi-info-circle me-1"></i>
-          买入时为 BNB 花费金额，卖出时为卖出价值对应的 BNB 金额
+          买入时为 {{ amountUnitLabel }} 花费金额，卖出时为卖出价值对应的 {{ amountUnitLabel }} 金额
         </div>
       </div>
 
@@ -329,6 +356,18 @@ const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 卖出全部（默认开启）
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
+const poolType = ref<'BNB' | 'ASTER'>('BNB'); // 底池类型（仅内盘模式）
+
+// ASTER 代币地址常量
+const ASTER_TOKEN_ADDRESS = '0x000ae314e2a2172a039b26378814c252734f556a';
+
+// 金额单位标签（根据底池类型变化）
+const amountUnitLabel = computed(() => {
+  if (marketType.value === 'inner' && poolType.value === 'ASTER') {
+    return 'ASTER';
+  }
+  return currentGovernanceToken.value;
+});
 
 // 防夹节点设置（外盘默认跟随网络设置，内盘默认使用防夹节点）
 const antiSandwichRpcType = ref<'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('network');
@@ -531,6 +570,7 @@ function handleCreateTask() {
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
     innerSlippage: (marketType.value === 'inner' && buyThreadCount.value > 0) ? innerSlippage.value : undefined, // 内盘买入滑点
     antiSandwichRpc: antiSandwichRpcUrl.value, // 防夹节点（内盘和外盘都使用）
+    poolBaseToken: (marketType.value === 'inner' && poolType.value === 'ASTER') ? ASTER_TOKEN_ADDRESS : undefined, // ASTER底池代币地址
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
@@ -546,9 +586,10 @@ function handleCreateTask() {
 
   // 显示成功提示
   const marketTypeText = marketType.value === 'inner' ? '内盘' : '外盘';
+  const poolTypeText = (marketType.value === 'inner' && poolType.value === 'ASTER') ? ' (ASTER底池)' : '';
   const buyN = buyThreadCount.value || 0;
   const sellN = sellThreadCount.value || 0;
-  alert(`任务 "${task.name}" 创建成功！\n\n盘口: ${marketTypeText}\n买${buyN}/卖${sellN}\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
+  alert(`任务 "${task.name}" 创建成功！\n\n盘口: ${marketTypeText}${poolTypeText}\n买${buyN}/卖${sellN}\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
 }
 </script>
 

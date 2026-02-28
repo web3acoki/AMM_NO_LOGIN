@@ -38,6 +38,7 @@ export interface TaskConfig {
   innerTokenAddress?: string; // 内盘目标代币地址（仅内盘模式使用）
   innerSlippage?: number;     // 内盘滑点百分比（例如: 10 表示 10%）
   antiSandwichRpc?: string;   // 防夹节点 RPC URL（内盘和外盘都使用）
+  poolBaseToken?: string;     // 底池基础代币地址（ASTER底池时设置）
 }
 
 // 任务统计接口
@@ -228,8 +229,9 @@ export const useTaskStore = defineStore('task', () => {
       };
 
       const marketTypeText = task.config.marketType === 'inner' ? '内盘' : '外盘';
+      const amountUnit = task.config.poolBaseToken ? 'ASTER' : 'BNB';
       addLog(task.id, 'info', `开始${tradeDirection === 'buy' ? '买入' : '卖出'}交易 [${marketTypeText}]...`, walletAddress);
-      addLog(task.id, 'info', `交易金额: ${formatAmount(roundedAmount)} BNB (区间: ${formatAmount(amountMin)}~${formatAmount(amountMax)})`, walletAddress);
+      addLog(task.id, 'info', `交易金额: ${formatAmount(roundedAmount)} ${amountUnit} (区间: ${formatAmount(amountMin)}~${formatAmount(amountMax)})`, walletAddress);
 
       // 根据盘口类型选择不同的交易服务
       if (task.config.marketType === 'inner') {
@@ -276,6 +278,7 @@ export const useTaskStore = defineStore('task', () => {
       gasLimit: task.config.gasLimit,
       sellPercent: sellAll ? 100 : undefined,
       slippage: task.config.innerSlippage,
+      poolBaseToken: task.config.poolBaseToken,
     };
 
     const result = await fourMemeService.executeTrade(tradeParams);
@@ -289,9 +292,10 @@ export const useTaskStore = defineStore('task', () => {
       task.stats.spentAmount += amount;
 
       const actionText = tradeDirection === 'buy' ? '买入' : '卖出';
+      const amountUnit = task.config.poolBaseToken ? 'ASTER' : 'BNB';
       const resultText = result.amountOut
         ? `[内盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
-        : `[内盘] ${actionText}成功，金额: ${amount} BNB`;
+        : `[内盘] ${actionText}成功，金额: ${amount} ${amountUnit}`;
 
       addLog(task.id, 'success', resultText, walletAddress, result.txHash);
       return true;
