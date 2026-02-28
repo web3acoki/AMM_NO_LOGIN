@@ -26,8 +26,8 @@
     <!-- 当前任务信息 -->
     <div v-if="activeLogTask" class="mb-2 d-flex justify-content-between align-items-center">
       <span class="small text-muted">
-        <span class="badge" :class="getTaskModeBadge(activeLogTask)">
-          {{ activeLogTask.mode === 'pump' ? '拉盘' : '砸盘' }}
+        <span class="badge" :class="getTaskThreadBadge(activeLogTask)">
+          买{{ activeLogTask.config.buyThreadCount || 0 }}/卖{{ activeLogTask.config.sellThreadCount || 0 }}
         </span>
         {{ activeLogTask.name }} - {{ activeLogTask.logs.length }} 条日志
       </span>
@@ -129,9 +129,13 @@ function getTaskStatusIcon(task: Task): string {
   }
 }
 
-// 获取任务模式徽章样式
-function getTaskModeBadge(task: Task): string {
-  return task.mode === 'pump' ? 'bg-success' : 'bg-danger';
+// 获取任务线程徽章样式
+function getTaskThreadBadge(task: Task): string {
+  const buy = task.config.buyThreadCount || 0;
+  const sell = task.config.sellThreadCount || 0;
+  if (buy > 0 && sell > 0) return 'bg-primary';
+  if (buy > 0) return 'bg-success';
+  return 'bg-danger';
 }
 
 // 获取日志样式

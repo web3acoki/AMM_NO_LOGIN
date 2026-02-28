@@ -5,19 +5,10 @@
     </h6>
 
     <form @submit.prevent="handleCreateTask">
-      <!-- 任务名称和模式 -->
-      <div class="row g-2 mb-3">
-        <div class="col-6">
-          <label class="form-label small">任务名称</label>
-          <input type="text" class="form-control form-control-sm" v-model="taskName" placeholder="任务1">
-        </div>
-        <div class="col-6">
-          <label class="form-label small">模式</label>
-          <select class="form-select form-select-sm" v-model="mode">
-            <option value="pump">拉盘（买入）</option>
-            <option value="dump">砸盘（卖出）</option>
-          </select>
-        </div>
+      <!-- 任务名称 -->
+      <div class="mb-3">
+        <label class="form-label small">任务名称</label>
+        <input type="text" class="form-control form-control-sm" v-model="taskName" placeholder="任务1">
       </div>
 
       <!-- 盘口选择 -->
@@ -89,34 +80,31 @@
       <!-- 金额区间 -->
       <div class="mb-3">
         <label class="form-label small">
-          {{ mode === 'pump' ? '买入金额区间' : '卖出金额区间' }}
+          交易金额区间
           <span class="text-muted">({{ currentGovernanceToken }})</span>
         </label>
         <div class="row g-2">
           <div class="col-6">
             <div class="input-group input-group-sm">
               <span class="input-group-text">最小</span>
-              <input type="number" class="form-control" v-model.number="amountMin" step="any" placeholder="0.01" :disabled="mode === 'dump' && sellAll">
+              <input type="number" class="form-control" v-model.number="amountMin" step="any" placeholder="0.01" :disabled="sellThreadCount > 0 && buyThreadCount === 0 && sellAll">
             </div>
           </div>
           <div class="col-6">
             <div class="input-group input-group-sm">
               <span class="input-group-text">最大</span>
-              <input type="number" class="form-control" v-model.number="amountMax" step="any" placeholder="0.05" :disabled="mode === 'dump' && sellAll">
+              <input type="number" class="form-control" v-model.number="amountMax" step="any" placeholder="0.05" :disabled="sellThreadCount > 0 && buyThreadCount === 0 && sellAll">
             </div>
           </div>
         </div>
         <div class="form-text small">
           <i class="bi bi-info-circle me-1"></i>
-          {{ mode === 'pump'
-            ? `每个钱包随机花费 ${amountMin || 0} ~ ${amountMax || 0} ${currentGovernanceToken} 买入代币`
-            : `每个钱包随机卖出价值 ${amountMin || 0} ~ ${amountMax || 0} ${currentGovernanceToken} 的代币`
-          }}
+          买入时为 BNB 花费金额，卖出时为卖出价值对应的 BNB 金额
         </div>
       </div>
 
-      <!-- 砸盘模式：卖出全部选项 -->
-      <div class="mb-3" v-if="mode === 'dump'">
+      <!-- 卖出全部选项（sellThreadCount > 0 时显示） -->
+      <div class="mb-3" v-if="sellThreadCount > 0">
         <div class="form-check">
           <input class="form-check-input" type="checkbox" id="sellAllCheck" v-model="sellAll">
           <label class="form-check-label small" for="sellAllCheck">
@@ -156,26 +144,33 @@
         </div>
       </div>
 
-      <!-- 交易间隔和线程数 -->
+      <!-- 交易间隔和买卖线程数 -->
       <div class="row g-2 mb-3">
-        <div class="col-6">
+        <div class="col-4">
           <label class="form-label small">交易间隔</label>
           <div class="input-group input-group-sm">
             <input type="number" class="form-control" v-model.number="interval" min="1" placeholder="5">
             <span class="input-group-text">秒</span>
           </div>
         </div>
-        <div class="col-6">
-          <label class="form-label small">线程数</label>
+        <div class="col-4">
+          <label class="form-label small">买入线程</label>
           <div class="input-group input-group-sm">
-            <input type="number" class="form-control" v-model.number="threadCount" min="1" placeholder="1">
+            <input type="number" class="form-control" v-model.number="buyThreadCount" min="0" placeholder="0">
+            <span class="input-group-text">个</span>
+          </div>
+        </div>
+        <div class="col-4">
+          <label class="form-label small">卖出线程</label>
+          <div class="input-group input-group-sm">
+            <input type="number" class="form-control" v-model.number="sellThreadCount" min="0" placeholder="0">
             <span class="input-group-text">个</span>
           </div>
         </div>
       </div>
       <div class="form-text small mb-3">
         <i class="bi bi-info-circle me-1"></i>
-        每 {{ interval || 5 }} 秒同时执行 {{ threadCount || 1 }} 个钱包的交易
+        每 {{ interval || 5 }} 秒执行 {{ buyThreadCount || 0 }} 个钱包买入 + {{ sellThreadCount || 0 }} 个钱包卖出
       </div>
 
       <!-- Gas 设置 -->
@@ -193,8 +188,8 @@
         </div>
       </div>
 
-      <!-- 内盘滑点设置（仅内盘买入模式显示） -->
-      <div class="mb-3" v-if="marketType === 'inner' && mode === 'pump'">
+      <!-- 内盘滑点设置（内盘且有买入线程时显示） -->
+      <div class="mb-3" v-if="marketType === 'inner' && buyThreadCount > 0">
         <label class="form-label small">内盘滑点保护 (可选)</label>
         <div class="input-group input-group-sm">
           <input type="number" class="form-control" v-model.number="innerSlippage" min="0" max="100" placeholder="0">
@@ -289,8 +284,8 @@
 
       <!-- 创建按钮 -->
       <div class="d-grid">
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           class="btn btn-primary btn-sm"
           :disabled="!canCreate"
         >
@@ -320,7 +315,6 @@ const { detectedInnerToken } = storeToRefs(snipeStore);
 
 // 表单数据
 const taskName = ref('');
-const mode = ref<'pump' | 'dump'>('pump');
 const marketType = ref<'inner' | 'outer'>('outer');  // 盘口类型
 const innerTokenAddress = ref('');  // 内盘目标代币地址
 const tokenContract = ref('');
@@ -329,10 +323,11 @@ const amountMax = ref<number>(0.05);
 const stopType = ref<'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap'>('none');
 const stopValue = ref<number>(10);
 const interval = ref<number>(5);
-const threadCount = ref<number>(1); // 线程数：每个间隔内同时执行的钱包数量
+const buyThreadCount = ref<number>(1);   // 买入线程数
+const sellThreadCount = ref<number>(0);  // 卖出线程数
 const gasPrice = ref<number | undefined>(undefined);
 const gasLimit = ref<number | undefined>(undefined);
-const sellAll = ref<boolean>(true); // 砸盘模式默认卖出全部
+const sellAll = ref<boolean>(true); // 卖出全部（默认开启）
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
 
 // 防夹节点设置（外盘默认跟随网络设置，内盘默认使用防夹节点）
@@ -448,8 +443,9 @@ const finalWalletAddresses = computed(() => {
 });
 
 const canCreate = computed(() => {
-  // 砸盘卖出全部时不需要金额区间
-  const amountValid = (mode.value === 'dump' && sellAll.value) ||
+  // 纯卖出且卖出全部时不需要金额区间
+  const isPureSellAll = sellThreadCount.value > 0 && buyThreadCount.value === 0 && sellAll.value;
+  const amountValid = isPureSellAll ||
     (amountMin.value >= 0 && amountMax.value >= amountMin.value);
 
   // 内盘模式需要内盘代币地址，外盘模式需要代币合约地址
@@ -460,11 +456,15 @@ const canCreate = computed(() => {
   // 手动停止不需要停止条件值，其他停止类型需要
   const stopValid = stopType.value === 'none' || stopValue.value > 0;
 
+  // 至少有一个线程数 > 0
+  const threadValid = (buyThreadCount.value || 0) > 0 || (sellThreadCount.value || 0) > 0;
+
   return (
     taskName.value &&
     tokenValid &&
     amountValid &&
     stopValid &&
+    threadValid &&
     interval.value > 0 &&
     totalWalletCount.value > 0
   );
@@ -522,20 +522,20 @@ function handleCreateTask() {
     stopType: stopType.value,
     stopValue: stopValue.value,
     interval: interval.value,
-    threadCount: threadCount.value, // 线程数
+    buyThreadCount: buyThreadCount.value || 0,
+    sellThreadCount: sellThreadCount.value || 0,
     gasPrice: gasPrice.value,
     gasLimit: gasLimit.value,
-    sellAll: sellAll.value, // 砸盘时是否卖出全部
+    sellAll: sellAll.value,
     marketType: marketType.value, // 盘口类型
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
-    innerSlippage: (marketType.value === 'inner' && mode.value === 'pump') ? innerSlippage.value : undefined, // 内盘买入滑点（卖出不需要）
+    innerSlippage: (marketType.value === 'inner' && buyThreadCount.value > 0) ? innerSlippage.value : undefined, // 内盘买入滑点
     antiSandwichRpc: antiSandwichRpcUrl.value, // 防夹节点（内盘和外盘都使用）
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
   const task = taskStore.createTask(
     taskName.value,
-    mode.value,
     config,
     [...finalWalletAddresses.value]
   );
@@ -546,7 +546,9 @@ function handleCreateTask() {
 
   // 显示成功提示
   const marketTypeText = marketType.value === 'inner' ? '内盘' : '外盘';
-  alert(`任务 "${task.name}" 创建成功！\n\n盘口: ${marketTypeText}\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
+  const buyN = buyThreadCount.value || 0;
+  const sellN = sellThreadCount.value || 0;
+  alert(`任务 "${task.name}" 创建成功！\n\n盘口: ${marketTypeText}\n买${buyN}/卖${sellN}\n钱包数量: ${finalWalletAddresses.value.length}\n点击任务卡片上的"开始"按钮启动任务。`);
 }
 </script>
 
@@ -555,4 +557,3 @@ function handleCreateTask() {
   font-size: 0.875rem;
 }
 </style>
-

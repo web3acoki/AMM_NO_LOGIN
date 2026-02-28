@@ -29,10 +29,11 @@ export interface TaskConfig {
   stopType: 'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap';  // 停止类型，none=永不停止
   stopValue: number;          // 停止条件值
   interval: number;           // 交易间隔(秒)
-  threadCount: number;        // 线程数：每个间隔内同时执行的钱包数量
+  buyThreadCount: number;     // 买入线程数：每个间隔内同时执行买入的钱包数量
+  sellThreadCount: number;    // 卖出线程数：每个间隔内同时执行卖出的钱包数量
   gasPrice?: number;          // 自定义Gas价格 (Gwei)
   gasLimit?: number;          // 自定义Gas上限
-  sellAll?: boolean;          // 砸盘时是否卖出全部
+  sellAll?: boolean;          // 卖出时是否卖出全部（当 sellThreadCount > 0 时生效）
   marketType: 'inner' | 'outer';  // 盘口类型：inner=内盘(FourMeme), outer=外盘(DEX)
   innerTokenAddress?: string; // 内盘目标代币地址（仅内盘模式使用）
   innerSlippage?: number;     // 内盘滑点百分比（例如: 10 表示 10%）
@@ -41,7 +42,8 @@ export interface TaskConfig {
 
 // 任务统计接口
 export interface TaskStats {
-  executedCount: number;      // 已执行次数
+  buyCount: number;           // 买入执行次数
+  sellCount: number;          // 卖出执行次数
   spentAmount: number;        // 已花费金额
   startTime?: number;         // 开始时间
   elapsedTime: number;        // 已运行时间(秒)
@@ -52,13 +54,13 @@ export interface Task {
   id: string;
   name: string;
   status: 'running' | 'paused' | 'stopped';
-  mode: 'pump' | 'dump';      // 拉盘/砸盘
   config: TaskConfig;
   walletAddresses: string[];  // 选中的钱包地址列表
   logs: LogEntry[];
   stats: TaskStats;
   intervalId?: number;        // 定时器ID
-  currentWalletIndex: number; // 当前轮询到的钱包索引（用于round-robin）
+  currentBuyWalletIndex: number;  // 买入轮询钱包索引（round-robin）
+  currentSellWalletIndex: number; // 卖出轮询钱包索引（round-robin）
 }
 
 export const useTaskStore = defineStore('task', () => {
@@ -70,7 +72,7 @@ export const useTaskStore = defineStore('task', () => {
   const runningTasks = computed(() => tasks.value.filter(t => t.status === 'running'));
   const pausedTasks = computed(() => tasks.value.filter(t => t.status === 'paused'));
   const taskCount = computed(() => tasks.value.length);
-  
+
   // 当前查看日志的任务
   const activeLogTask = computed(() => {
     if (!activeLogTaskId.value) return null;
@@ -109,7 +111,6 @@ export const useTaskStore = defineStore('task', () => {
   // 创建新任务
   function createTask(
     name: string,
-    mode: 'pump' | 'dump',
     config: TaskConfig,
     walletAddresses: string[]
   ): Task {
@@ -117,58 +118,54 @@ export const useTaskStore = defineStore('task', () => {
       id: generateId(),
       name,
       status: 'stopped',
-      mode,
       config,
       walletAddresses,
       logs: [],
       stats: {
-        executedCount: 0,
+        buyCount: 0,
+        sellCount: 0,
         spentAmount: 0,
         elapsedTime: 0
       },
-      currentWalletIndex: 0  // 初始化钱包索引
+      currentBuyWalletIndex: 0,
+      currentSellWalletIndex: 0
     };
     tasks.value.push(task);
-    
+
     // 自动设置为当前查看的任务
     if (!activeLogTaskId.value) {
       activeLogTaskId.value = task.id;
     }
-    
-    addLog(task.id, 'info', `任务 "${name}" 已创建，模式: ${mode === 'pump' ? '拉盘' : '砸盘'}，钱包数量: ${walletAddresses.length}`);
-    
+
+    const buyCount = config.buyThreadCount || 0;
+    const sellCount = config.sellThreadCount || 0;
+    addLog(task.id, 'info', `任务 "${name}" 已创建，买${buyCount}/卖${sellCount}，钱包数量: ${walletAddresses.length}`);
+
     return task;
   }
 
   // 检查停止条件
   function checkStopCondition(task: Task, currentPrice?: number, currentMarketCap?: number): boolean {
     const { stopType, stopValue } = task.config;
-    const { executedCount, spentAmount, startTime, elapsedTime } = task.stats;
+    const { buyCount, sellCount, spentAmount, startTime, elapsedTime } = task.stats;
+    const totalExecuted = buyCount + sellCount;
 
     // none = 永不自动停止，只能手动停止
     if (stopType === 'none') return false;
 
     switch (stopType) {
       case 'count':
-        return executedCount >= stopValue;
+        return totalExecuted >= stopValue;
       case 'amount':
         return spentAmount >= stopValue;
       case 'time':
         return elapsedTime >= stopValue;
       case 'price':
         if (currentPrice === undefined) return false;
-        if (task.mode === 'pump') {
-          return currentPrice >= stopValue;  // 拉盘：价格达到目标
-        } else {
-          return currentPrice <= stopValue;  // 砸盘：价格跌到目标
-        }
+        return currentPrice >= stopValue;
       case 'marketcap':
         if (currentMarketCap === undefined) return false;
-        if (task.mode === 'pump') {
-          return currentMarketCap >= stopValue;  // 拉盘：市值涨到目标
-        } else {
-          return currentMarketCap <= stopValue;  // 砸盘：市值跌到目标
-        }
+        return currentMarketCap >= stopValue;
       default:
         return false;
     }
@@ -198,7 +195,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 执行单个钱包的交易（可传入共享的 FourMemeService 实例避免重复创建）
-  async function executeWalletTrade(task: Task, walletAddress: string, sharedFourMemeService?: InstanceType<typeof FourMemeService>): Promise<boolean> {
+  async function executeWalletTrade(task: Task, walletAddress: string, tradeDirection: 'buy' | 'sell', sharedFourMemeService?: InstanceType<typeof FourMemeService>): Promise<boolean> {
     const walletStore = useWalletStore();
     const chainStore = useChainStore();
     const dexStore = useDexStore();
@@ -231,16 +228,16 @@ export const useTaskStore = defineStore('task', () => {
       };
 
       const marketTypeText = task.config.marketType === 'inner' ? '内盘' : '外盘';
-      addLog(task.id, 'info', `开始${task.mode === 'pump' ? '买入' : '卖出'}交易 [${marketTypeText}]...`, walletAddress);
+      addLog(task.id, 'info', `开始${tradeDirection === 'buy' ? '买入' : '卖出'}交易 [${marketTypeText}]...`, walletAddress);
       addLog(task.id, 'info', `交易金额: ${formatAmount(roundedAmount)} BNB (区间: ${formatAmount(amountMin)}~${formatAmount(amountMax)})`, walletAddress);
 
       // 根据盘口类型选择不同的交易服务
       if (task.config.marketType === 'inner') {
         // 内盘交易：使用 FourMeme 服务（优先使用共享实例）
-        return await executeInnerMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, sharedFourMemeService);
+        return await executeInnerMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, tradeDirection, sharedFourMemeService);
       } else {
         // 外盘交易：使用 DEX 服务
-        return await executeOuterMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, dexStore);
+        return await executeOuterMarketTrade(task, walletAddress, privateKey, chainId, rpcUrl, roundedAmount, tradeDirection, dexStore);
       }
 
     } catch (error: any) {
@@ -257,14 +254,15 @@ export const useTaskStore = defineStore('task', () => {
     chainId: number,
     rpcUrl: string,
     amount: number,
+    tradeDirection: 'buy' | 'sell',
     sharedService?: InstanceType<typeof FourMemeService>
   ): Promise<boolean> {
     // 内盘交易使用配置的防夹节点，未配置则使用默认
     const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
     const fourMemeService = sharedService || createFourMemeService(chainId, antiSandwichRpc);
 
-    // 砸盘模式：如果 sellAll 为 true 则卖出100%
-    const sellAll = task.mode === 'dump' && task.config.sellAll;
+    // 卖出模式：如果 sellAll 为 true 则卖出100%
+    const sellAll = tradeDirection === 'sell' && task.config.sellAll;
 
     const tradeParams: FourMemeTradeParams = {
       chainId,
@@ -273,7 +271,7 @@ export const useTaskStore = defineStore('task', () => {
       walletAddress,
       tokenAddress: task.config.innerTokenAddress || task.config.tokenContract,
       amount,
-      mode: task.mode === 'pump' ? 'buy' : 'sell',
+      mode: tradeDirection === 'buy' ? 'buy' : 'sell',
       gasPrice: task.config.gasPrice,
       gasLimit: task.config.gasLimit,
       sellPercent: sellAll ? 100 : undefined,
@@ -283,10 +281,14 @@ export const useTaskStore = defineStore('task', () => {
     const result = await fourMemeService.executeTrade(tradeParams);
 
     if (result.success) {
-      task.stats.executedCount++;
+      if (tradeDirection === 'buy') {
+        task.stats.buyCount++;
+      } else {
+        task.stats.sellCount++;
+      }
       task.stats.spentAmount += amount;
 
-      const actionText = task.mode === 'pump' ? '买入' : '卖出';
+      const actionText = tradeDirection === 'buy' ? '买入' : '卖出';
       const resultText = result.amountOut
         ? `[内盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
         : `[内盘] ${actionText}成功，金额: ${amount} BNB`;
@@ -307,6 +309,7 @@ export const useTaskStore = defineStore('task', () => {
     chainId: number,
     rpcUrl: string,
     amount: number,
+    tradeDirection: 'buy' | 'sell',
     dexStore: ReturnType<typeof useDexStore>
   ): Promise<boolean> {
     const routerAddress = dexStore.currentRouterAddress;
@@ -320,8 +323,10 @@ export const useTaskStore = defineStore('task', () => {
     const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
     const tradingService = createTradingService(chainId, effectiveRpcUrl, routerAddress);
 
-    // 砸盘模式：如果 sellAll 为 true 则卖出100%
-    const sellAll = task.mode === 'dump' && task.config.sellAll;
+    // 卖出模式：如果 sellAll 为 true 则卖出100%
+    const sellAll = tradeDirection === 'sell' && task.config.sellAll;
+
+    const tradeMode = tradeDirection === 'buy' ? 'pump' : 'dump';
 
     const tradeParams: TradeParams = {
       chainId,
@@ -333,21 +338,25 @@ export const useTaskStore = defineStore('task', () => {
       spendToken: 'BNB',
       amount,
       amountType: 'amount',
-      mode: task.mode,
+      mode: tradeMode,
       slippage: 30,
       gasPrice: task.config.gasPrice,
       gasLimit: task.config.gasLimit,
       balancePercent: sellAll ? 100 : undefined,
-      targetBnbAmount: task.mode === 'dump' && !sellAll ? amount : undefined,
+      targetBnbAmount: tradeDirection === 'sell' && !sellAll ? amount : undefined,
     };
 
     const result = await tradingService.executeTrade(tradeParams);
 
     if (result.success) {
-      task.stats.executedCount++;
+      if (tradeDirection === 'buy') {
+        task.stats.buyCount++;
+      } else {
+        task.stats.sellCount++;
+      }
       task.stats.spentAmount += amount;
 
-      const actionText = task.mode === 'pump' ? '买入' : '卖出';
+      const actionText = tradeDirection === 'buy' ? '买入' : '卖出';
       const resultText = result.amountOut
         ? `[外盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
         : `[外盘] ${actionText}成功，金额: ${amount} BNB`;
@@ -410,14 +419,14 @@ export const useTaskStore = defineStore('task', () => {
 
       // 市值 = 池子中BNB储备量（与资金池查询保持一致）
       return bnbAmount;
-      
+
     } catch (error) {
       console.error('获取市值失败:', error);
       return undefined;
     }
   }
 
-  // 执行一轮交易（round-robin + 线程数）
+  // 执行一轮交易（round-robin + 买卖线程数）
   async function executeRound(task: Task): Promise<void> {
     if (task.status !== 'running') return;
 
@@ -425,8 +434,7 @@ export const useTaskStore = defineStore('task', () => {
     if (task.config.stopType === 'marketcap' && task.config.marketType !== 'inner') {
       const currentMarketCap = await getCurrentMarketCap(task);
       if (currentMarketCap !== undefined) {
-        const modeText = task.mode === 'pump' ? '拉盘(>=目标停止)' : '砸盘(<=目标停止)';
-        addLog(task.id, 'info', `当前市值: ${currentMarketCap.toFixed(4)} BNB, 目标: ${task.config.stopValue} BNB [${modeText}]`);
+        addLog(task.id, 'info', `当前市值: ${currentMarketCap.toFixed(4)} BNB, 目标: ${task.config.stopValue} BNB [>=目标停止]`);
         if (checkStopCondition(task, undefined, currentMarketCap)) {
           stopTask(task.id, '已达到停止条件');
           return;
@@ -435,33 +443,21 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     const wallets = task.walletAddresses;
-    const threadCount = task.config.threadCount || 1;
+    const buyThreadCount = task.config.buyThreadCount || 0;
+    const sellThreadCount = task.config.sellThreadCount || 0;
 
     if (wallets.length === 0) {
       addLog(task.id, 'warning', '没有钱包参与交易');
       return;
     }
 
-    // Round-robin + 线程数执行逻辑：
-    // 每次执行 threadCount 个钱包，从 currentWalletIndex 开始
-    // 执行完后更新 currentWalletIndex，循环使用钱包列表
-
-    const walletsToExecute: string[] = [];
-    for (let i = 0; i < threadCount; i++) {
-      const walletIndex = (task.currentWalletIndex + i) % wallets.length;
-      walletsToExecute.push(wallets[walletIndex]);
+    if (buyThreadCount === 0 && sellThreadCount === 0) {
+      addLog(task.id, 'warning', '买入和卖出线程数都为0，没有交易需要执行');
+      return;
     }
 
-    // 更新下一轮的起始索引
-    task.currentWalletIndex = (task.currentWalletIndex + threadCount) % wallets.length;
-
-    // 检查是否完成一轮（所有钱包都执行过一次）
-    const isNewRound = task.currentWalletIndex < threadCount || task.currentWalletIndex === 0;
-    if (isNewRound && task.stats.executedCount > 0) {
-      addLog(task.id, 'info', `--- 新一轮开始 ---`);
-    }
-
-    addLog(task.id, 'info', `执行 ${walletsToExecute.length} 个钱包 (线程数: ${threadCount})`);
+    // 收集所有交易 Promise
+    const allPromises: Promise<boolean>[] = [];
 
     // 内盘模式：创建共享的 FourMemeService 实例，使用配置的防夹节点
     const chainStore = useChainStore();
@@ -470,11 +466,40 @@ export const useTaskStore = defineStore('task', () => {
       ? createFourMemeService(chainStore.selectedChainId, antiSandwichRpc)
       : undefined;
 
-    // 并行执行选中的钱包（不同钱包有不同地址和nonce，无需递增延迟）
-    const promises = walletsToExecute.map((addr) => {
-      return executeWalletTrade(task, addr, sharedFourMemeService);
-    });
-    await Promise.allSettled(promises);
+    // 1. 买入线程：从钱包池按 currentBuyWalletIndex 取 buyThreadCount 个钱包
+    if (buyThreadCount > 0) {
+      const buyWallets: string[] = [];
+      for (let i = 0; i < buyThreadCount; i++) {
+        const walletIndex = (task.currentBuyWalletIndex + i) % wallets.length;
+        buyWallets.push(wallets[walletIndex]);
+      }
+      // 更新买入钱包索引
+      task.currentBuyWalletIndex = (task.currentBuyWalletIndex + buyThreadCount) % wallets.length;
+
+      addLog(task.id, 'info', `买入: ${buyWallets.length} 个钱包`);
+      for (const addr of buyWallets) {
+        allPromises.push(executeWalletTrade(task, addr, 'buy', sharedFourMemeService));
+      }
+    }
+
+    // 2. 卖出线程：从钱包池按 currentSellWalletIndex 取 sellThreadCount 个钱包
+    if (sellThreadCount > 0) {
+      const sellWallets: string[] = [];
+      for (let i = 0; i < sellThreadCount; i++) {
+        const walletIndex = (task.currentSellWalletIndex + i) % wallets.length;
+        sellWallets.push(wallets[walletIndex]);
+      }
+      // 更新卖出钱包索引
+      task.currentSellWalletIndex = (task.currentSellWalletIndex + sellThreadCount) % wallets.length;
+
+      addLog(task.id, 'info', `卖出: ${sellWallets.length} 个钱包`);
+      for (const addr of sellWallets) {
+        allPromises.push(executeWalletTrade(task, addr, 'sell', sharedFourMemeService));
+      }
+    }
+
+    // 3. 买入和卖出并行执行
+    await Promise.allSettled(allPromises);
 
     // 执行后检查停止条件（内盘模式不检查市值，因为没有 DEX 交易对）
     if (task.config.marketType !== 'inner') {
@@ -502,10 +527,12 @@ export const useTaskStore = defineStore('task', () => {
 
     task.status = 'running';
     task.stats.startTime = Date.now();
-    task.currentWalletIndex = 0;  // 重置钱包索引
+    task.currentBuyWalletIndex = 0;
+    task.currentSellWalletIndex = 0;
 
-    const threadCount = task.config.threadCount || 1;
-    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，线程数: ${threadCount}，钱包数: ${task.walletAddresses.length}`);
+    const buyThreadCount = task.config.buyThreadCount || 0;
+    const sellThreadCount = task.config.sellThreadCount || 0;
+    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，买${buyThreadCount}/卖${sellThreadCount}，钱包数: ${task.walletAddresses.length}`);
 
     // 立即执行一轮
     executeRound(task);
@@ -640,6 +667,25 @@ export const useTaskStore = defineStore('task', () => {
 
     addLog(taskId, 'info', `任务配置已更新`);
     return true;
+  }
+
+  // 批量更改代币地址（仅内盘任务，仅停止/暂停状态）
+  function batchUpdateTokenAddress(taskIds: string[], newTokenAddress: string): number {
+    let updatedCount = 0;
+    for (const taskId of taskIds) {
+      const task = tasks.value.find(t => t.id === taskId);
+      if (!task) continue;
+      // 只更新内盘任务
+      if (task.config.marketType !== 'inner') continue;
+      // 只有停止或暂停状态的任务才能更新
+      if (task.status === 'running') continue;
+
+      task.config.tokenContract = newTokenAddress;
+      task.config.innerTokenAddress = newTokenAddress;
+      updatedCount++;
+      addLog(taskId, 'info', `代币地址已更新为: ${newTokenAddress}`);
+    }
+    return updatedCount;
   }
 
   // 切换日志视图
@@ -958,13 +1004,14 @@ export const useTaskStore = defineStore('task', () => {
   // 获取任务进度
   function getTaskProgress(task: Task): number {
     const { stopType, stopValue } = task.config;
-    const { executedCount, spentAmount, elapsedTime } = task.stats;
+    const { buyCount, sellCount, spentAmount, elapsedTime } = task.stats;
+    const totalExecuted = buyCount + sellCount;
 
     if (stopType === 'none') return 0;
 
     switch (stopType) {
       case 'count':
-        return Math.min((executedCount / stopValue) * 100, 100);
+        return Math.min((totalExecuted / stopValue) * 100, 100);
       case 'amount':
         return Math.min((spentAmount / stopValue) * 100, 100);
       case 'time':
@@ -982,13 +1029,13 @@ export const useTaskStore = defineStore('task', () => {
     // 状态
     tasks,
     activeLogTaskId,
-    
+
     // 计算属性
     runningTasks,
     pausedTasks,
     taskCount,
     activeLogTask,
-    
+
     // 方法
     createTask,
     startTask,
@@ -998,6 +1045,7 @@ export const useTaskStore = defineStore('task', () => {
     deleteTask,
     deleteMultipleTasks,
     updateTask,
+    batchUpdateTokenAddress,
     setActiveLogTask,
     clearTaskLogs,
     clearAllTasks,
@@ -1009,4 +1057,3 @@ export const useTaskStore = defineStore('task', () => {
     batchSellForTask
   };
 });
-

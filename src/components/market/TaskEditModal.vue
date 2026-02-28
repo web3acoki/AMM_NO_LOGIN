@@ -102,7 +102,7 @@
 
             <div class="row">
               <!-- 交易间隔 -->
-              <div class="col-md-6 mb-3">
+              <div class="col-md-4 mb-3">
                 <label class="form-label">交易间隔(秒)</label>
                 <input
                   type="number"
@@ -113,17 +113,30 @@
                 >
               </div>
 
-              <!-- 线程数 -->
-              <div class="col-md-6 mb-3">
-                <label class="form-label">线程数</label>
+              <!-- 买入线程数 -->
+              <div class="col-md-4 mb-3">
+                <label class="form-label">买入线程数</label>
                 <input
                   type="number"
                   class="form-control"
-                  v-model.number="formData.threadCount"
-                  min="1"
+                  v-model.number="formData.buyThreadCount"
+                  min="0"
                   step="1"
                 >
-                <div class="form-text">每个间隔内同时执行的钱包数量</div>
+                <div class="form-text">每个间隔内买入的钱包数量</div>
+              </div>
+
+              <!-- 卖出线程数 -->
+              <div class="col-md-4 mb-3">
+                <label class="form-label">卖出线程数</label>
+                <input
+                  type="number"
+                  class="form-control"
+                  v-model.number="formData.sellThreadCount"
+                  min="0"
+                  step="1"
+                >
+                <div class="form-text">每个间隔内卖出的钱包数量</div>
               </div>
             </div>
 
@@ -155,8 +168,8 @@
               </div>
             </div>
 
-            <!-- 内盘滑点设置（仅内盘买入任务显示） -->
-            <div class="mb-3" v-if="props.task.config.marketType === 'inner' && props.task.mode === 'pump'">
+            <!-- 内盘滑点设置（仅内盘任务显示） -->
+            <div class="mb-3" v-if="props.task.config.marketType === 'inner'">
               <label class="form-label">内盘滑点保护 (%)</label>
               <div class="input-group">
                 <input
@@ -200,8 +213,8 @@
               </div>
             </div>
 
-            <!-- 砸盘模式：卖出全部选项 -->
-            <div class="mb-3" v-if="props.task.mode === 'dump'">
+            <!-- 卖出全部选项（sellThreadCount > 0 时显示） -->
+            <div class="mb-3" v-if="formData.sellThreadCount > 0">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="editSellAllCheck" v-model="formData.sellAll">
                 <label class="form-check-label" for="editSellAllCheck">
@@ -281,7 +294,8 @@ const formData = ref({
   stopType: 'count' as 'none' | 'count' | 'amount' | 'time' | 'price' | 'marketcap',
   stopValue: 10,
   interval: 5,
-  threadCount: 1,
+  buyThreadCount: 1,
+  sellThreadCount: 0,
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
   innerSlippage: undefined as number | undefined,  // 内盘滑点
@@ -323,7 +337,8 @@ onMounted(() => {
     stopType: task.config.stopType,
     stopValue: task.config.stopValue,
     interval: task.config.interval,
-    threadCount: task.config.threadCount || 1,
+    buyThreadCount: task.config.buyThreadCount || 0,
+    sellThreadCount: task.config.sellThreadCount || 0,
     gasPrice: task.config.gasPrice,
     gasLimit: task.config.gasLimit,
     innerSlippage: task.config.innerSlippage,
@@ -372,10 +387,11 @@ function handleSave() {
       stopType: formData.value.stopType,
       stopValue: formData.value.stopValue,
       interval: formData.value.interval,
-      threadCount: formData.value.threadCount,
+      buyThreadCount: formData.value.buyThreadCount || 0,
+      sellThreadCount: formData.value.sellThreadCount || 0,
       gasPrice: formData.value.gasPrice || undefined,
       gasLimit: formData.value.gasLimit || undefined,
-      innerSlippage: (isInner && props.task.mode === 'pump') ? formData.value.innerSlippage : undefined,
+      innerSlippage: isInner ? formData.value.innerSlippage : undefined,
       antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
       sellAll: formData.value.sellAll
     } as Partial<TaskConfig>,

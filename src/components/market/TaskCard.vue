@@ -9,8 +9,8 @@
           :checked="selected"
           @change="$emit('toggle-select')"
         >
-        <span class="badge" :class="modeBadgeClass">
-          {{ task.mode === 'pump' ? '拉盘' : '砸盘' }}
+        <span class="badge" :class="threadBadgeClass">
+          买{{ task.config.buyThreadCount || 0 }}/卖{{ task.config.sellThreadCount || 0 }}
         </span>
         <span v-if="task.config.marketType === 'inner'" class="badge bg-info">内盘</span>
         <strong class="small">{{ task.name }}</strong>
@@ -39,12 +39,12 @@
     <div class="small text-muted mb-1">
       <div class="d-flex flex-wrap gap-2">
         <span><i class="bi bi-wallet2 me-1"></i>{{ task.walletAddresses.length }}钱包</span>
-        <span><i class="bi bi-layers me-1"></i>{{ task.config.threadCount || 1 }}线程</span>
         <span><i class="bi bi-clock me-1"></i>{{ task.config.interval }}s</span>
         <span>
           <i class="bi bi-stop-circle me-1"></i>{{ stopConditionText }}
         </span>
-        <span>执行:{{ task.stats.executedCount }}次</span>
+        <span>买:{{ task.stats.buyCount }}次</span>
+        <span>卖:{{ task.stats.sellCount }}次</span>
         <span>花费:{{ task.stats.spentAmount.toFixed(4) }} BNB</span>
         <span>{{ formatTime(task.stats.elapsedTime) }}</span>
       </div>
@@ -230,8 +230,13 @@ const statusText = computed(() => {
   }
 });
 
-const modeBadgeClass = computed(() => {
-  return props.task.mode === 'pump' ? 'bg-success' : 'bg-danger';
+// 根据买卖线程数显示不同颜色
+const threadBadgeClass = computed(() => {
+  const buy = props.task.config.buyThreadCount || 0;
+  const sell = props.task.config.sellThreadCount || 0;
+  if (buy > 0 && sell > 0) return 'bg-primary';  // 混合买卖
+  if (buy > 0) return 'bg-success';               // 纯买入
+  return 'bg-danger';                              // 纯卖出
 });
 
 const stopConditionText = computed(() => {
@@ -376,4 +381,3 @@ async function handleBatchSell() {
   color: #aaa;
 }
 </style>
-

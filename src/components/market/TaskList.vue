@@ -8,7 +8,7 @@
         </div>
       </div>
 
-      <!-- 右侧：任务列表（拉盘和砸盘分开） -->
+      <!-- 右侧：任务列表（单列展示） -->
       <div class="col-lg-9">
         <!-- 批量操作栏 -->
         <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
@@ -49,67 +49,68 @@
             >
               <i class="bi bi-stop-fill me-1"></i>停止 ({{ stoppableSelectedCount }})
             </button>
+            <button
+              class="btn btn-outline-warning btn-sm"
+              @click="handleBatchUpdateToken"
+              :disabled="innerSelectedCount === 0"
+              title="批量更改选中内盘任务的代币地址"
+            >
+              <i class="bi bi-pencil-square me-1"></i>改地址 ({{ innerSelectedCount }})
+            </button>
           </div>
         </div>
 
-        <div v-if="tasks.length > 0" class="row g-3">
-          <!-- 拉盘任务（左列） -->
-          <div class="col-md-6">
-            <div class="task-column pump-column">
-              <div class="column-header pump-header">
-                <i class="bi bi-graph-up-arrow me-1"></i>
-                拉盘任务
-                <span class="badge bg-success ms-1">{{ pumpTasks.length }}</span>
-                <span v-if="runningPumpCount > 0" class="badge bg-light text-success ms-1">{{ runningPumpCount }} 运行</span>
-              </div>
-              <div class="task-cards-container">
-                <TaskCard
-                  v-for="task in pumpTasks"
-                  :key="task.id"
-                  :task="task"
-                  :selected="selectedTaskIds.includes(task.id)"
-                  @toggle-select="toggleTaskSelect(task.id)"
-                  @edit="handleEditTask"
-                />
-                <div v-if="pumpTasks.length === 0" class="text-center text-muted py-4">
-                  <i class="bi bi-inbox d-block mb-1"></i>
-                  <small>暂无拉盘任务</small>
-                </div>
-              </div>
-            </div>
-          </div>
+        <!-- 筛选标签 -->
+        <div class="d-flex gap-2 mb-2" v-if="tasks.length > 0">
+          <button
+            class="btn btn-sm"
+            :class="filterMode === 'all' ? 'btn-primary' : 'btn-outline-primary'"
+            @click="filterMode = 'all'"
+          >
+            全部 ({{ tasks.length }})
+          </button>
+          <button
+            class="btn btn-sm"
+            :class="filterMode === 'buy' ? 'btn-success' : 'btn-outline-success'"
+            @click="filterMode = 'buy'"
+          >
+            纯买入 ({{ pureBuyTasks.length }})
+          </button>
+          <button
+            class="btn btn-sm"
+            :class="filterMode === 'sell' ? 'btn-danger' : 'btn-outline-danger'"
+            @click="filterMode = 'sell'"
+          >
+            纯卖出 ({{ pureSellTasks.length }})
+          </button>
+          <button
+            class="btn btn-sm"
+            :class="filterMode === 'mixed' ? 'btn-info' : 'btn-outline-info'"
+            @click="filterMode = 'mixed'"
+          >
+            混合买卖 ({{ mixedTasks.length }})
+          </button>
+        </div>
 
-          <!-- 砸盘任务（右列） -->
-          <div class="col-md-6">
-            <div class="task-column dump-column">
-              <div class="column-header dump-header">
-                <i class="bi bi-graph-down-arrow me-1"></i>
-                砸盘任务
-                <span class="badge bg-danger ms-1">{{ dumpTasks.length }}</span>
-                <span v-if="runningDumpCount > 0" class="badge bg-light text-danger ms-1">{{ runningDumpCount }} 运行</span>
-              </div>
-              <div class="task-cards-container">
-                <TaskCard
-                  v-for="task in dumpTasks"
-                  :key="task.id"
-                  :task="task"
-                  :selected="selectedTaskIds.includes(task.id)"
-                  @toggle-select="toggleTaskSelect(task.id)"
-                  @edit="handleEditTask"
-                />
-                <div v-if="dumpTasks.length === 0" class="text-center text-muted py-4">
-                  <i class="bi bi-inbox d-block mb-1"></i>
-                  <small>暂无砸盘任务</small>
-                </div>
-              </div>
-            </div>
-          </div>
+        <div v-if="filteredTasks.length > 0" class="task-cards-container">
+          <TaskCard
+            v-for="task in filteredTasks"
+            :key="task.id"
+            :task="task"
+            :selected="selectedTaskIds.includes(task.id)"
+            @toggle-select="toggleTaskSelect(task.id)"
+            @edit="handleEditTask"
+          />
         </div>
 
         <!-- 空状态 -->
-        <div v-else class="text-center text-muted py-5">
+        <div v-else-if="tasks.length === 0" class="text-center text-muted py-5">
           <i class="bi bi-inbox fs-1 d-block mb-2"></i>
           <p class="mb-0">暂无任务，请在左侧创建新任务</p>
+        </div>
+        <div v-else class="text-center text-muted py-4">
+          <i class="bi bi-funnel d-block mb-1"></i>
+          <small>当前筛选条件下没有任务</small>
         </div>
       </div>
     </div>
@@ -136,17 +137,31 @@ const { tasks, runningTasks } = storeToRefs(taskStore);
 
 const selectedTaskIds = ref<string[]>([]);
 const editingTask = ref<Task | null>(null);
+const filterMode = ref<'all' | 'buy' | 'sell' | 'mixed'>('all');
 const runningCount = computed(() => runningTasks.value.length);
 
-// 拉盘任务
-const pumpTasks = computed(() => tasks.value.filter(t => t.mode === 'pump'));
-// 砸盘任务
-const dumpTasks = computed(() => tasks.value.filter(t => t.mode === 'dump'));
+// 纯买入任务（buyThreadCount > 0 且 sellThreadCount === 0）
+const pureBuyTasks = computed(() => tasks.value.filter(t =>
+  (t.config.buyThreadCount || 0) > 0 && (t.config.sellThreadCount || 0) === 0
+));
+// 纯卖出任务（sellThreadCount > 0 且 buyThreadCount === 0）
+const pureSellTasks = computed(() => tasks.value.filter(t =>
+  (t.config.sellThreadCount || 0) > 0 && (t.config.buyThreadCount || 0) === 0
+));
+// 混合买卖任务（buyThreadCount > 0 且 sellThreadCount > 0）
+const mixedTasks = computed(() => tasks.value.filter(t =>
+  (t.config.buyThreadCount || 0) > 0 && (t.config.sellThreadCount || 0) > 0
+));
 
-// 运行中的拉盘任务数
-const runningPumpCount = computed(() => pumpTasks.value.filter(t => t.status === 'running').length);
-// 运行中的砸盘任务数
-const runningDumpCount = computed(() => dumpTasks.value.filter(t => t.status === 'running').length);
+// 按筛选模式过滤任务
+const filteredTasks = computed(() => {
+  switch (filterMode.value) {
+    case 'buy': return pureBuyTasks.value;
+    case 'sell': return pureSellTasks.value;
+    case 'mixed': return mixedTasks.value;
+    default: return tasks.value;
+  }
+});
 
 // 已停止的任务
 const stoppedTasks = computed(() => tasks.value.filter(t => t.status === 'stopped'));
@@ -177,6 +192,15 @@ const deletableSelectedCount = computed(() => {
   return tasks.value.filter(t =>
     selectedTaskIds.value.includes(t.id) &&
     t.status === 'stopped'
+  ).length;
+});
+
+// 选中的内盘任务数量（非运行中）
+const innerSelectedCount = computed(() => {
+  return tasks.value.filter(t =>
+    selectedTaskIds.value.includes(t.id) &&
+    t.config.marketType === 'inner' &&
+    t.status !== 'running'
   ).length;
 });
 
@@ -270,6 +294,34 @@ function deleteSelectedTasks() {
   selectedTaskIds.value = selectedTaskIds.value.filter(id => !idsToDelete.includes(id));
 }
 
+// 批量更改代币地址
+function handleBatchUpdateToken() {
+  const innerTasks = tasks.value.filter(t =>
+    selectedTaskIds.value.includes(t.id) &&
+    t.config.marketType === 'inner' &&
+    t.status !== 'running'
+  );
+
+  if (innerTasks.length === 0) {
+    alert('没有可更新的内盘任务（需要选中内盘任务且非运行中状态）');
+    return;
+  }
+
+  const newAddress = prompt(`批量更改 ${innerTasks.length} 个内盘任务的代币地址\n\n请输入新的代币合约地址：`);
+  if (!newAddress) return;
+
+  // 验证地址格式
+  if (!/^0x[a-fA-F0-9]{40}$/.test(newAddress)) {
+    alert('无效的合约地址格式，请输入正确的 0x 开头的 40 位十六进制地址');
+    return;
+  }
+
+  const taskIds = innerTasks.map(t => t.id);
+  const updatedCount = taskStore.batchUpdateTokenAddress(taskIds, newAddress);
+
+  alert(`已更新 ${updatedCount} 个内盘任务的代币地址`);
+}
+
 // 编辑任务
 function handleEditTask(task: Task) {
   editingTask.value = task;
@@ -282,36 +334,8 @@ function handleEditClose() {
 </script>
 
 <style scoped>
-.task-column {
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 0.5rem;
-  overflow: hidden;
-}
-
-.column-header {
-  padding: 0.75rem 1rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.pump-header {
-  background: rgba(25, 135, 84, 0.2);
-  color: #198754;
-  border-bottom: 2px solid rgba(25, 135, 84, 0.3);
-}
-
-.dump-header {
-  background: rgba(220, 53, 69, 0.2);
-  color: #dc3545;
-  border-bottom: 2px solid rgba(220, 53, 69, 0.3);
-}
-
 .task-cards-container {
-  padding: 0.5rem;
-  min-height: 200px;
-  max-height: 600px;
+  max-height: 700px;
   overflow-y: auto;
 }
 
