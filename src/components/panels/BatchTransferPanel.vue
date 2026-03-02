@@ -364,8 +364,10 @@ const selectedTargetBatchId = ref('');
 watch(transferMode, (newMode) => {
   if (newMode === 'manyToMany' || newMode === 'manyToOne') {
     transferAllBalance.value = true;
+    transferAllBalance2.value = true;
   } else {
     transferAllBalance.value = false;
+    transferAllBalance2.value = false;
   }
 });
 
