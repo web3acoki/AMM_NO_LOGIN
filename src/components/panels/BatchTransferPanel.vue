@@ -198,6 +198,7 @@
                   placeholder="0.01"
                   step="0.001"
                   min="0"
+                  :disabled="transferAllBalance2"
                 >
                 <span class="input-group-text">{{ transferTokenType2 === 'aster' ? 'ASTER' : currentGovernanceToken }}</span>
               </div>
@@ -208,6 +209,20 @@
                 <option value="native">{{ currentGovernanceToken }}</option>
                 <option value="aster">ASTER</option>
               </select>
+            </div>
+            <div v-if="transferMode === 'manyToMany' || transferMode === 'manyToOne'" class="col-12 col-md-3">
+              <div class="form-check mt-4">
+                <input
+                  type="checkbox"
+                  class="form-check-input"
+                  id="transferAllBalance2"
+                  v-model="transferAllBalance2"
+                >
+                <label class="form-check-label" for="transferAllBalance2">
+                  转全部余额
+                  <small class="text-muted d-block">(仅扣除gas费)</small>
+                </label>
+              </div>
             </div>
           </div>
         </div>
@@ -339,6 +354,7 @@ const transferAllBalance = ref(false);
 const showSecondTransfer = ref(false);
 const transferAmount2 = ref<number>(0.01);
 const transferTokenType2 = ref<'native' | 'token' | 'aster'>('aster');
+const transferAllBalance2 = ref(false);
 
 // 批次选择
 const selectedSourceBatchId = ref('');
@@ -573,7 +589,7 @@ const canExecuteTransfer = computed(() => {
   if (transferTokenType.value === 'token' && !targetToken.value) return false;
   // 第二组验证
   if (showSecondTransfer.value) {
-    if (!transferAmount2.value || transferAmount2.value <= 0) return false;
+    if (!transferAllBalance2.value && (!transferAmount2.value || transferAmount2.value <= 0)) return false;
     if (transferTokenType2.value === transferTokenType.value) return false;
   }
   return true;
@@ -599,11 +615,11 @@ async function executeTransfer() {
     };
 
     // 构建转账轮次
-    const rounds: { amount: number; tokenType: 'native' | 'token' | 'aster'; label: string }[] = [
-      { amount: transferAllBalance.value ? 0 : transferAmount.value, tokenType: transferTokenType.value, label: tokenLabel(transferTokenType.value) }
+    const rounds: { amount: number; tokenType: 'native' | 'token' | 'aster'; label: string; allBalance: boolean }[] = [
+      { amount: transferAllBalance.value ? 0 : transferAmount.value, tokenType: transferTokenType.value, label: tokenLabel(transferTokenType.value), allBalance: transferAllBalance.value }
     ];
     if (showSecondTransfer.value) {
-      rounds.push({ amount: transferAmount2.value, tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value) });
+      rounds.push({ amount: transferAllBalance2.value ? 0 : transferAmount2.value, tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value), allBalance: transferAllBalance2.value });
     }
 
     let allResults: any[] = [];
@@ -617,7 +633,7 @@ async function executeTransfer() {
         transferMode.value,
         {
           privateKeyMap: mergedPrivateKeyMap,
-          transferAllBalance: transferAllBalance.value && round === rounds[0]
+          transferAllBalance: round.allBalance
         }
       );
       // 标记每笔结果的代币类型和金额
