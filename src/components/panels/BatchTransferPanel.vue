@@ -128,10 +128,21 @@
 
     <!-- 转账参数 -->
     <div class="card mb-4">
-      <div class="card-header bg-light">
+      <div class="card-header bg-light d-flex justify-content-between align-items-center">
         <span class="fw-bold"><i class="bi bi-gear me-2"></i>转账参数</span>
+        <button
+          class="btn btn-sm"
+          :class="showSecondTransfer ? 'btn-outline-danger' : 'btn-outline-success'"
+          @click="toggleSecondTransfer"
+          :title="showSecondTransfer ? '移除第二组转账' : '添加第二组转账（同时转 BNB + ASTER）'"
+        >
+          <i class="bi" :class="showSecondTransfer ? 'bi-dash-lg' : 'bi-plus-lg'"></i>
+          {{ showSecondTransfer ? '移除' : '添加第二组' }}
+        </button>
       </div>
       <div class="card-body">
+        <!-- 第一组标签 -->
+        <div v-if="showSecondTransfer" class="badge bg-primary mb-2">第一组</div>
         <div class="row g-3 align-items-end">
           <div class="col-12 col-md-3">
             <label class="form-label">转账金额</label>
@@ -156,8 +167,8 @@
               <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
             </select>
           </div>
-          <!-- 多转一和多转多模式显示"转全部余额"选项 -->
-          <div v-if="transferMode === 'manyToMany' || transferMode === 'manyToOne'" class="col-12 col-md-3">
+          <!-- 多转一和多转多模式显示"转全部余额"选项（双组模式下禁用） -->
+          <div v-if="(transferMode === 'manyToMany' || transferMode === 'manyToOne') && !showSecondTransfer" class="col-12 col-md-3">
             <div class="form-check mt-4">
               <input
                 type="checkbox"
@@ -171,20 +182,51 @@
               </label>
             </div>
           </div>
-          <div class="col-12 col-md-3">
-            <button
-              class="btn btn-primary w-100"
-              @click="executeTransfer"
-              :disabled="!canExecuteTransfer || isTransferring"
-            >
-              <span v-if="isTransferring">
-                <span class="spinner-border spinner-border-sm me-1"></span>转账中...
-              </span>
-              <span v-else>
-                <i class="bi bi-send me-1"></i>执行转账 ({{ sourceAddressCount }} → {{ targetAddressCount }})
-              </span>
-            </button>
+        </div>
+
+        <!-- 第二组转账参数 -->
+        <div v-if="showSecondTransfer" class="mt-3">
+          <div class="badge bg-success mb-2">第二组</div>
+          <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-3">
+              <label class="form-label">转账金额</label>
+              <div class="input-group">
+                <input
+                  type="number"
+                  class="form-control"
+                  v-model.number="transferAmount2"
+                  placeholder="0.01"
+                  step="0.001"
+                  min="0"
+                >
+                <span class="input-group-text">{{ transferTokenType2 === 'aster' ? 'ASTER' : currentGovernanceToken }}</span>
+              </div>
+            </div>
+            <div class="col-12 col-md-3">
+              <label class="form-label">代币类型</label>
+              <select class="form-select" v-model="transferTokenType2">
+                <option value="native">{{ currentGovernanceToken }}</option>
+                <option value="aster">ASTER</option>
+              </select>
+            </div>
           </div>
+        </div>
+
+        <!-- 执行按钮 -->
+        <div class="mt-3">
+          <button
+            class="btn btn-primary"
+            @click="executeTransfer"
+            :disabled="!canExecuteTransfer || isTransferring"
+          >
+            <span v-if="isTransferring">
+              <span class="spinner-border spinner-border-sm me-1"></span>转账中...
+            </span>
+            <span v-else>
+              <i class="bi bi-send me-1"></i>执行转账 ({{ sourceAddressCount }} → {{ targetAddressCount }})
+              <span v-if="showSecondTransfer" class="ms-1">[{{ tokenLabel(transferTokenType) }} + {{ tokenLabel(transferTokenType2) }}]</span>
+            </span>
+          </button>
         </div>
       </div>
     </div>
@@ -245,7 +287,7 @@
                 </td>
                 <td>
                   <span v-if="result.amount !== undefined" class="text-success fw-bold">
-                    {{ transferAmount }} {{ transferTokenType === 'aster' ? 'ASTER' : (transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken) }}
+                    {{ result.amount }} {{ result._tokenLabel || tokenLabel(transferTokenType) }}
                   </span>
                   <span v-else class="text-muted">-</span>
                 </td>
@@ -293,13 +335,18 @@ const transferAmount = ref<number>(0.01);
 const transferTokenType = ref<'native' | 'token' | 'aster'>('native');
 const transferAllBalance = ref(false);
 
+// 第二组转账参数
+const showSecondTransfer = ref(false);
+const transferAmount2 = ref<number>(0.01);
+const transferTokenType2 = ref<'native' | 'token' | 'aster'>('aster');
+
 // 批次选择
 const selectedSourceBatchId = ref('');
 const selectedTargetBatchId = ref('');
 
-// 当切换到多转多或多转一模式时，默认勾选"转全部余额"
+// 当切换到多转多或多转一模式时，默认勾选"转全部余额"（双组模式下不自动勾选）
 watch(transferMode, (newMode) => {
-  if (newMode === 'manyToMany' || newMode === 'manyToOne') {
+  if ((newMode === 'manyToMany' || newMode === 'manyToOne') && !showSecondTransfer.value) {
     transferAllBalance.value = true;
   } else {
     transferAllBalance.value = false;
@@ -324,6 +371,23 @@ watch(selectedTargetBatchId, (batchId) => {
     }
   }
 });
+
+// 切换第二组转账
+function toggleSecondTransfer() {
+  showSecondTransfer.value = !showSecondTransfer.value;
+  if (showSecondTransfer.value) {
+    // 自动选择与第一组不同的代币类型
+    transferTokenType2.value = transferTokenType.value === 'native' ? 'aster' : 'native';
+    transferAllBalance.value = false;
+  }
+}
+
+// 代币类型标签
+function tokenLabel(type: string): string {
+  if (type === 'aster') return 'ASTER';
+  if (type === 'token' && targetToken.value) return targetToken.value.symbol;
+  return currentGovernanceToken.value;
+}
 
 // 获取批次的私钥映射
 const batchPrivateKeyMap = computed(() => {
@@ -507,6 +571,11 @@ const canExecuteTransfer = computed(() => {
   if (sourceAddressError.value) return false;
   if (targetAddressError.value) return false;
   if (transferTokenType.value === 'token' && !targetToken.value) return false;
+  // 第二组验证
+  if (showSecondTransfer.value) {
+    if (!transferAmount2.value || transferAmount2.value <= 0) return false;
+    if (transferTokenType2.value === transferTokenType.value) return false;
+  }
   return true;
 });
 
@@ -529,29 +598,49 @@ async function executeTransfer() {
       ...sourcePrivateKeyMap.value
     };
 
-    const results = await walletStore.batchTransferByAddresses(
-      sourceAddresses.value,
-      targetAddresses.value,
-      transferAllBalance.value ? 0 : transferAmount.value,
-      transferTokenType.value,
-      transferMode.value,
-      {
-        privateKeyMap: mergedPrivateKeyMap,
-        transferAllBalance: transferAllBalance.value
-      }
-    );
-    transferResults.value = results;
+    // 构建转账轮次
+    const rounds: { amount: number; tokenType: 'native' | 'token' | 'aster'; label: string }[] = [
+      { amount: transferAllBalance.value ? 0 : transferAmount.value, tokenType: transferTokenType.value, label: tokenLabel(transferTokenType.value) }
+    ];
+    if (showSecondTransfer.value) {
+      rounds.push({ amount: transferAmount2.value, tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value) });
+    }
 
-    const successCount = results.filter(r => r.success).length;
-    const failCount = results.filter(r => !r.success).length;
+    let allResults: any[] = [];
+
+    for (const round of rounds) {
+      const results = await walletStore.batchTransferByAddresses(
+        sourceAddresses.value,
+        targetAddresses.value,
+        round.amount,
+        round.tokenType,
+        transferMode.value,
+        {
+          privateKeyMap: mergedPrivateKeyMap,
+          transferAllBalance: transferAllBalance.value && round === rounds[0]
+        }
+      );
+      // 标记每笔结果的代币类型和金额
+      for (const r of results) {
+        r._tokenLabel = round.label;
+        r._tokenType = round.tokenType;
+        r._amount = round.amount;
+      }
+      allResults.push(...results);
+    }
+
+    transferResults.value = allResults;
+
+    const successCount = allResults.filter(r => r.success).length;
+    const failCount = allResults.filter(r => !r.success).length;
 
     if (failCount === 0) {
       alert(`转账完成！成功 ${successCount} 笔`);
     } else if (successCount === 0) {
-      const firstError = results.find(r => r.error)?.error || '未知错误';
+      const firstError = allResults.find(r => r.error)?.error || '未知错误';
       alert(`转账全部失败！共 ${failCount} 笔\n\n失败原因: ${firstError}`);
     } else {
-      const firstError = results.find(r => r.error)?.error || '未知错误';
+      const firstError = allResults.find(r => r.error)?.error || '未知错误';
       alert(`转账部分完成\n\n成功: ${successCount} 笔\n失败: ${failCount} 笔\n\n失败原因: ${firstError}\n\n可点击"重试失败"按钮重新执行失败的转账`);
     }
   } catch (error: any) {
@@ -569,44 +658,60 @@ async function retryFailedTransfers() {
   isTransferring.value = true;
 
   try {
-    // 提取失败的源地址和目标地址
-    const retrySources = failedResults.map(r => r.source).filter(Boolean);
-    const retryTargets = failedResults.map(r => r.target).filter(Boolean);
-
-    if (retrySources.length === 0 || retryTargets.length === 0) {
-      alert('无法获取失败转账的地址信息');
-      return;
-    }
-
     const mergedPrivateKeyMap = {
       ...batchPrivateKeyMap.value,
       ...sourcePrivateKeyMap.value
     };
 
-    // 重试模式：失败的都是一对一关系，用manyToMany
-    const retryResults = await walletStore.batchTransferByAddresses(
-      retrySources,
-      retryTargets,
-      transferAllBalance.value ? 0 : transferAmount.value,
-      transferTokenType.value,
-      'manyToMany',
-      {
-        privateKeyMap: mergedPrivateKeyMap,
-        transferAllBalance: transferAllBalance.value
+    // 按代币类型分组重试
+    const grouped = new Map<string, any[]>();
+    for (const r of failedResults) {
+      const key = r._tokenType || transferTokenType.value;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(r);
+    }
+
+    let allRetryResults: any[] = [];
+
+    for (const [tType, group] of grouped) {
+      const retrySources = group.map(r => r.source).filter(Boolean);
+      const retryTargets = group.map(r => r.target).filter(Boolean);
+      if (retrySources.length === 0 || retryTargets.length === 0) continue;
+
+      const amount = group[0]._amount ?? (transferAllBalance.value ? 0 : transferAmount.value);
+      const label = group[0]._tokenLabel || tokenLabel(tType);
+
+      const retryResults = await walletStore.batchTransferByAddresses(
+        retrySources,
+        retryTargets,
+        amount,
+        tType as 'native' | 'token' | 'aster',
+        'manyToMany',
+        {
+          privateKeyMap: mergedPrivateKeyMap,
+          transferAllBalance: amount === 0
+        }
+      );
+
+      for (const r of retryResults) {
+        r._tokenLabel = label;
+        r._tokenType = tType;
+        r._amount = amount;
       }
-    );
+      allRetryResults.push(...retryResults);
+    }
 
     // 合并结果：保留成功的，替换失败的
     const successResults = transferResults.value.filter(r => r.success);
-    transferResults.value = [...successResults, ...retryResults];
+    transferResults.value = [...successResults, ...allRetryResults];
 
-    const retrySuccess = retryResults.filter(r => r.success).length;
-    const retryFail = retryResults.filter(r => !r.success).length;
+    const retrySuccess = allRetryResults.filter(r => r.success).length;
+    const retryFail = allRetryResults.filter(r => !r.success).length;
 
     if (retryFail === 0) {
       alert(`重试完成！全部 ${retrySuccess} 笔成功`);
     } else {
-      const firstError = retryResults.find(r => r.error)?.error || '未知错误';
+      const firstError = allRetryResults.find(r => r.error)?.error || '未知错误';
       alert(`重试结果\n\n成功: ${retrySuccess} 笔\n仍失败: ${retryFail} 笔\n\n失败原因: ${firstError}`);
     }
   } catch (error: any) {
