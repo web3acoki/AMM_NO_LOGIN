@@ -167,8 +167,8 @@
               <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
             </select>
           </div>
-          <!-- 多转一和多转多模式显示"转全部余额"选项（双组模式下禁用） -->
-          <div v-if="(transferMode === 'manyToMany' || transferMode === 'manyToOne') && !showSecondTransfer" class="col-12 col-md-3">
+          <!-- 多转一和多转多模式显示"转全部余额"选项 -->
+          <div v-if="transferMode === 'manyToMany' || transferMode === 'manyToOne'" class="col-12 col-md-3">
             <div class="form-check mt-4">
               <input
                 type="checkbox"
@@ -344,9 +344,9 @@ const transferTokenType2 = ref<'native' | 'token' | 'aster'>('aster');
 const selectedSourceBatchId = ref('');
 const selectedTargetBatchId = ref('');
 
-// 当切换到多转多或多转一模式时，默认勾选"转全部余额"（双组模式下不自动勾选）
+// 当切换到多转多或多转一模式时，默认勾选"转全部余额"
 watch(transferMode, (newMode) => {
-  if ((newMode === 'manyToMany' || newMode === 'manyToOne') && !showSecondTransfer.value) {
+  if (newMode === 'manyToMany' || newMode === 'manyToOne') {
     transferAllBalance.value = true;
   } else {
     transferAllBalance.value = false;
