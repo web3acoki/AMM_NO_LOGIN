@@ -5,7 +5,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { bscTestnet, bsc, okc } from 'viem/chains';
 import { erc20Abi } from '../viem/abis/erc20';
 import { WalletDetector } from '../utils/walletDetector';
-import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX } from '../constants';
+import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX, ASTER_TOKEN_ADDRESS, ASTER_DECIMALS } from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
 import { useChainStore } from './chainStore';
 import * as walletApi from '../services/walletApi';
@@ -19,6 +19,7 @@ type LocalWallet = {
   encrypted?: string;
   nativeBalance?: string;
   tokenBalance?: string;
+  asterBalance?: string;
   walletType?: WalletType;
   remark?: string;
   createdAt?: string;
@@ -40,6 +41,7 @@ type WalletBatch = {
   walletType: WalletType; // 批次钱包类型：主钱包或普通钱包
   totalNativeBalance?: string;
   totalTokenBalance?: string;
+  totalAsterBalance?: string;
 };
 
 // 检查是否应该使用服务器模式
@@ -94,7 +96,8 @@ async function refreshWalletBalancesForWallet(
   wallet: LocalWallet,
   publicClient: ReturnType<typeof createPublicClient>,
   usdtAddress: `0x${string}` | null,
-  usdtDecimals: number
+  usdtDecimals: number,
+  asterAddress: `0x${string}` | null = ASTER_TOKEN_ADDRESS
 ) {
   try {
     const nativeBalance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
@@ -135,6 +138,39 @@ async function refreshWalletBalancesForWallet(
     } else {
       console.error(`Failed to fetch USDT balance for ${wallet.address}:`, error);
       wallet.tokenBalance = '-';
+    }
+  }
+
+  // 查询 ASTER 余额
+  if (!asterAddress) {
+    wallet.asterBalance = '-';
+    return;
+  }
+
+  try {
+    const code = await publicClient.getBytecode({ address: asterAddress });
+    if (!code || code === '0x') {
+      console.warn(`ASTER contract not found at ${asterAddress} on chain ${publicClient.chain?.id}`);
+      wallet.asterBalance = '-';
+      return;
+    }
+
+    const asterBal = await publicClient.readContract({
+      address: asterAddress,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [wallet.address as `0x${string}`]
+    });
+    wallet.asterBalance = formatUnits(asterBal as bigint, ASTER_DECIMALS);
+  } catch (error: any) {
+    if (error?.message?.includes('returned no data') ||
+        error?.message?.includes('not a contract') ||
+        error?.message?.includes('ContractFunctionZeroDataError')) {
+      console.warn(`Failed to fetch ASTER balance for ${wallet.address}: Contract may not exist or function unavailable`);
+      wallet.asterBalance = '-';
+    } else {
+      console.error(`Failed to fetch ASTER balance for ${wallet.address}:`, error);
+      wallet.asterBalance = '-';
     }
   }
 }
@@ -719,6 +755,7 @@ export const useWalletStore = defineStore('wallet', {
           try {
             const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
             let tokenBalance = BigInt(0);
+            let asterBalance = BigInt(0);
 
             if (this.targetToken) {
               tokenBalance = await publicClient.readContract({
@@ -729,10 +766,21 @@ export const useWalletStore = defineStore('wallet', {
               }) as bigint;
             }
 
-            return { native: balance, token: tokenBalance };
+            try {
+              asterBalance = await publicClient.readContract({
+                address: ASTER_TOKEN_ADDRESS,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [wallet.address as `0x${string}`]
+              }) as bigint;
+            } catch (e) {
+              console.warn(`Failed to fetch ASTER balance for ${wallet.address}:`, e);
+            }
+
+            return { native: balance, token: tokenBalance, aster: asterBalance };
           } catch (error) {
             console.error(`Failed to fetch balance for ${wallet.address}:`, error);
-            return { native: BigInt(0), token: BigInt(0) };
+            return { native: BigInt(0), token: BigInt(0), aster: BigInt(0) };
           }
         })
       );
@@ -740,16 +788,19 @@ export const useWalletStore = defineStore('wallet', {
       // 汇总结果
       const totalNative = results.reduce((sum, r) => sum + r.native, BigInt(0));
       const totalToken = results.reduce((sum, r) => sum + r.token, BigInt(0));
+      const totalAster = results.reduce((sum, r) => sum + r.aster, BigInt(0));
 
       batch.totalNativeBalance = formatEther(totalNative);
       batch.totalTokenBalance = this.targetToken ? formatUnits(totalToken, tokenDecimals) : undefined;
+      batch.totalAsterBalance = formatUnits(totalAster, ASTER_DECIMALS);
       this.persistBatches();
 
-      console.log(`批次余额查询完成: ${batch.totalNativeBalance} BNB`);
+      console.log(`批次余额查询完成: ${batch.totalNativeBalance} BNB, ${batch.totalAsterBalance} ASTER`);
 
       return {
         totalNativeBalance: batch.totalNativeBalance,
         totalTokenBalance: batch.totalTokenBalance,
+        totalAsterBalance: batch.totalAsterBalance,
       };
     },
 
@@ -2993,7 +3044,7 @@ export const useWalletStore = defineStore('wallet', {
       sourceAddresses: string[],
       targetAddresses: string[],
       amount: number,
-      tokenType: 'native' | 'token',
+      tokenType: 'native' | 'token' | 'aster',
       mode: 'oneToMany' | 'manyToOne' | 'manyToMany',
       options?: {
         privateKeyMap?: Record<string, string>;
@@ -3170,6 +3221,71 @@ export const useWalletStore = defineStore('wallet', {
               const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
+                abi: erc20Abi,
+                functionName: 'transfer',
+                args: [targetAddr as `0x${string}`, amountToSend],
+                gas: BigInt(65000),
+                gasPrice: gasPrice,
+                nonce: nonce,
+              });
+            }
+          } else if (tokenType === 'aster') {
+            // ASTER 代币转账
+            const asterAddr = ASTER_TOKEN_ADDRESS;
+            const asterDec = ASTER_DECIMALS;
+
+            if (options?.transferAllBalance) {
+              const balance = await publicClient.readContract({
+                address: asterAddr,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [sourceAddr as `0x${string}`]
+              });
+              actualAmount = Number(formatUnits(balance as bigint, asterDec));
+
+              if (actualAmount <= 0) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: 'ASTER 余额为0',
+                  success: false
+                });
+                continue;
+              }
+
+              const nonce = await getNextNonce(sourceAddr);
+              txHash = await walletClient.writeContract({
+                address: asterAddr,
+                abi: erc20Abi,
+                functionName: 'transfer',
+                args: [targetAddr as `0x${string}`, balance as bigint],
+                gas: BigInt(65000),
+                gasPrice: gasPrice,
+                nonce: nonce,
+              });
+            } else {
+              const balance = await publicClient.readContract({
+                address: asterAddr,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [sourceAddr as `0x${string}`]
+              }) as bigint;
+
+              const amountToSend = parseUnits(amount.toString(), asterDec);
+
+              if (balance < amountToSend) {
+                results.push({
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: `ASTER 余额不足，当前: ${formatUnits(balance, asterDec)}, 需要: ${amount}`,
+                  success: false
+                });
+                continue;
+              }
+
+              const nonce = await getNextNonce(sourceAddr);
+              txHash = await walletClient.writeContract({
+                address: asterAddr,
                 abi: erc20Abi,
                 functionName: 'transfer',
                 args: [targetAddr as `0x${string}`, amountToSend],

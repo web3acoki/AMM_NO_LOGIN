@@ -11,6 +11,9 @@
         <span v-if="selectedCount > 0" class="badge bg-warning text-dark">
           {{ selectedBalanceStats.totalNative }} {{ currentGovernanceToken }}
         </span>
+        <span v-if="selectedCount > 0" class="badge bg-info">
+          {{ selectedBalanceStats.totalAster }} ASTER
+        </span>
         <span v-if="selectedCount > 0 && targetToken" class="badge bg-success">
           {{ selectedBalanceStats.totalToken }} {{ targetToken.symbol }}
         </span>
@@ -137,6 +140,7 @@
             <th>地址</th>
             <th>私钥</th>
             <th>{{ currentGovernanceToken }} 余额</th>
+            <th>ASTER 余额</th>
             <th>{{ targetToken ? targetToken.symbol : '目标代币' }} 余额</th>
           </tr>
         </thead>
@@ -181,6 +185,10 @@
               <span v-else class="text-muted">-</span>
             </td>
             <td>
+              <span v-if="w.asterBalance !== undefined">{{ w.asterBalance }}</span>
+              <span v-else class="text-muted">-</span>
+            </td>
+            <td>
               <span v-if="targetToken && w.tokenBalance !== undefined">{{ w.tokenBalance }}</span>
               <span v-else class="text-muted">-</span>
             </td>
@@ -221,6 +229,7 @@ const selectedBalanceStats = computed(() => {
   const selectedWallets = wallets.value.filter(w => selectedWalletAddresses.value.includes(w.address));
   let totalNative = 0;
   let totalToken = 0;
+  let totalAster = 0;
 
   for (const wallet of selectedWallets) {
     if (wallet.nativeBalance && wallet.nativeBalance !== '-' && wallet.nativeBalance !== 'Error') {
@@ -229,11 +238,15 @@ const selectedBalanceStats = computed(() => {
     if (wallet.tokenBalance && wallet.tokenBalance !== '-' && wallet.tokenBalance !== 'Error') {
       totalToken += parseFloat(wallet.tokenBalance) || 0;
     }
+    if (wallet.asterBalance && wallet.asterBalance !== '-' && wallet.asterBalance !== 'Error') {
+      totalAster += parseFloat(wallet.asterBalance) || 0;
+    }
   }
 
   return {
     totalNative: totalNative.toFixed(6),
     totalToken: totalToken.toFixed(6),
+    totalAster: totalAster.toFixed(6),
   };
 });
 
@@ -414,7 +427,8 @@ async function exportPrivateKeys() {
 
 /* 让余额列有固定宽度 */
 .table td:nth-child(8),
-.table td:nth-child(9) {
+.table td:nth-child(9),
+.table td:nth-child(10) {
   min-width: 120px;
 }
 </style>

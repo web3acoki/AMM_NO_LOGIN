@@ -124,9 +124,12 @@
               <span class="badge bg-info ms-1">{{ batch.wallets.length }} 个</span>
               <span class="text-muted small ms-2">{{ formatDate(batch.createdAt) }}</span>
             </div>
-            <div v-if="batch.totalNativeBalance || batch.totalTokenBalance">
+            <div v-if="batch.totalNativeBalance || batch.totalTokenBalance || batch.totalAsterBalance">
               <span v-if="batch.totalNativeBalance" class="badge bg-warning text-dark me-1">
                 {{ formatBalance(batch.totalNativeBalance) }} {{ currentGovernanceToken }}
+              </span>
+              <span v-if="batch.totalAsterBalance" class="badge bg-info me-1">
+                {{ formatBalance(batch.totalAsterBalance) }} ASTER
               </span>
               <span v-if="batch.totalTokenBalance && targetToken" class="badge bg-success">
                 {{ formatBalance(batch.totalTokenBalance) }} {{ targetToken.symbol }}
@@ -461,7 +464,8 @@ async function queryBalances(batch: any) {
     if (result) {
       const nativeBalance = formatBalance(result.totalNativeBalance);
       const tokenBalance = result.totalTokenBalance ? formatBalance(result.totalTokenBalance) : null;
-      alert(`余额查询完成\n\n${currentGovernanceToken.value} 总计: ${nativeBalance}${tokenBalance ? `\n${targetToken.value?.symbol || '代币'} 总计: ${tokenBalance}` : ''}\n\n钱包数量: ${batch.wallets.length} 个`);
+      const asterBalance = result.totalAsterBalance ? formatBalance(result.totalAsterBalance) : null;
+      alert(`余额查询完成\n\n${currentGovernanceToken.value} 总计: ${nativeBalance}${asterBalance ? `\nASTER 总计: ${asterBalance}` : ''}${tokenBalance ? `\n${targetToken.value?.symbol || '代币'} 总计: ${tokenBalance}` : ''}\n\n钱包数量: ${batch.wallets.length} 个`);
     }
   } catch (error: any) {
     alert(error.message || '查询失败');

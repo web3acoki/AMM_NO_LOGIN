@@ -145,13 +145,14 @@
                 min="0"
                 :disabled="transferAllBalance"
               >
-              <span class="input-group-text">{{ transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken }}</span>
+              <span class="input-group-text">{{ transferTokenType === 'aster' ? 'ASTER' : (transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken) }}</span>
             </div>
           </div>
           <div class="col-12 col-md-3">
             <label class="form-label">代币类型</label>
             <select class="form-select" v-model="transferTokenType">
               <option value="native">{{ currentGovernanceToken }}</option>
+              <option value="aster">ASTER</option>
               <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
             </select>
           </div>
@@ -244,7 +245,7 @@
                 </td>
                 <td>
                   <span v-if="result.amount !== undefined" class="text-success fw-bold">
-                    {{ transferAmount }} {{ transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken }}
+                    {{ transferAmount }} {{ transferTokenType === 'aster' ? 'ASTER' : (transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken) }}
                   </span>
                   <span v-else class="text-muted">-</span>
                 </td>
@@ -289,7 +290,7 @@ const transferMode = ref<'oneToMany' | 'manyToOne' | 'manyToMany'>('oneToMany');
 const sourceAddressesText = ref('');
 const targetAddressesText = ref('');
 const transferAmount = ref<number>(0.01);
-const transferTokenType = ref<'native' | 'token'>('native');
+const transferTokenType = ref<'native' | 'token' | 'aster'>('native');
 const transferAllBalance = ref(false);
 
 // 批次选择

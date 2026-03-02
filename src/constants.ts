@@ -64,6 +64,10 @@ export function getBatchTransferContract(chainId: number): `0x${string}` | null 
 export const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
 export const ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
+// ASTER 代币地址（全链通用）
+export const ASTER_TOKEN_ADDRESS: `0x${string}` = '0x000ae314e2a2172a039b26378814c252734f556a';
+export const ASTER_DECIMALS = 18;
+
 // ============ 默认值 ============
 
 export const DEFAULT_DECIMALS = 18;
