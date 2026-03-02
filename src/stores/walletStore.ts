@@ -3130,9 +3130,9 @@ export const useWalletStore = defineStore('wallet', {
         return nonce;
       }
 
-      // 执行转账任务
-      for (let i = 0; i < tasks.length; i++) {
-        const { sourceAddr, targetAddr } = tasks[i];
+      // 执行单个转账任务
+      const executeTask = async (taskItem: { sourceAddr: string; targetAddr: string }, index: number) => {
+        const { sourceAddr, targetAddr } = taskItem;
 
         try {
           // 从预获取的私钥映射获取
@@ -3140,16 +3140,15 @@ export const useWalletStore = defineStore('wallet', {
 
           if (!privateKey) {
             console.warn(`地址 ${sourceAddr} 没有私钥，batchKeyMap keys:`, Object.keys(batchKeyMap));
-            results.push({
+            return {
               source: sourceAddr,
               target: targetAddr,
               error: `地址 ${sourceAddr.slice(0, 10)}... 未找到私钥`,
               success: false
-            });
-            continue;
+            };
           }
 
-          console.log(`转账 ${i + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
+          console.log(`转账 ${index + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
 
           // 创建钱包客户端
           const account = privateKeyToAccount(privateKey as `0x${string}`);
@@ -3178,13 +3177,12 @@ export const useWalletStore = defineStore('wallet', {
               actualAmount = Number(formatUnits(balance as bigint, decimals));
 
               if (actualAmount <= 0) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: '代币余额为0',
                   success: false
-                });
-                continue;
+                };
               }
 
               const nonce = await getNextNonce(sourceAddr);
@@ -3209,13 +3207,12 @@ export const useWalletStore = defineStore('wallet', {
               const amountToSend = parseUnits(amount.toString(), decimals);
 
               if (balance < amountToSend) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: `代币余额不足，当前: ${formatUnits(balance, decimals)}, 需要: ${amount}`,
                   success: false
-                });
-                continue;
+                };
               }
 
               const nonce = await getNextNonce(sourceAddr);
@@ -3244,13 +3241,12 @@ export const useWalletStore = defineStore('wallet', {
               actualAmount = Number(formatUnits(balance as bigint, asterDec));
 
               if (actualAmount <= 0) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: 'ASTER 余额为0',
                   success: false
-                });
-                continue;
+                };
               }
 
               const nonce = await getNextNonce(sourceAddr);
@@ -3274,13 +3270,12 @@ export const useWalletStore = defineStore('wallet', {
               const amountToSend = parseUnits(amount.toString(), asterDec);
 
               if (balance < amountToSend) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: `ASTER 余额不足，当前: ${formatUnits(balance, asterDec)}, 需要: ${amount}`,
                   success: false
-                });
-                continue;
+                };
               }
 
               const nonce = await getNextNonce(sourceAddr);
@@ -3304,13 +3299,12 @@ export const useWalletStore = defineStore('wallet', {
               const transferValue = balance - gasCost;
 
               if (transferValue <= BigInt(0)) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: `余额不足以支付 gas 费用，当前余额: ${formatEther(balance)} BNB，预估Gas费: ${formatEther(gasCost)} BNB`,
                   success: false
-                });
-                continue;
+                };
               }
 
               actualAmount = Number(formatEther(transferValue));
@@ -3332,13 +3326,12 @@ export const useWalletStore = defineStore('wallet', {
               const amountToSend = parseEther(amount.toString());
 
               if (balance < amountToSend + gasCost) {
-                results.push({
+                return {
                   source: sourceAddr,
                   target: targetAddr,
                   error: `余额不足，当前: ${formatEther(balance)} BNB，需要: ${formatEther(amountToSend + gasCost)} BNB`,
                   success: false
-                });
-                continue;
+                };
               }
 
               const nonce = await getNextNonce(sourceAddr);
@@ -3361,37 +3354,54 @@ export const useWalletStore = defineStore('wallet', {
 
           if (receipt.status === 'success') {
             console.log(`转账成功: ${txHash}, 金额: ${actualAmount}`);
-            results.push({
+            return {
               source: sourceAddr,
               target: targetAddr,
               hash: txHash,
               success: true,
               amount: actualAmount
-            });
+            };
           } else {
             console.error(`转账失败(交易回滚): ${txHash}`);
-            results.push({
+            return {
               source: sourceAddr,
               target: targetAddr,
               hash: txHash,
               error: '交易已发送但执行失败（可能是余额不足或合约拒绝）',
               success: false
-            });
-          }
-
-          // 添加延迟
-          if (i < tasks.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            };
           }
 
         } catch (error: any) {
           console.error(`转账失败: ${sourceAddr} -> ${targetAddr}`, error);
-          results.push({
+          return {
             source: sourceAddr,
             target: targetAddr,
             error: parseBlockchainError(error),
             success: false
-          });
+          };
+        }
+      };
+
+      // 根据模式选择执行策略
+      const CONCURRENT_BATCH_SIZE = 20;
+
+      if (mode === 'oneToMany') {
+        // 一对多：同一源钱包，nonce 需要串行递增
+        for (let i = 0; i < tasks.length; i++) {
+          const result = await executeTask(tasks[i], i);
+          results.push(result);
+        }
+      } else {
+        // 多对多 / 多对一：不同源钱包，nonce 互不冲突，分批并发
+        for (let i = 0; i < tasks.length; i += CONCURRENT_BATCH_SIZE) {
+          const batch = tasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length));
+          console.log(`并发执行第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
+          const batchResults = await Promise.all(
+            batch.map((task, batchIdx) => executeTask(task, i + batchIdx))
+          );
+          results.push(...batchResults);
+          console.log(`已完成 ${Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length)}/${tasks.length} 笔`);
         }
       }
 
