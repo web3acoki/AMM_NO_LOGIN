@@ -60,57 +60,80 @@
           </div>
         </div>
 
-        <!-- 筛选标签 -->
-        <div class="d-flex gap-2 mb-2" v-if="tasks.length > 0">
-          <button
-            class="btn btn-sm"
-            :class="filterMode === 'all' ? 'btn-primary' : 'btn-outline-primary'"
-            @click="filterMode = 'all'"
-          >
-            全部 ({{ tasks.length }})
-          </button>
-          <button
-            class="btn btn-sm"
-            :class="filterMode === 'buy' ? 'btn-success' : 'btn-outline-success'"
-            @click="filterMode = 'buy'"
-          >
-            纯买入 ({{ pureBuyTasks.length }})
-          </button>
-          <button
-            class="btn btn-sm"
-            :class="filterMode === 'sell' ? 'btn-danger' : 'btn-outline-danger'"
-            @click="filterMode = 'sell'"
-          >
-            纯卖出 ({{ pureSellTasks.length }})
-          </button>
-          <button
-            class="btn btn-sm"
-            :class="filterMode === 'mixed' ? 'btn-info' : 'btn-outline-info'"
-            @click="filterMode = 'mixed'"
-          >
-            混合买卖 ({{ mixedTasks.length }})
-          </button>
-        </div>
-
-        <div v-if="filteredTasks.length > 0" class="task-cards-container">
-          <TaskCard
-            v-for="task in filteredTasks"
-            :key="task.id"
-            :task="task"
-            :selected="selectedTaskIds.includes(task.id)"
-            @toggle-select="toggleTaskSelect(task.id)"
-            @edit="handleEditTask"
-          />
+        <!-- 三列任务展示 -->
+        <div v-if="tasks.length > 0" class="row g-2">
+          <!-- 左列：纯买入 -->
+          <div class="col-4">
+            <div class="task-column">
+              <div class="task-column-header bg-success bg-opacity-10 border-success">
+                <span class="badge bg-success me-1">纯买入</span>
+                <span class="small text-muted">{{ pureBuyTasks.length }} 个</span>
+              </div>
+              <div class="task-cards-container">
+                <TaskCard
+                  v-for="task in pureBuyTasks"
+                  :key="task.id"
+                  :task="task"
+                  :selected="selectedTaskIds.includes(task.id)"
+                  @toggle-select="toggleTaskSelect(task.id)"
+                  @edit="handleEditTask"
+                />
+                <div v-if="pureBuyTasks.length === 0" class="text-center text-muted py-3">
+                  <small>暂无纯买入任务</small>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 中列：混合买卖 -->
+          <div class="col-4">
+            <div class="task-column">
+              <div class="task-column-header bg-info bg-opacity-10 border-info">
+                <span class="badge bg-info me-1">混合买卖</span>
+                <span class="small text-muted">{{ mixedTasks.length }} 个</span>
+              </div>
+              <div class="task-cards-container">
+                <TaskCard
+                  v-for="task in mixedTasks"
+                  :key="task.id"
+                  :task="task"
+                  :selected="selectedTaskIds.includes(task.id)"
+                  @toggle-select="toggleTaskSelect(task.id)"
+                  @edit="handleEditTask"
+                />
+                <div v-if="mixedTasks.length === 0" class="text-center text-muted py-3">
+                  <small>暂无混合买卖任务</small>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 右列：纯卖出 -->
+          <div class="col-4">
+            <div class="task-column">
+              <div class="task-column-header bg-danger bg-opacity-10 border-danger">
+                <span class="badge bg-danger me-1">纯卖出</span>
+                <span class="small text-muted">{{ pureSellTasks.length }} 个</span>
+              </div>
+              <div class="task-cards-container">
+                <TaskCard
+                  v-for="task in pureSellTasks"
+                  :key="task.id"
+                  :task="task"
+                  :selected="selectedTaskIds.includes(task.id)"
+                  @toggle-select="toggleTaskSelect(task.id)"
+                  @edit="handleEditTask"
+                />
+                <div v-if="pureSellTasks.length === 0" class="text-center text-muted py-3">
+                  <small>暂无纯卖出任务</small>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 空状态 -->
-        <div v-else-if="tasks.length === 0" class="text-center text-muted py-5">
+        <div v-else class="text-center text-muted py-5">
           <i class="bi bi-inbox fs-1 d-block mb-2"></i>
           <p class="mb-0">暂无任务，请在左侧创建新任务</p>
-        </div>
-        <div v-else class="text-center text-muted py-4">
-          <i class="bi bi-funnel d-block mb-1"></i>
-          <small>当前筛选条件下没有任务</small>
         </div>
       </div>
     </div>
@@ -137,7 +160,6 @@ const { tasks, runningTasks } = storeToRefs(taskStore);
 
 const selectedTaskIds = ref<string[]>([]);
 const editingTask = ref<Task | null>(null);
-const filterMode = ref<'all' | 'buy' | 'sell' | 'mixed'>('all');
 const runningCount = computed(() => runningTasks.value.length);
 
 // 纯买入任务（buyThreadCount > 0 且 sellThreadCount === 0）
@@ -152,16 +174,6 @@ const pureSellTasks = computed(() => tasks.value.filter(t =>
 const mixedTasks = computed(() => tasks.value.filter(t =>
   (t.config.buyThreadCount || 0) > 0 && (t.config.sellThreadCount || 0) > 0
 ));
-
-// 按筛选模式过滤任务
-const filteredTasks = computed(() => {
-  switch (filterMode.value) {
-    case 'buy': return pureBuyTasks.value;
-    case 'sell': return pureSellTasks.value;
-    case 'mixed': return mixedTasks.value;
-    default: return tasks.value;
-  }
-});
 
 // 已停止的任务
 const stoppedTasks = computed(() => tasks.value.filter(t => t.status === 'stopped'));
@@ -334,9 +346,24 @@ function handleEditClose() {
 </script>
 
 <style scoped>
+.task-column {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.task-column-header {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
 .task-cards-container {
   max-height: 700px;
   overflow-y: auto;
+  padding: 0.5rem;
 }
 
 .task-cards-container::-webkit-scrollbar {
