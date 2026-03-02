@@ -622,6 +622,10 @@ async function executeTransfer() {
     ];
     if (showSecondTransfer.value) {
       rounds.push({ amount: transferAllBalance2.value ? 0 : transferAmount2.value, tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value), allBalance: transferAllBalance2.value });
+      // native 转全部余额放最后，避免 gas 不足导致第二组失败
+      if (rounds[0].tokenType === 'native' && rounds[0].allBalance) {
+        rounds.reverse();
+      }
     }
 
     let allResults: any[] = [];
