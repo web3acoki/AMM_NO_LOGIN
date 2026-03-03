@@ -3056,7 +3056,7 @@ export const useWalletStore = defineStore('wallet', {
       const results: { source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[] = [];
       const chainConfig = this.getChainConfig();
       const publicClient = this.getPublicClient();
-      const gasPrice = await publicClient.getGasPrice();
+      let gasPrice = await publicClient.getGasPrice();
 
       // 根据模式构建转账任务
       let tasks: { sourceAddr: string; targetAddr: string }[] = [];
@@ -3349,7 +3349,7 @@ export const useWalletStore = defineStore('wallet', {
           console.log(`等待交易确认: ${txHash}`);
           const receipt = await publicClient.waitForTransactionReceipt({
             hash: txHash as `0x${string}`,
-            timeout: 60000 // 60秒超时
+            timeout: 120000 // 120秒超时
           });
 
           if (receipt.status === 'success') {
@@ -3384,7 +3384,7 @@ export const useWalletStore = defineStore('wallet', {
       };
 
       // 根据模式选择执行策略
-      const CONCURRENT_BATCH_SIZE = 20;
+      const CONCURRENT_BATCH_SIZE = 10;
 
       if (mode === 'oneToMany') {
         // 一对多：同一源钱包，nonce 需要串行递增
@@ -3395,6 +3395,8 @@ export const useWalletStore = defineStore('wallet', {
       } else {
         // 多对多 / 多对一：不同源钱包，nonce 互不冲突，分批并发
         for (let i = 0; i < tasks.length; i += CONCURRENT_BATCH_SIZE) {
+          // 每批刷新一次 Gas Price，避免长时间任务中 Gas Price 过期
+          gasPrice = await publicClient.getGasPrice();
           const batch = tasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length));
           console.log(`并发执行第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
           const batchResults = await Promise.all(
@@ -3402,6 +3404,10 @@ export const useWalletStore = defineStore('wallet', {
           );
           results.push(...batchResults);
           console.log(`已完成 ${Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length)}/${tasks.length} 笔`);
+          // 批次间延迟 500ms，降低 RPC 节点压力
+          if (i + CONCURRENT_BATCH_SIZE < tasks.length) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
         }
       }
 
