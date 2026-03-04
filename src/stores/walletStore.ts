@@ -3058,12 +3058,6 @@ export const useWalletStore = defineStore('wallet', {
       const publicClient = this.getPublicClient();
       let gasPrice = await publicClient.getGasPrice();
 
-      // 获取可用的 RPC 节点列表，用于多转一/多转多负载分散
-      const chainStoreForRpc = useChainStore();
-      const currentChainInfo = chainStoreForRpc.chains.find(c => c.id === chainStoreForRpc.selectedChainId);
-      const rpcList = currentChainInfo?.rpcOptions?.map(o => o.url) || [chainConfig.rpcUrls.default.http[0]];
-      console.log(`可用 RPC 节点: ${rpcList.length} 个`);
-
       // 根据模式构建转账任务
       let tasks: { sourceAddr: string; targetAddr: string }[] = [];
 
@@ -3121,12 +3115,11 @@ export const useWalletStore = defineStore('wallet', {
         }
       }
 
-      async function getNextNonce(address: string, client?: any): Promise<number> {
+      async function getNextNonce(address: string): Promise<number> {
         const key = address.toLowerCase();
         if (!nonceMap.has(key)) {
           // 首次使用该地址，从链上获取 pending nonce
-          const effectiveClient = client || publicClient;
-          const chainNonce = await effectiveClient.getTransactionCount({
+          const chainNonce = await publicClient.getTransactionCount({
             address: key as `0x${string}`,
             blockTag: 'pending'
           });
@@ -3138,7 +3131,7 @@ export const useWalletStore = defineStore('wallet', {
       }
 
       // 执行单个转账任务
-      const executeTask = async (taskItem: { sourceAddr: string; targetAddr: string }, index: number, taskRpcUrl?: string) => {
+      const executeTask = async (taskItem: { sourceAddr: string; targetAddr: string }, index: number) => {
         const { sourceAddr, targetAddr } = taskItem;
 
         try {
@@ -3157,19 +3150,12 @@ export const useWalletStore = defineStore('wallet', {
 
           console.log(`转账 ${index + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
 
-          // 使用分配的 RPC 节点创建任务专属客户端（发交易和等确认走同一节点）
-          const effectiveRpcUrl = taskRpcUrl || chainConfig.rpcUrls.default.http[0];
-          const taskPublicClient = createPublicClient({
-            chain: chainConfig,
-            transport: http(effectiveRpcUrl)
-          });
-
           // 创建钱包客户端
           const account = privateKeyToAccount(privateKey as `0x${string}`);
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
-            transport: http(effectiveRpcUrl)
+            transport: http(chainConfig.rpcUrls.default.http[0])
           });
 
           let txHash: string;
@@ -3182,7 +3168,7 @@ export const useWalletStore = defineStore('wallet', {
 
             if (options?.transferAllBalance) {
               // 获取代币余额并转出全部
-              const balance = await taskPublicClient.readContract({
+              const balance = await publicClient.readContract({
                 address: tokenAddress,
                 abi: erc20Abi,
                 functionName: 'balanceOf',
@@ -3199,7 +3185,7 @@ export const useWalletStore = defineStore('wallet', {
                 };
               }
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
                 abi: erc20Abi,
@@ -3211,7 +3197,7 @@ export const useWalletStore = defineStore('wallet', {
               });
             } else {
               // 先检查代币余额是否足够
-              const balance = await taskPublicClient.readContract({
+              const balance = await publicClient.readContract({
                 address: tokenAddress,
                 abi: erc20Abi,
                 functionName: 'balanceOf',
@@ -3229,7 +3215,7 @@ export const useWalletStore = defineStore('wallet', {
                 };
               }
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: tokenAddress,
                 abi: erc20Abi,
@@ -3246,7 +3232,7 @@ export const useWalletStore = defineStore('wallet', {
             const asterDec = ASTER_DECIMALS;
 
             if (options?.transferAllBalance) {
-              const balance = await taskPublicClient.readContract({
+              const balance = await publicClient.readContract({
                 address: asterAddr,
                 abi: erc20Abi,
                 functionName: 'balanceOf',
@@ -3263,7 +3249,7 @@ export const useWalletStore = defineStore('wallet', {
                 };
               }
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: asterAddr,
                 abi: erc20Abi,
@@ -3274,7 +3260,7 @@ export const useWalletStore = defineStore('wallet', {
                 nonce: nonce,
               });
             } else {
-              const balance = await taskPublicClient.readContract({
+              const balance = await publicClient.readContract({
                 address: asterAddr,
                 abi: erc20Abi,
                 functionName: 'balanceOf',
@@ -3292,7 +3278,7 @@ export const useWalletStore = defineStore('wallet', {
                 };
               }
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.writeContract({
                 address: asterAddr,
                 abi: erc20Abi,
@@ -3307,7 +3293,7 @@ export const useWalletStore = defineStore('wallet', {
             // 原生代币转账
             if (options?.transferAllBalance) {
               // 获取余额，扣除gas费后全部转出
-              const balance = await taskPublicClient.getBalance({ address: sourceAddr as `0x${string}` });
+              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
               const gasCost = gasPrice * gasLimit;
               const transferValue = balance - gasCost;
@@ -3324,7 +3310,7 @@ export const useWalletStore = defineStore('wallet', {
               actualAmount = Number(formatEther(transferValue));
               console.log(`转全部余额: ${formatEther(balance)} BNB, Gas费: ${formatEther(gasCost)} BNB, 实际转账: ${actualAmount} BNB`);
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
                 value: transferValue,
@@ -3334,7 +3320,7 @@ export const useWalletStore = defineStore('wallet', {
               });
             } else {
               // 转固定金额，先检查余额是否足够
-              const balance = await taskPublicClient.getBalance({ address: sourceAddr as `0x${string}` });
+              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
               const gasCost = gasPrice * gasLimit;
               const amountToSend = parseEther(amount.toString());
@@ -3348,7 +3334,7 @@ export const useWalletStore = defineStore('wallet', {
                 };
               }
 
-              const nonce = await getNextNonce(sourceAddr, taskPublicClient);
+              const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
                 to: targetAddr as `0x${string}`,
                 value: amountToSend,
@@ -3361,7 +3347,7 @@ export const useWalletStore = defineStore('wallet', {
 
           // 等待交易确认
           console.log(`等待交易确认: ${txHash}`);
-          const receipt = await taskPublicClient.waitForTransactionReceipt({
+          const receipt = await publicClient.waitForTransactionReceipt({
             hash: txHash as `0x${string}`,
             timeout: 120000 // 120秒超时
           });
@@ -3414,11 +3400,7 @@ export const useWalletStore = defineStore('wallet', {
           const batch = tasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length));
           console.log(`并发执行第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
           const batchResults = await Promise.all(
-            batch.map((task, batchIdx) => {
-              // 按轮询方式分配 RPC 节点，均匀分散请求压力
-              const rpcUrl = rpcList[(i + batchIdx) % rpcList.length];
-              return executeTask(task, i + batchIdx, rpcUrl);
-            })
+            batch.map((task, batchIdx) => executeTask(task, i + batchIdx))
           );
           results.push(...batchResults);
           console.log(`已完成 ${Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length)}/${tasks.length} 笔`);
@@ -3457,10 +3439,7 @@ export const useWalletStore = defineStore('wallet', {
           const batch = failedTasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, failedTasks.length));
           console.log(`重试第 ${retry} 轮，第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
           const batchResults = await Promise.all(
-            batch.map((task, batchIdx) => {
-              const rpcUrl = rpcList[(i + batchIdx) % rpcList.length];
-              return executeTask(task, i + batchIdx, rpcUrl);
-            })
+            batch.map((task, batchIdx) => executeTask(task, i + batchIdx))
           );
           retryResults.push(...batchResults);
           if (i + CONCURRENT_BATCH_SIZE < failedTasks.length) {
