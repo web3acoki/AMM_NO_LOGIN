@@ -3384,7 +3384,7 @@ export const useWalletStore = defineStore('wallet', {
       };
 
       // 根据模式选择执行策略
-      const CONCURRENT_BATCH_SIZE = 10;
+      const CONCURRENT_BATCH_SIZE = 5;
 
       if (mode === 'oneToMany') {
         // 一对多：同一源钱包，nonce 需要串行递增
