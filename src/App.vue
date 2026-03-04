@@ -60,7 +60,7 @@ const sidebarItems = [
   { key: 'transfer', label: '批量转账', icon: '💸' },
   { key: 'task', label: '任务管理', icon: '📋' },
   { key: 'snipe', label: '代币狙击', icon: '🎯' },
-  { key: 'createToken', label: '创建代币1.0.2', icon: '📈' },
+  { key: 'createToken', label: '创建代币1.0.3', icon: '📈' },
   { key: 'users', label: '用户管理', icon: '👥' },
   { key: 'analysis', label: '分析面板', icon: '📈' }
 ];
