@@ -142,6 +142,17 @@ export const useTaskStore = defineStore('task', () => {
     const sellCount = config.sellThreadCount || 0;
     addLog(task.id, 'info', `任务 "${name}" 已创建，买${buyCount}/卖${sellCount}，钱包数量: ${walletAddresses.length}`);
 
+    // 内盘任务：创建时就预热 RPC 连接，避免点击开始后第一批交易因冷启动延迟
+    if (config.marketType === 'inner') {
+      const chainStore = useChainStore();
+      const antiSandwichRpc = config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
+      const warmupClient = createPublicClient({ chain, transport: http(antiSandwichRpc) });
+      warmupClient.getBlockNumber().then(() => {
+        addLog(task.id, 'info', 'RPC 连接预热完成，可以开始任务');
+      }).catch(() => {});
+    }
+
     return task;
   }
 
@@ -538,22 +549,8 @@ export const useTaskStore = defineStore('task', () => {
     const sellThreadCount = task.config.sellThreadCount || 0;
     addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，买${buyThreadCount}/卖${sellThreadCount}，钱包数: ${task.walletAddresses.length}`);
 
-    // 内盘任务：预热 RPC 连接，避免第一批交易因冷启动（TCP/TLS握手）产生额外延迟
-    (async () => {
-      if (task.config.marketType === 'inner') {
-        try {
-          const chainStore = useChainStore();
-          const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-          const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
-          const warmupClient = createPublicClient({ chain, transport: http(antiSandwichRpc) });
-          await warmupClient.getBlockNumber();
-          addLog(task.id, 'info', 'RPC 连接预热完成');
-        } catch {
-          // 预热失败不影响正常执行
-        }
-      }
-      executeRound(task);
-    })();
+    // 立即执行一轮
+    executeRound(task);
 
     // 使用 setTimeout 递归调用，而不是 setInterval
     // 这样每次执行时都能获取最新的任务配置（包括 interval）
