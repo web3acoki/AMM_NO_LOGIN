@@ -359,6 +359,7 @@ export const useTaskStore = defineStore('task', () => {
       gasLimit: task.config.gasLimit,
       balancePercent: sellAll ? 100 : undefined,
       targetBnbAmount: tradeDirection === 'sell' && !sellAll ? amount : undefined,
+      intermediateToken: task.config.poolBaseToken,
     };
 
     const result = await tradingService.executeTrade(tradeParams);
@@ -978,6 +979,7 @@ export const useTaskStore = defineStore('task', () => {
             gasPrice: task.config.gasPrice,
             gasLimit: task.config.gasLimit,
             balancePercent: 100,
+            intermediateToken: task.config.poolBaseToken,
           });
 
           if (result.success) {

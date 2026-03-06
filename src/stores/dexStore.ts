@@ -33,6 +33,7 @@ export const useDexStore = defineStore('dex', {
         routerAddress: '0x10ED43C718714eb63d5aA57B78B54704E256024E', // BSC Mainnet PancakeSwap V2 Router
         baseTokens: [
           '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', // WBNB (BSC Mainnet)
+          '0x000ae314e2a2172a039b26378814c252734f556a', // ASTER (BSC Mainnet)
         ]
       },
       {

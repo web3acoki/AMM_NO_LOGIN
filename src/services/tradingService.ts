@@ -37,6 +37,7 @@ export interface TradeParams {
   deadline?: number;          // 交易截止时间（秒），默认20分钟
   balancePercent?: number;    // 余额使用百分比 (1-100)，卖出全部时使用
   targetBnbAmount?: number;   // 目标BNB金额（砸盘时使用，系统会计算需要卖出多少Token）
+  intermediateToken?: string;   // 中间代币地址（ASTER底池时设置，构建多跳路径）
 }
 
 // 交易结果接口
@@ -244,7 +245,9 @@ export class TradingService {
       });
 
       const wbnbAddress = this.getWBNBAddress();
-      const path: `0x${string}`[] = [wbnbAddress, tokenAddress as `0x${string}`];
+      const path: `0x${string}`[] = params.intermediateToken
+        ? [wbnbAddress, params.intermediateToken as `0x${string}`, tokenAddress as `0x${string}`]
+        : [wbnbAddress, tokenAddress as `0x${string}`];
       const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
 
       // 获取目标代币精度
@@ -662,7 +665,9 @@ export class TradingService {
       });
 
       const wbnbAddress = this.getWBNBAddress();
-      const path: `0x${string}`[] = [tokenAddress as `0x${string}`, wbnbAddress];
+      const path: `0x${string}`[] = params.intermediateToken
+        ? [tokenAddress as `0x${string}`, params.intermediateToken as `0x${string}`, wbnbAddress]
+        : [tokenAddress as `0x${string}`, wbnbAddress];
       const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
 
       // 获取代币精度

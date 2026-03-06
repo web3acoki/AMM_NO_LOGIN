@@ -2,7 +2,7 @@
   <div class="container-fluid py-3">
     <h1 class="h4 mb-3">钱包管理</h1>
     <div class="row g-3">
-      <!-- 网络与代币设置、资金池查询 -->
+      <!-- 注释掉：钱包管理页面不再需要网络与代币设置
       <div class="col-12">
         <div class="card shadow-sm">
           <div class="card-body">
@@ -10,6 +10,7 @@
           </div>
         </div>
       </div>
+      -->
 
       <!-- 钱包导入 -->
       <div class="col-12">
@@ -30,21 +31,11 @@
         </div>
       </div>
 
-      <!-- 批量卖出 -->
+      <!-- 批量卖出（常开） -->
       <div class="col-12">
         <div class="card shadow-sm">
           <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center">
-              <h2 class="h6 mb-0">批量卖出</h2>
-              <button
-                class="btn btn-outline-warning btn-sm"
-                @click="showBatchSellPanel = !showBatchSellPanel"
-              >
-                <i class="bi bi-cart-dash me-1"></i>
-                {{ showBatchSellPanel ? '收起面板' : '展开面板' }}
-              </button>
-            </div>
-            <BatchSellPanel v-if="showBatchSellPanel" class="mt-3" @close="showBatchSellPanel = false" />
+            <BatchSellPanel />
           </div>
         </div>
       </div>
@@ -62,7 +53,6 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
 import LiquidityPoolQuery from '../market/LiquidityPoolQuery.vue';
 import WalletImportPanel from '../market/WalletImportPanel.vue';
 import WalletBatchPanel from '../market/WalletBatchPanel.vue';
@@ -72,8 +62,6 @@ import BatchSellPanel from '../market/BatchSellPanel.vue';
 defineOptions({
   name: 'WalletManagePanel'
 });
-
-const showBatchSellPanel = ref(false);
 </script>
 
 <style scoped>

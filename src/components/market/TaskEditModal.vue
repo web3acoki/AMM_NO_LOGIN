@@ -40,8 +40,8 @@
                 </div>
               </div>
 
-              <!-- 底池类型选择（仅内盘任务显示） -->
-              <div class="col-12 mb-3" v-if="props.task.config.marketType === 'inner'">
+              <!-- 底池类型选择 -->
+              <div class="col-12 mb-3">
                 <label class="form-label">底池类型</label>
                 <div class="btn-group w-100">
                   <button
@@ -63,7 +63,10 @@
                 </div>
                 <div class="form-text text-muted">
                   <i class="bi bi-info-circle me-1"></i>
-                  {{ formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权' }}
+                  {{ props.task.config.marketType === 'inner'
+                    ? (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权')
+                    : (formData.poolType === 'BNB' ? 'BNB底池：直接路径 WBNB↔Token' : 'ASTER底池：多跳路由 WBNB↔ASTER↔Token')
+                  }}
                 </div>
               </div>
             </div>
@@ -434,7 +437,7 @@ function handleSave() {
       innerSlippage: isInner ? formData.value.innerSlippage : undefined,
       antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
       sellAll: formData.value.sellAll,
-      poolBaseToken: (isInner && formData.value.poolType === 'ASTER') ? ASTER_TOKEN_ADDRESS : undefined,
+      poolBaseToken: formData.value.poolType === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined,
     } as Partial<TaskConfig>,
     walletAddresses
   };

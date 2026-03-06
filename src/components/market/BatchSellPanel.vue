@@ -5,21 +5,15 @@
       <button type="button" class="btn-close" @click="$emit('close')"></button>
     </div>
     <div class="card-body">
-      <!-- 目标代币信息 -->
-      <div class="alert mb-3" :class="targetToken ? 'alert-success' : 'alert-warning'">
-        <div class="d-flex align-items-center">
-          <i class="bi me-2" :class="targetToken ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill'"></i>
-          <div v-if="targetToken">
-            <strong>目标代币：</strong>{{ targetToken.symbol }} ({{ targetToken.name }})
-            <br>
-            <small class="text-muted">{{ targetToken.address }}</small>
-          </div>
-          <div v-else>
-            <strong>未设置目标代币</strong>
-            <br>
-            <small>请先在资金池查询中设置目标代币</small>
-          </div>
-        </div>
+      <!-- 代币地址输入 -->
+      <div class="mb-3">
+        <label class="form-label">代币合约地址</label>
+        <input
+          type="text"
+          class="form-control"
+          v-model.trim="tokenAddress"
+          placeholder="输入代币合约地址 0x..."
+        >
       </div>
 
       <!-- 卖出模式选择 -->
@@ -91,6 +85,18 @@
         <div class="form-text">每个钱包将在此区间内随机选择卖出比例</div>
       </div>
 
+      <!-- 底池类型选择 -->
+      <div class="mb-3">
+        <label class="form-label">底池类型</label>
+        <div class="btn-group w-100" role="group">
+          <input type="radio" class="btn-check" name="batchSellPoolType" id="batchSellPoolBNB" value="BNB" v-model="poolType">
+          <label class="btn btn-outline-primary" for="batchSellPoolBNB">BNB底池</label>
+          <input type="radio" class="btn-check" name="batchSellPoolType" id="batchSellPoolASTER" value="ASTER" v-model="poolType">
+          <label class="btn btn-outline-primary" for="batchSellPoolASTER">ASTER底池</label>
+        </div>
+        <div class="form-text">{{ poolType === 'BNB' ? '直接路径 Token→WBNB' : 'ASTER底池：多跳路由 Token→ASTER→WBNB' }}</div>
+      </div>
+
       <!-- 并发控制 -->
       <div class="mb-3">
         <label class="form-label">并发控制</label>
@@ -140,7 +146,7 @@
           <button
             class="btn btn-sm btn-outline-info"
             @click="refreshTokenBalances"
-            :disabled="!targetToken || isRefreshing"
+            :disabled="!tokenAddress || !tokenAddress.startsWith('0x') || isRefreshing"
           >
             <i class="bi bi-arrow-clockwise me-1" :class="{ 'spin': isRefreshing }"></i>
             {{ isRefreshing ? '刷新中' : '刷新余额' }}
@@ -235,9 +241,10 @@ const walletStore = useWalletStore();
 const dexStore = useDexStore();
 const chainStore = useChainStore();
 
-const { targetToken, selectedCount, selectedWalletAddresses } = storeToRefs(walletStore);
+const { selectedCount, selectedWalletAddresses } = storeToRefs(walletStore);
 
 // 状态
+const tokenAddress = ref('');
 const sellMode = ref<'fixed' | 'range'>('fixed');
 const fixedPercent = ref(100);
 const minPercent = ref(10);
@@ -248,6 +255,7 @@ const sellResults = ref<any[]>([]);
 // 并发控制参数
 const concurrency = ref(10);
 const batchInterval = ref(500);
+const poolType = ref<'BNB' | 'ASTER'>('BNB');
 
 // 预估完成时间
 const estimatedTime = computed(() => {
@@ -263,7 +271,7 @@ const estimatedTime = computed(() => {
 
 // 是否可以执行
 const canExecute = computed(() => {
-  if (!targetToken.value) return false;
+  if (!tokenAddress.value || !tokenAddress.value.startsWith('0x')) return false;
   if (selectedCount.value === 0) return false;
 
   if (sellMode.value === 'fixed') {
@@ -278,7 +286,7 @@ const canExecute = computed(() => {
 
 // 刷新代币余额
 async function refreshTokenBalances() {
-  if (!targetToken.value) return;
+  if (!tokenAddress.value || !tokenAddress.value.startsWith('0x')) return;
 
   isRefreshing.value = true;
   try {
@@ -311,7 +319,7 @@ async function executeBatchSell() {
 
   try {
     const walletAddresses = selectedWalletAddresses.value;
-    const tokenAddress = targetToken.value!.address;
+    const sellTokenAddress = tokenAddress.value;
     const chainId = chainStore.selectedChainId;
     const rpcUrl = chainStore.effectiveRpcUrl;
 
@@ -356,7 +364,7 @@ async function executeBatchSell() {
 
         // 获取代币余额
         const tokenBalance = await publicClient.readContract({
-          address: tokenAddress as `0x${string}`,
+          address: sellTokenAddress as `0x${string}`,
           abi: erc20Abi,
           functionName: 'balanceOf',
           args: [walletAddr as `0x${string}`]
@@ -374,7 +382,7 @@ async function executeBatchSell() {
 
         // 检查授权
         const allowance = await publicClient.readContract({
-          address: tokenAddress as `0x${string}`,
+          address: sellTokenAddress as `0x${string}`,
           abi: erc20Abi,
           functionName: 'allowance',
           args: [walletAddr as `0x${string}`, routerAddress as `0x${string}`]
@@ -385,7 +393,7 @@ async function executeBatchSell() {
           console.log(`${walletAddr.slice(0, 10)}... 需要授权`);
           const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
           const approveTxHash = await walletClient.writeContract({
-            address: tokenAddress as `0x${string}`,
+            address: sellTokenAddress as `0x${string}`,
             abi: erc20Abi,
             functionName: 'approve',
             args: [routerAddress as `0x${string}`, maxApproval]
@@ -428,7 +436,7 @@ async function executeBatchSell() {
     const { privateKeyToAccount } = await import('viem/accounts');
     const { bsc, bscTestnet } = await import('viem/chains');
     const { pancakeV2RouterAbi } = await import('../../viem/abis/pancakeV2');
-    const { WBNB_ADDRESSES } = await import('../../constants');
+    const { WBNB_ADDRESSES, ASTER_TOKEN_ADDRESS } = await import('../../constants');
 
     const chain = chainId === 97 ? bscTestnet : bsc;
     const wbnbAddress = WBNB_ADDRESSES[chainId] || WBNB_ADDRESSES[56];
@@ -440,7 +448,9 @@ async function executeBatchSell() {
         const account = privateKeyToAccount(privateKey as `0x${string}`);
         const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
 
-        const path: `0x${string}`[] = [tokenAddress as `0x${string}`, wbnbAddress];
+        const path: `0x${string}`[] = poolType.value === 'ASTER'
+          ? [sellTokenAddress as `0x${string}`, ASTER_TOKEN_ADDRESS, wbnbAddress]
+          : [sellTokenAddress as `0x${string}`, wbnbAddress];
 
         // 获取预期输出（用于计算滑点）
         const amountsOut = await publicClient.readContract({
@@ -502,9 +512,6 @@ async function executeBatchSell() {
     } else {
       alert(`卖出完成！成功 ${successCount} 笔，失败 ${failCount} 笔`);
     }
-
-    // 刷新余额（延迟几秒等待交易上链）
-    setTimeout(() => walletStore.refreshTargetTokenBalance(), 3000);
 
   } catch (error: any) {
     console.error('批量卖出失败:', error);
