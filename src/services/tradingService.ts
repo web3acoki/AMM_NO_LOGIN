@@ -3,7 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { bsc, bscTestnet } from 'viem/chains';
 import { pancakeV2RouterAbi } from '../viem/abis/pancakeV2';
 import { erc20Abi } from '../viem/abis/erc20';
-import { WBNB_ADDRESSES, USDT_ADDRESSES, USDC_ADDRESSES } from '../constants';
+import { WBNB_ADDRESSES, USDT_ADDRESSES, USDC_ADDRESSES, ASTER_TOKEN_ADDRESS, ASTER_DECIMALS } from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
 
 // 获取链配置
@@ -495,6 +495,141 @@ export class TradingService {
     }
   }
 
+  // 用ASTER买入代币
+  async buyWithAster(params: TradeParams): Promise<TradeResult> {
+    try {
+      const {
+        privateKey,
+        walletAddress,
+        tokenAddress,
+        amount,
+        slippage,
+        gasPrice,
+        gasLimit,
+        deadline = 1200,
+        balancePercent = 100
+      } = params;
+
+      const account = privateKeyToAccount(privateKey as `0x${string}`);
+      const walletClient = createWalletClient({
+        account,
+        chain: this.chainConfig,
+        transport: http(this.rpcUrl)
+      });
+
+      // 获取目标代币精度
+      const targetDecimals = await this.getTokenDecimals(tokenAddress as `0x${string}`);
+      const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
+
+      // 获取 ASTER 余额
+      const balance = await this.getTokenBalance(ASTER_TOKEN_ADDRESS, walletAddress as `0x${string}`);
+
+      // 根据百分比计算实际交易金额
+      let amountIn: bigint;
+      if (balancePercent < 100) {
+        // 使用余额的X%
+        amountIn = (balance * BigInt(balancePercent)) / BigInt(100);
+        console.log(`使用 ${balancePercent}% ASTER 余额买入，可用: ${formatUnits(balance, ASTER_DECIMALS)}, 实际: ${formatUnits(amountIn, ASTER_DECIMALS)} ASTER`);
+      } else {
+        // 使用固定金额
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseUnits(amountStr, ASTER_DECIMALS);
+        console.log(`开始买入，花费 ${amountStr} ASTER 购买代币 ${tokenAddress}`);
+      }
+
+      // 检查余额是否足够
+      if (balance < amountIn) {
+        return {
+          success: false,
+          error: `ASTER 余额不足，当前: ${formatUnits(balance, ASTER_DECIMALS)}, 需要: ${formatUnits(amountIn, ASTER_DECIMALS)}`
+        };
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        return {
+          success: false,
+          error: `交易金额为0，请检查输入的金额是否正确`
+        };
+      }
+
+      // 构建交易路径: ASTER -> 目标代币
+      const path: `0x${string}`[] = [ASTER_TOKEN_ADDRESS, tokenAddress as `0x${string}`];
+
+      // 授权Router花费ASTER
+      await this.checkAndApprove(
+        walletClient,
+        ASTER_TOKEN_ADDRESS,
+        walletAddress as `0x${string}`,
+        this.routerAddress,
+        amountIn
+      );
+
+      // 获取预期输出
+      const amountsOut = await this.publicClient.readContract({
+        address: this.routerAddress,
+        abi: pancakeV2RouterAbi,
+        functionName: 'getAmountsOut',
+        args: [amountIn, path]
+      }) as bigint[];
+
+      const expectedOut = amountsOut[amountsOut.length - 1];
+      const minAmountOut = this.calculateMinAmountOut(expectedOut, slippage);
+
+      console.log(`预期获得: ${formatUnits(expectedOut, targetDecimals)}, 最小: ${formatUnits(minAmountOut, targetDecimals)}`);
+
+      // 构建交易参数
+      const txParams: any = {
+        address: this.routerAddress,
+        abi: pancakeV2RouterAbi,
+        functionName: 'swapExactTokensForTokensSupportingFeeOnTransferTokens',
+        args: [amountIn, minAmountOut, path, walletAddress as `0x${string}`, deadlineTimestamp]
+      };
+
+      // 获取最新的 nonce
+      const nonce = await this.getLatestNonce(walletAddress as `0x${string}`);
+
+      // 添加Gas设置
+      if (gasPrice) {
+        txParams.gasPrice = parseUnits(gasPrice.toString(), 9);
+      }
+      if (gasLimit) {
+        txParams.gas = BigInt(gasLimit);
+      }
+      txParams.nonce = nonce;
+
+      // 发送交易
+      const txHash = await walletClient.writeContract(txParams);
+
+      console.log(`交易已发送: ${txHash}, nonce: ${nonce}`);
+
+      // 等待交易确认
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      if (receipt.status === 'success') {
+        return {
+          success: true,
+          txHash,
+          amountIn: formatUnits(amountIn, ASTER_DECIMALS) + ' ASTER',
+          amountOut: formatUnits(expectedOut, targetDecimals)
+        };
+      } else {
+        return {
+          success: false,
+          txHash,
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
+        };
+      }
+
+    } catch (error: any) {
+      console.error('ASTER买入失败:', error);
+      return {
+        success: false,
+        error: parseBlockchainError(error)
+      };
+    }
+  }
+
   // 卖出代币换USDT/USDC
   async sellForToken(params: TradeParams): Promise<TradeResult> {
     try {
@@ -634,6 +769,176 @@ export class TradingService {
 
     } catch (error: any) {
       console.error('卖出失败:', error);
+      return {
+        success: false,
+        error: parseBlockchainError(error)
+      };
+    }
+  }
+
+  // 卖出代币换ASTER
+  async sellForAster(params: TradeParams): Promise<TradeResult> {
+    try {
+      const {
+        privateKey,
+        walletAddress,
+        tokenAddress,
+        amount,
+        slippage,
+        gasPrice,
+        gasLimit,
+        deadline = 1200,
+        balancePercent,
+        targetBnbAmount  // 这里复用为目标ASTER金额
+      } = params;
+
+      const account = privateKeyToAccount(privateKey as `0x${string}`);
+      const walletClient = createWalletClient({
+        account,
+        chain: this.chainConfig,
+        transport: http(this.rpcUrl)
+      });
+
+      // 获取要卖出的代币精度和余额
+      const tokenDecimals = await this.getTokenDecimals(tokenAddress as `0x${string}`);
+      const tokenBalance = await this.getTokenBalance(tokenAddress as `0x${string}`, walletAddress as `0x${string}`);
+
+      // 根据不同模式计算实际卖出数量
+      let amountIn: bigint;
+
+      if (balancePercent && balancePercent > 0 && balancePercent <= 100) {
+        // 模式1：使用代币余额的X%（卖出全部时使用）
+        amountIn = (tokenBalance * BigInt(balancePercent)) / BigInt(100);
+        console.log(`使用 ${balancePercent}% 余额卖出换 ASTER，可用: ${formatUnits(tokenBalance, tokenDecimals)}, 实际: ${formatUnits(amountIn, tokenDecimals)}`);
+      } else if (targetBnbAmount && targetBnbAmount > 0) {
+        // 模式2：根据目标ASTER金额计算需要卖出多少Token
+        const path: `0x${string}`[] = [tokenAddress as `0x${string}`, ASTER_TOKEN_ADDRESS];
+        const targetAsterStr = targetBnbAmount.toFixed(18).replace(/\.?0+$/, '');
+        const targetAsterWei = parseUnits(targetAsterStr, ASTER_DECIMALS);
+        try {
+          const amountsIn = await this.publicClient.readContract({
+            address: this.routerAddress,
+            abi: pancakeV2RouterAbi,
+            functionName: 'getAmountsIn',
+            args: [targetAsterWei, path]
+          }) as bigint[];
+          amountIn = amountsIn[0];
+          console.log(`目标获得 ${targetAsterStr} ASTER，需要卖出: ${formatUnits(amountIn, tokenDecimals)} Token`);
+        } catch (e) {
+          // 如果 getAmountsIn 失败，使用 getAmountsOut 反向估算
+          console.log('getAmountsIn 失败，使用反向估算');
+          const testAmountsOut = await this.publicClient.readContract({
+            address: this.routerAddress,
+            abi: pancakeV2RouterAbi,
+            functionName: 'getAmountsOut',
+            args: [tokenBalance, path]
+          }) as bigint[];
+          const maxAsterOut = testAmountsOut[testAmountsOut.length - 1];
+          const ratio = Number(targetAsterWei) / Number(maxAsterOut);
+          amountIn = BigInt(Math.floor(Number(tokenBalance) * Math.min(ratio * 1.05, 1)));
+          console.log(`反向估算：需要卖出约 ${formatUnits(amountIn, tokenDecimals)} Token`);
+        }
+
+        // 确保不超过余额
+        if (amountIn > tokenBalance) {
+          console.log(`计算的卖出数量超过余额，使用全部余额`);
+          amountIn = tokenBalance;
+        }
+      } else {
+        // 模式3：使用固定数量
+        const amountStr = amount.toFixed(18).replace(/\.?0+$/, '');
+        amountIn = parseUnits(amountStr, tokenDecimals);
+        console.log(`开始卖出代币 ${tokenAddress} 换成 ASTER，数量: ${amountStr}`);
+      }
+
+      // 检查余额是否足够
+      if (tokenBalance < amountIn) {
+        return {
+          success: false,
+          error: `代币余额不足，当前: ${formatUnits(tokenBalance, tokenDecimals)}, 需要: ${formatUnits(amountIn, tokenDecimals)}`
+        };
+      }
+
+      // 额外检查：如果金额为0，给出明确提示
+      if (amountIn === BigInt(0)) {
+        return {
+          success: false,
+          error: `交易金额为0，请检查输入的金额是否正确`
+        };
+      }
+
+      const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + deadline);
+
+      // 构建交易路径: 代币 -> ASTER
+      const path: `0x${string}`[] = [tokenAddress as `0x${string}`, ASTER_TOKEN_ADDRESS];
+
+      // 授权Router花费代币
+      await this.checkAndApprove(
+        walletClient,
+        tokenAddress as `0x${string}`,
+        walletAddress as `0x${string}`,
+        this.routerAddress,
+        amountIn
+      );
+
+      // 获取预期输出
+      const amountsOut = await this.publicClient.readContract({
+        address: this.routerAddress,
+        abi: pancakeV2RouterAbi,
+        functionName: 'getAmountsOut',
+        args: [amountIn, path]
+      }) as bigint[];
+
+      const expectedOut = amountsOut[amountsOut.length - 1];
+      const minAmountOut = this.calculateMinAmountOut(expectedOut, slippage);
+
+      console.log(`预期获得: ${formatUnits(expectedOut, ASTER_DECIMALS)} ASTER, 最小: ${formatUnits(minAmountOut, ASTER_DECIMALS)} ASTER`);
+
+      // 构建交易参数
+      const txParams: any = {
+        address: this.routerAddress,
+        abi: pancakeV2RouterAbi,
+        functionName: 'swapExactTokensForTokensSupportingFeeOnTransferTokens',
+        args: [amountIn, minAmountOut, path, walletAddress as `0x${string}`, deadlineTimestamp]
+      };
+
+      // 获取最新的 nonce
+      const nonce = await this.getLatestNonce(walletAddress as `0x${string}`);
+
+      // 添加Gas设置
+      if (gasPrice) {
+        txParams.gasPrice = parseUnits(gasPrice.toString(), 9);
+      }
+      if (gasLimit) {
+        txParams.gas = BigInt(gasLimit);
+      }
+      txParams.nonce = nonce;
+
+      // 发送交易
+      const txHash = await walletClient.writeContract(txParams);
+
+      console.log(`交易已发送: ${txHash}, nonce: ${nonce}`);
+
+      // 等待交易确认
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      if (receipt.status === 'success') {
+        return {
+          success: true,
+          txHash,
+          amountIn: formatUnits(amountIn, tokenDecimals),
+          amountOut: formatUnits(expectedOut, ASTER_DECIMALS) + ' ASTER'
+        };
+      } else {
+        return {
+          success: false,
+          txHash,
+          error: '交易已发送但执行失败（可能是滑点或流动性问题）'
+        };
+      }
+
+    } catch (error: any) {
+      console.error('卖出换ASTER失败:', error);
       return {
         success: false,
         error: parseBlockchainError(error)
@@ -815,13 +1120,15 @@ export class TradingService {
   // 执行交易（根据模式自动选择买入或卖出）
   async executeTrade(params: TradeParams): Promise<TradeResult> {
     const { mode, spendToken } = params;
-    
+
     if (mode === 'pump') {
       // 拉盘 = 买入
       if (spendToken === 'BNB' || spendToken === 'tBNB') {
         return this.buyWithNative(params);
       } else if (spendToken === 'USDT' || spendToken === 'USDC') {
         return this.buyWithToken(params);
+      } else if (spendToken === 'ASTER') {
+        return this.buyWithAster(params);
       } else {
         return {
           success: false,
@@ -834,6 +1141,8 @@ export class TradingService {
         return this.sellForNative(params);
       } else if (spendToken === 'USDT' || spendToken === 'USDC') {
         return this.sellForToken(params);
+      } else if (spendToken === 'ASTER') {
+        return this.sellForAster(params);
       } else {
         return {
           success: false,

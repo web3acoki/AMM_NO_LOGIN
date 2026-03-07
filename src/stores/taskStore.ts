@@ -343,6 +343,12 @@ export const useTaskStore = defineStore('task', () => {
 
     const tradeMode = tradeDirection === 'buy' ? 'pump' : 'dump';
 
+    // 判断是使用 ASTER 还是 BNB
+    // 如果设置了 poolBaseToken，说明是 ASTER 底池，直接用 ASTER 交易
+    const useAster = !!task.config.poolBaseToken;
+    const spendToken = useAster ? 'ASTER' : 'BNB';
+    const amountUnit = useAster ? 'ASTER' : 'BNB';
+
     const tradeParams: TradeParams = {
       chainId,
       rpcUrl: effectiveRpcUrl,
@@ -350,7 +356,7 @@ export const useTaskStore = defineStore('task', () => {
       privateKey,
       walletAddress,
       tokenAddress: task.config.tokenContract,
-      spendToken: 'BNB',
+      spendToken,
       amount,
       amountType: 'amount',
       mode: tradeMode,
@@ -359,7 +365,7 @@ export const useTaskStore = defineStore('task', () => {
       gasLimit: task.config.gasLimit,
       balancePercent: sellAll ? 100 : undefined,
       targetBnbAmount: tradeDirection === 'sell' && !sellAll ? amount : undefined,
-      intermediateToken: task.config.poolBaseToken,
+      // ASTER 底池时不需要 intermediateToken，直接 ASTER <-> Token
     };
 
     const result = await tradingService.executeTrade(tradeParams);
@@ -375,7 +381,7 @@ export const useTaskStore = defineStore('task', () => {
       const actionText = tradeDirection === 'buy' ? '买入' : '卖出';
       const resultText = result.amountOut
         ? `[外盘] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
-        : `[外盘] ${actionText}成功，金额: ${amount} BNB`;
+        : `[外盘] ${actionText}成功，金额: ${amount} ${amountUnit}`;
 
       addLog(task.id, 'success', resultText, walletAddress, result.txHash);
       return true;
@@ -947,7 +953,10 @@ export const useTaskStore = defineStore('task', () => {
     } else {
       // 外盘模式：优先使用配置的节点，未配置则跟随网络设置
       const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
-      addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，使用最大线程并行执行...`);
+      // 判断是使用 ASTER 还是 BNB
+      const useAster = !!task.config.poolBaseToken;
+      const spendToken = useAster ? 'ASTER' : 'BNB';
+      addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，底池: ${spendToken}，使用最大线程并行执行...`);
 
       const promises = task.walletAddresses.map(async (walletAddress) => {
         const privateKey = getWalletPrivateKey(walletStore, walletAddress);
@@ -971,7 +980,7 @@ export const useTaskStore = defineStore('task', () => {
             privateKey,
             walletAddress,
             tokenAddress,
-            spendToken: 'BNB',
+            spendToken,
             amount: 0,
             amountType: 'amount',
             mode: 'dump',
@@ -979,7 +988,7 @@ export const useTaskStore = defineStore('task', () => {
             gasPrice: task.config.gasPrice,
             gasLimit: task.config.gasLimit,
             balancePercent: 100,
-            intermediateToken: task.config.poolBaseToken,
+            // ASTER 底池时不需要 intermediateToken
           });
 
           if (result.success) {

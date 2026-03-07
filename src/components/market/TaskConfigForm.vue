@@ -79,8 +79,8 @@
         <div class="form-text small text-muted">
           <i class="bi bi-info-circle me-1"></i>
           {{ marketType === 'inner'
-            ? (poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权')
-            : (poolType === 'BNB' ? 'BNB底池：直接路径 WBNB↔Token' : 'ASTER底池：多跳路由 WBNB↔ASTER↔Token')
+            ? (poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买')
+            : (poolType === 'BNB' ? 'BNB底池：用 BNB 买卖代币' : 'ASTER底池：用 ASTER 买卖代币')
           }}
         </div>
       </div>
@@ -366,7 +366,8 @@ const ASTER_TOKEN_ADDRESS = '0x000ae314e2a2172a039b26378814c252734f556a';
 
 // 金额单位标签（根据底池类型变化）
 const amountUnitLabel = computed(() => {
-  if (marketType.value === 'inner' && poolType.value === 'ASTER') {
+  // 内盘或外盘选择 ASTER 底池时，金额单位都是 ASTER
+  if (poolType.value === 'ASTER') {
     return 'ASTER';
   }
   return currentGovernanceToken.value;

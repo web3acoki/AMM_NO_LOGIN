@@ -3135,8 +3135,26 @@ export const useWalletStore = defineStore('wallet', {
         const { sourceAddr, targetAddr } = taskItem;
 
         try {
+          // 验证地址格式
+          if (!sourceAddr || !/^0x[0-9a-fA-F]{40}$/.test(sourceAddr)) {
+            return {
+              source: sourceAddr,
+              target: targetAddr,
+              error: `源地址格式无效: ${sourceAddr?.slice(0, 15) || '空'}...`,
+              success: false
+            };
+          }
+          if (!targetAddr || !/^0x[0-9a-fA-F]{40}$/.test(targetAddr)) {
+            return {
+              source: sourceAddr,
+              target: targetAddr,
+              error: `目标地址格式无效: ${targetAddr?.slice(0, 15) || '空'}...`,
+              success: false
+            };
+          }
+
           // 从预获取的私钥映射获取
-          const privateKey = batchKeyMap[sourceAddr.toLowerCase()];
+          let privateKey = batchKeyMap[sourceAddr.toLowerCase()];
 
           if (!privateKey) {
             console.warn(`地址 ${sourceAddr} 没有私钥，batchKeyMap keys:`, Object.keys(batchKeyMap));
@@ -3144,6 +3162,21 @@ export const useWalletStore = defineStore('wallet', {
               source: sourceAddr,
               target: targetAddr,
               error: `地址 ${sourceAddr.slice(0, 10)}... 未找到私钥`,
+              success: false
+            };
+          }
+
+          // 确保私钥格式正确（添加 0x 前缀）
+          if (!privateKey.startsWith('0x')) {
+            privateKey = `0x${privateKey}`;
+          }
+
+          // 验证私钥格式
+          if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+            return {
+              source: sourceAddr,
+              target: targetAddr,
+              error: `私钥格式无效，长度: ${privateKey.length}`,
               success: false
             };
           }
@@ -3319,7 +3352,17 @@ export const useWalletStore = defineStore('wallet', {
                 nonce: nonce,
               });
             } else {
-              // 转固定金额，先检查余额是否足够
+              // 转固定金额，先检查金额有效性
+              if (amount === undefined || amount === null || isNaN(amount) || amount <= 0) {
+                return {
+                  source: sourceAddr,
+                  target: targetAddr,
+                  error: `转账金额无效: ${amount}`,
+                  success: false
+                };
+              }
+
+              // 检查余额是否足够
               const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
               const gasLimit = BigInt(21000);
               const gasCost = gasPrice * gasLimit;

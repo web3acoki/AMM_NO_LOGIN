@@ -70,6 +70,11 @@ export function parseBlockchainError(error: any): string {
     return '无效的钱包地址';
   }
 
+  // ============ 参数相关错误 ============
+  if (lowerMessage.includes('missing or invalid parameters') || lowerMessage.includes('invalid params')) {
+    return '参数无效，请检查地址和私钥格式';
+  }
+
   // ============ 合约相关错误 ============
   if (lowerMessage.includes('returned no data') ||
       lowerMessage.includes('not a contract') ||

@@ -64,8 +64,8 @@
                 <div class="form-text text-muted">
                   <i class="bi bi-info-circle me-1"></i>
                   {{ props.task.config.marketType === 'inner'
-                    ? (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买，需自动授权')
-                    : (formData.poolType === 'BNB' ? 'BNB底池：直接路径 WBNB↔Token' : 'ASTER底池：多跳路由 WBNB↔ASTER↔Token')
+                    ? (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买')
+                    : (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 买卖代币' : 'ASTER底池：用 ASTER 买卖代币')
                   }}
                 </div>
               </div>
@@ -350,7 +350,8 @@ const walletAddressCount = computed(() => {
 
 // 金额单位标签（根据底池类型变化）
 const amountUnitLabel = computed(() => {
-  if (props.task.config.marketType === 'inner' && formData.value.poolType === 'ASTER') {
+  // 内盘或外盘选择 ASTER 底池时，金额单位都是 ASTER
+  if (formData.value.poolType === 'ASTER') {
     return 'ASTER';
   }
   return 'BNB';
