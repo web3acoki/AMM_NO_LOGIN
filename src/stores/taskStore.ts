@@ -69,6 +69,9 @@ export const useTaskStore = defineStore('task', () => {
   const tasks = ref<Task[]>([]);
   const activeLogTaskId = ref<string | null>(null);  // 当前查看日志的任务ID
 
+  // 缓存每个任务的 FourMemeService 实例（避免每次执行都重新创建）
+  const fourMemeServiceCache = new Map<string, InstanceType<typeof FourMemeService>>();
+
   // 计算属性
   const runningTasks = computed(() => tasks.value.filter(t => t.status === 'running'));
   const pausedTasks = computed(() => tasks.value.filter(t => t.status === 'paused'));
@@ -142,14 +145,25 @@ export const useTaskStore = defineStore('task', () => {
     const sellCount = config.sellThreadCount || 0;
     addLog(task.id, 'info', `任务 "${name}" 已创建，买${buyCount}/卖${sellCount}，钱包数量: ${walletAddresses.length}`);
 
-    // 内盘任务：创建时就预热 RPC 连接，避免点击开始后第一批交易因冷启动延迟
+    // 内盘任务：创建时就预热 RPC 连接（异步，不阻塞）
+    // 这样当用户点击"开始"时，RPC 连接已经建立好了
     if (config.marketType === 'inner') {
       const chainStore = useChainStore();
       const antiSandwichRpc = config.antiSandwichRpc || ANTI_SANDWICH_RPC;
       const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
-      const warmupClient = createPublicClient({ chain, transport: http(antiSandwichRpc) });
-      warmupClient.getBlockNumber().then(() => {
-        addLog(task.id, 'info', 'RPC 连接预热完成，可以开始任务');
+
+      // 预创建并缓存 FourMemeService 实例
+      const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+      fourMemeServiceCache.set(task.id, service);
+
+      // 异步预热 RPC 连接（获取区块号 + 第一个钱包的 nonce）
+      const publicClient = createPublicClient({ chain, transport: http(antiSandwichRpc) });
+      const firstWallet = walletAddresses[0];
+      Promise.all([
+        publicClient.getBlockNumber(),
+        firstWallet ? publicClient.getTransactionCount({ address: firstWallet as `0x${string}`, blockTag: 'pending' }) : Promise.resolve(0)
+      ]).then(() => {
+        addLog(task.id, 'info', 'RPC 预热完成，可以开始任务');
       }).catch(() => {});
     }
 
@@ -481,12 +495,18 @@ export const useTaskStore = defineStore('task', () => {
     // 收集所有交易 Promise
     const allPromises: Promise<boolean>[] = [];
 
-    // 内盘模式：创建共享的 FourMemeService 实例，使用配置的防夹节点
-    const chainStore = useChainStore();
-    const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-    const sharedFourMemeService = task.config.marketType === 'inner'
-      ? createFourMemeService(chainStore.selectedChainId, antiSandwichRpc)
-      : undefined;
+    // 内盘模式：使用缓存的 FourMemeService 实例（在 startTask 时创建）
+    // 如果缓存中没有，才创建新的（兼容旧任务或异常情况）
+    let sharedFourMemeService: InstanceType<typeof FourMemeService> | undefined;
+    if (task.config.marketType === 'inner') {
+      sharedFourMemeService = fourMemeServiceCache.get(task.id);
+      if (!sharedFourMemeService) {
+        const chainStore = useChainStore();
+        const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+        sharedFourMemeService = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+        fourMemeServiceCache.set(task.id, sharedFourMemeService);
+      }
+    }
 
     // 1. 买入线程：从钱包池按 currentBuyWalletIndex 取 buyThreadCount 个钱包
     if (buyThreadCount > 0) {
@@ -547,6 +567,15 @@ export const useTaskStore = defineStore('task', () => {
       return false;
     }
 
+    // 内盘任务：确保 FourMemeService 实例存在（创建任务时已预热）
+    if (task.config.marketType === 'inner' && !fourMemeServiceCache.has(taskId)) {
+      const chainStore = useChainStore();
+      const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+      fourMemeServiceCache.set(taskId, service);
+    }
+
+    // 立即设置状态为运行中
     task.status = 'running';
     task.stats.startTime = Date.now();
     task.currentBuyWalletIndex = 0;
@@ -628,6 +657,9 @@ export const useTaskStore = defineStore('task', () => {
       task.intervalId = undefined;
     }
 
+    // 清理缓存的 FourMemeService 实例
+    fourMemeServiceCache.delete(taskId);
+
     addLog(task.id, 'info', `任务已停止${reason ? `，原因: ${reason}` : ''}`);
     return true;
   }
@@ -636,6 +668,9 @@ export const useTaskStore = defineStore('task', () => {
   function deleteTask(taskId: string): boolean {
     const taskIndex = tasks.value.findIndex(t => t.id === taskId);
     if (taskIndex === -1) return false;
+
+    // 清理缓存的 FourMemeService 实例
+    fourMemeServiceCache.delete(taskId);
 
     const task = tasks.value[taskIndex];
 
