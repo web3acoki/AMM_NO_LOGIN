@@ -703,12 +703,18 @@ async function retryFailedTransfers() {
       const amount = group[0]._amount ?? (transferAllBalance.value ? 0 : transferAmount.value);
       const label = group[0]._tokenLabel || tokenLabel(tType);
 
+      // 若所有失败任务来自同一个源地址（oneToMany场景），必须用 oneToMany 串行执行，
+      // 否则并发时会出现 nonce 竞态，导致 RPC 返回 invalid params
+      const uniqueSources = [...new Set(retrySources)];
+      const retryMode = uniqueSources.length === 1 ? 'oneToMany' : 'manyToMany';
+      const retrySrc = retryMode === 'oneToMany' ? [uniqueSources[0]] : retrySources;
+
       const retryResults = await walletStore.batchTransferByAddresses(
-        retrySources,
+        retrySrc,
         retryTargets,
         amount,
         tType as 'native' | 'token' | 'aster',
-        'manyToMany',
+        retryMode,
         {
           privateKeyMap: mergedPrivateKeyMap,
           transferAllBalance: amount === 0
