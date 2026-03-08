@@ -181,7 +181,7 @@ export const useWalletStore = defineStore('wallet', {
     connectedWalletType: '' as string,
     localWallets: [] as LocalWallet[],
     walletDetector: WalletDetector.getInstance(),
-    currentChainId: 97 as number, // 默认BSC测试网
+    currentChainId: 56 as number, // 默认BSC主网
     // 钱包选择相关状态
     selectedWalletAddresses: [] as string[], // 选中的钱包地址列表
     // 钱包批次管理
@@ -1394,13 +1394,17 @@ export const useWalletStore = defineStore('wallet', {
         case 66: // OKX Chain
           return okc;
         default:
-          return bscTestnet; // 默认BSC测试网
+          return bsc; // 默认BSC主网
       }
     },
 
     getCurrentChainId() {
-      // 从state中获取当前链ID，如果没有设置则返回默认值
-      return this.currentChainId || 97; // 默认BSC测试网
+      // 从state中获取当前链ID，如果没有设置则从chainStore获取
+      if (this.currentChainId) {
+        return this.currentChainId;
+      }
+      const chainStore = useChainStore();
+      return chainStore.selectedChainId || 56; // 默认BSC主网
     },
 
     setCurrentChainId(chainId: number) {
