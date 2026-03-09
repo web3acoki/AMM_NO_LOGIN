@@ -154,20 +154,14 @@ export const useTaskStore = defineStore('task', () => {
     if (config.marketType === 'inner') {
       const chainStore = useChainStore();
       const antiSandwichRpc = config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-      const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
 
       // 预创建并缓存 FourMemeService 实例
       const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
       fourMemeServiceCache.set(task.id, service);
 
-      // 异步预热 RPC 连接（获取区块号 + 第一个钱包的 nonce）
-      const publicClient = createPublicClient({ chain, transport: http(antiSandwichRpc) });
-      const firstWallet = walletAddresses[0];
-      Promise.all([
-        publicClient.getBlockNumber(),
-        firstWallet ? publicClient.getTransactionCount({ address: firstWallet as `0x${string}`, blockTag: 'pending' }) : Promise.resolve(0)
-      ]).then(() => {
-        addLog(task.id, 'info', 'RPC 预热完成，可以开始任务');
+      // 异步预热两个 RPC 端点的 TCP/TLS 连接（防夹节点 + Binance 官方节点）
+      service.warmupConnections().then(() => {
+        addLog(task.id, 'info', 'RPC 连接预热完成，可以开始任务');
       }).catch(() => {});
 
       // ASTER 池任务：创建时预授权所有钱包（后台异步，不阻塞 UI）
@@ -504,7 +498,8 @@ export const useTaskStore = defineStore('task', () => {
     walletAddress: string,
     tradeDirection: 'buy' | 'sell',
     sharedFourMemeService: InstanceType<typeof FourMemeService>,
-    prefetchData?: { tokenBalance: bigint; allowanceSufficient: boolean }
+    prefetchData?: { tokenBalance: bigint; allowanceSufficient: boolean },
+    prefetchedGasPrice?: bigint
   ): Promise<boolean> {
     const walletStore = useWalletStore();
     const chainStore = useChainStore();
@@ -558,7 +553,8 @@ export const useTaskStore = defineStore('task', () => {
 
       const result = await sharedFourMemeService.executeTradeFast(
         tradeParams,
-        tradeDirection === 'sell' ? prefetchData?.tokenBalance : undefined
+        tradeDirection === 'sell' ? prefetchData?.tokenBalance : undefined,
+        prefetchedGasPrice
       );
 
       if (result.success) {
@@ -794,7 +790,7 @@ export const useTaskStore = defineStore('task', () => {
       const tokenAddress = task.config.innerTokenAddress || task.config.tokenContract;
       const baseTokenAddress = task.config.poolBaseToken!;
 
-      const [, prefetchData] = await Promise.all([
+      const [, prefetchData, gasPrice] = await Promise.all([
         // 批量获取 nonce（因 batch: true，Viem 自动合并为 1 个 HTTP 请求）
         sharedFourMemeService.batchFetchNonces(allWallets),
         // 批量获取余额 + allowance（通过 multicall 合约）
@@ -803,7 +799,9 @@ export const useTaskStore = defineStore('task', () => {
           baseTokenAddress,
           buyWalletAddresses: buyWallets,
           sellWalletAddresses: sellWallets
-        })
+        }),
+        // 获取当前 gasPrice（1 次 RPC，避免每个钱包的 sendTransaction 各自查询）
+        task.config.gasPrice ? Promise.resolve(undefined) : sharedFourMemeService.fetchGasPrice()
       ]);
 
       // 阶段2：同时发送所有交易（火发即忘）
@@ -813,7 +811,7 @@ export const useTaskStore = defineStore('task', () => {
         addLog(task.id, 'info', `买入: ${buyWallets.length} 个钱包 [快速]`);
         for (const addr of buyWallets) {
           const data = prefetchData.get(addr.toLowerCase());
-          allPromises.push(executeWalletTradeFast(task, addr, 'buy', sharedFourMemeService, data));
+          allPromises.push(executeWalletTradeFast(task, addr, 'buy', sharedFourMemeService, data, gasPrice));
         }
       }
 
@@ -821,7 +819,7 @@ export const useTaskStore = defineStore('task', () => {
         addLog(task.id, 'info', `卖出: ${sellWallets.length} 个钱包 [快速]`);
         for (const addr of sellWallets) {
           const data = prefetchData.get(addr.toLowerCase());
-          allPromises.push(executeWalletTradeFast(task, addr, 'sell', sharedFourMemeService, data));
+          allPromises.push(executeWalletTradeFast(task, addr, 'sell', sharedFourMemeService, data, gasPrice));
         }
       }
 

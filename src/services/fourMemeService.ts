@@ -162,6 +162,7 @@ export function acquireNonceLocal(address: string): number | null {
 
 export class FourMemeService {
   private publicClient: PublicClient;
+  private readClient: PublicClient;  // 只读操作使用 Binance 官方 RPC（低延迟，不占用防夹节点）
   private chainId: number;
   private rpcUrl: string;
 
@@ -175,6 +176,25 @@ export class FourMemeService {
       transport: http(rpcUrl, { batch: true }),
       batch: { multicall: true }
     });
+    // readClient 用于只读批量查询（nonce、balance、allowance、gasPrice），
+    // 走 Binance 官方 RPC，延迟更低且不占用防夹节点连接数
+    this.readClient = createPublicClient({
+      chain,
+      transport: http('https://bsc-dataseed.binance.org', { batch: true }),
+      batch: { multicall: true }
+    });
+  }
+
+  /**
+   * 预热两个 RPC 端点的 TCP/TLS 连接
+   * 创建任务时调用，让浏览器提前建立连接（DNS + TCP + TLS），
+   * 后续交易直接复用 keep-alive 连接，消除冷启动延迟
+   */
+  async warmupConnections(): Promise<void> {
+    await Promise.allSettled([
+      this.publicClient.getChainId(),
+      this.readClient.getChainId()
+    ]);
   }
 
   /**
@@ -704,6 +724,14 @@ export class FourMemeService {
   }
 
   /**
+   * 获取当前 gasPrice（一次 RPC，供整轮交易共享）
+   * 使用 readClient（Binance RPC），避免占用防夹节点
+   */
+  async fetchGasPrice(): Promise<bigint> {
+    return await this.readClient.getGasPrice();
+  }
+
+  /**
    * 批量预取所有钱包的 nonce（Change 3a）
    * 利用 batch: true，Viem 会自动将同一 tick 内的多个 getTransactionCount 合并为 1 个 HTTP 请求
    */
@@ -711,7 +739,7 @@ export class FourMemeService {
     const results = new Map<string, number>();
 
     const noncePromises = walletAddresses.map(async (addr) => {
-      const nonce = await this.publicClient.getTransactionCount({
+      const nonce = await this.readClient.getTransactionCount({
         address: addr as `0x${string}`,
         blockTag: 'pending'
       });
@@ -810,7 +838,7 @@ export class FourMemeService {
     if (calls.length === 0) return results;
 
     try {
-      const multicallResults = await this.publicClient.multicall({
+      const multicallResults = await this.readClient.multicall({
         contracts: calls,
         allowFailure: true
       });
@@ -848,7 +876,7 @@ export class FourMemeService {
    * 快速交易路径（Change 4a）
    * 跳过 allowance 检查、getAmountOut、RPC nonce 查询
    */
-  async executeTradeFast(params: FourMemeTradeParams, prefetchedBalance?: bigint): Promise<FourMemeTradeResult> {
+  async executeTradeFast(params: FourMemeTradeParams, prefetchedBalance?: bigint, prefetchedGasPrice?: bigint): Promise<FourMemeTradeResult> {
     try {
       const chain = this.chainId === 97 ? bscTestnet : bsc;
       const account = privateKeyToAccount(params.privateKey as `0x${string}`);
@@ -859,9 +887,9 @@ export class FourMemeService {
       });
 
       if (params.mode === 'buy') {
-        return await this.executeBuyFast(walletClient, params);
+        return await this.executeBuyFast(walletClient, params, prefetchedGasPrice);
       } else {
-        return await this.executeSellFast(walletClient, params, prefetchedBalance);
+        return await this.executeSellFast(walletClient, params, prefetchedBalance, prefetchedGasPrice);
       }
     } catch (error: any) {
       return {
@@ -876,7 +904,8 @@ export class FourMemeService {
    */
   private async executeBuyFast(
     walletClient: WalletClient,
-    params: FourMemeTradeParams
+    params: FourMemeTradeParams,
+    prefetchedGasPrice?: bigint
   ): Promise<FourMemeTradeResult> {
     try {
       const tokenAddress = params.tokenAddress as Address;
@@ -896,7 +925,8 @@ export class FourMemeService {
         args: [0n, tokenAddress, buyAmountWei, minAmount]
       });
 
-      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : undefined;
+      // 优先使用用户配置 > 预取的 gasPrice > undefined（让 Viem 自动获取作为兜底）
+      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : prefetchedGasPrice;
       const gasLimit = params.gasLimit ? BigInt(params.gasLimit) : BigInt(300000);
 
       // 优先使用本地 nonce（零 RPC），fallback 到链上查询
@@ -937,7 +967,8 @@ export class FourMemeService {
   private async executeSellFast(
     walletClient: WalletClient,
     params: FourMemeTradeParams,
-    prefetchedBalance?: bigint
+    prefetchedBalance?: bigint,
+    prefetchedGasPrice?: bigint
   ): Promise<FourMemeTradeResult> {
     try {
       const tokenAddress = params.tokenAddress as Address;
@@ -977,7 +1008,8 @@ export class FourMemeService {
         args: [tokenAddress, sellAmount, minEthAmount]
       });
 
-      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : undefined;
+      // 优先使用用户配置 > 预取的 gasPrice > undefined（让 Viem 自动获取作为兜底）
+      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : prefetchedGasPrice;
       const gasLimit = params.gasLimit ? BigInt(params.gasLimit) : BigInt(300000);
 
       // 优先使用本地 nonce（零 RPC），fallback 到链上查询
