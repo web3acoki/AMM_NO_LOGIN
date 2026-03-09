@@ -179,7 +179,8 @@ export const useTaskStore = defineStore('task', () => {
     return task;
   }
 
-  // 预授权所有钱包的底池代币（ASTER 池任务创建时调用）
+  // 预授权所有钱包（ASTER 池任务创建时调用）
+  // 同时授权底池代币（ASTER，用于买入）和目标代币（meme token，用于卖出）
   function preApproveWallets(task: Task) {
     const walletStore = useWalletStore();
     const chainStore = useChainStore();
@@ -187,49 +188,67 @@ export const useTaskStore = defineStore('task', () => {
     if (!baseTokenAddress) return;
 
     const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
-    // 使用 Binance 官方 RPC 执行 approve，不占用防夹节点
     const approveRpcUrl = 'https://bsc-dataseed.binance.org';
     const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
+    const targetTokenAddress = task.config.innerTokenAddress || task.config.tokenContract;
 
     const maxUint256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
     const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
 
+    // 需要授权的代币列表：底池代币（买入用）+ 目标代币（卖出用）
+    const tokensToApprove: { address: string; label: string }[] = [
+      { address: baseTokenAddress, label: '底池代币(ASTER)' }
+    ];
+    if (targetTokenAddress) {
+      tokensToApprove.push({ address: targetTokenAddress, label: '目标代币' });
+    }
+
     const promise = (async () => {
       try {
-        addLog(task.id, 'info', `开始预授权 ${task.walletAddresses.length} 个钱包的底池代币...`);
+        addLog(task.id, 'info', `开始预授权 ${task.walletAddresses.length} 个钱包（底池代币 + 目标代币）...`);
 
-        // 1. 用 multicall 批量查询所有钱包的 allowance（1 次 RPC 代替 N 次）
         const approvePublicClient = createPublicClient({
           chain,
           transport: http(approveRpcUrl, { batch: true }),
           batch: { multicall: true }
         });
 
-        const allowancePromises = task.walletAddresses.map(addr =>
-          approvePublicClient.readContract({
-            address: baseTokenAddress as `0x${string}`,
-            abi: [{
-              type: 'function' as const,
-              name: 'allowance' as const,
-              stateMutability: 'view' as const,
-              inputs: [
-                { name: 'owner' as const, type: 'address' as const },
-                { name: 'spender' as const, type: 'address' as const }
-              ],
-              outputs: [{ name: '' as const, type: 'uint256' as const }]
-            }] as const,
-            functionName: 'allowance',
-            args: [addr as `0x${string}`, FOURMEME_CONTRACT]
-          }).then(val => ({ addr, allowance: val as bigint }))
-            .catch(() => ({ addr, allowance: 0n }))
-        );
+        // 1. 批量查询所有钱包对所有代币的 allowance（multicall 合并为 1-2 次 RPC）
+        const allChecks: { addr: string; token: string; label: string; promise: Promise<bigint> }[] = [];
+        for (const token of tokensToApprove) {
+          for (const addr of task.walletAddresses) {
+            allChecks.push({
+              addr,
+              token: token.address,
+              label: token.label,
+              promise: approvePublicClient.readContract({
+                address: token.address as `0x${string}`,
+                abi: [{
+                  type: 'function' as const,
+                  name: 'allowance' as const,
+                  stateMutability: 'view' as const,
+                  inputs: [
+                    { name: 'owner' as const, type: 'address' as const },
+                    { name: 'spender' as const, type: 'address' as const }
+                  ],
+                  outputs: [{ name: '' as const, type: 'uint256' as const }]
+                }] as const,
+                functionName: 'allowance',
+                args: [addr as `0x${string}`, FOURMEME_CONTRACT]
+              }).then(val => val as bigint).catch(() => 0n)
+            });
+          }
+        }
 
-        const allowanceResults = await Promise.all(allowancePromises);
+        const allowanceValues = await Promise.all(allChecks.map(c => c.promise));
 
-        // 2. 筛出 allowance 不足的钱包
-        const needApproval = allowanceResults
-          .filter(r => r.allowance < maxUint128)
-          .map(r => r.addr);
+        // 2. 筛出需要授权的 (钱包, 代币) 对
+        const needApproval: { addr: string; token: string; label: string }[] = [];
+        for (let i = 0; i < allChecks.length; i++) {
+          if (allowanceValues[i] < maxUint128) {
+            needApproval.push({ addr: allChecks[i].addr, token: allChecks[i].token, label: allChecks[i].label });
+          }
+        }
 
         if (needApproval.length === 0) {
           addLog(task.id, 'success', '所有钱包已有足够授权，预授权跳过');
@@ -237,7 +256,7 @@ export const useTaskStore = defineStore('task', () => {
           return;
         }
 
-        addLog(task.id, 'info', `${needApproval.length} 个钱包需要授权，开始并行发送 approve 交易...`);
+        addLog(task.id, 'info', `${needApproval.length} 笔授权待发送，开始并行执行...`);
 
         // 3. 并行发送所有 approve TX（每批 10 个）
         const BATCH_SIZE = 10;
@@ -246,7 +265,7 @@ export const useTaskStore = defineStore('task', () => {
         for (let i = 0; i < needApproval.length; i += BATCH_SIZE) {
           const batch = needApproval.slice(i, i + BATCH_SIZE);
           const batchResults = await Promise.allSettled(
-            batch.map(async (addr) => {
+            batch.map(async ({ addr, token }) => {
               const privateKey = getWalletPrivateKey(walletStore, addr);
               if (!privateKey) throw new Error('无私钥');
 
@@ -257,13 +276,12 @@ export const useTaskStore = defineStore('task', () => {
                 transport: http(approveRpcUrl)
               });
 
-              // ERC20 approve 方法选择器: 0x095ea7b3
               const callData = ('0x095ea7b3' +
                 FOURMEME_CONTRACT.slice(2).padStart(64, '0') +
                 maxUint256.toString(16).padStart(64, '0')) as `0x${string}`;
 
               const txHash = await walletClient.sendTransaction({
-                to: baseTokenAddress as `0x${string}`,
+                to: token as `0x${string}`,
                 data: callData,
                 value: 0n,
                 gas: BigInt(100000)
@@ -282,7 +300,7 @@ export const useTaskStore = defineStore('task', () => {
           }
         }
 
-        // 4. 并行等待所有 receipt（Promise.allSettled 一次等，非逐个等）
+        // 4. 并行等待所有 receipt
         if (allTxHashes.length > 0) {
           addLog(task.id, 'info', `等待 ${allTxHashes.length} 笔授权交易确认...`);
           const receiptResults = await Promise.allSettled(
@@ -310,7 +328,6 @@ export const useTaskStore = defineStore('task', () => {
         addLog(task.id, 'success', '预授权完成，所有钱包已就绪');
       } catch (error: any) {
         addLog(task.id, 'warning', `预授权异常: ${error.message}，交易时将使用 inline approve 兜底`);
-        // 不设置 preApprovalDone = true，让 startTask 中的兜底逻辑处理
       }
     })();
 
@@ -499,7 +516,9 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     // 如果预取数据显示 allowance 不足，fallback 到原有慢路径
-    if (prefetchData && !prefetchData.allowanceSufficient && tradeDirection === 'buy') {
+    // 买入：底池代币（ASTER）未授权给 FourMeme
+    // 卖出：目标代币（meme token）未授权给 FourMeme
+    if (prefetchData && !prefetchData.allowanceSufficient) {
       addLog(task.id, 'warning', `${walletAddress.slice(0, 10)}... 授权不足，使用慢路径`, walletAddress);
       return await executeWalletTrade(task, walletAddress, tradeDirection, sharedFourMemeService);
     }
@@ -782,8 +801,8 @@ export const useTaskStore = defineStore('task', () => {
         sharedFourMemeService.batchPrepareRound({
           tokenAddress,
           baseTokenAddress,
-          sellWalletAddresses: sellWallets,
-          allWalletAddresses: allWallets
+          buyWalletAddresses: buyWallets,
+          sellWalletAddresses: sellWallets
         })
       ]);
 

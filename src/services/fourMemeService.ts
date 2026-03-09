@@ -735,73 +735,83 @@ export class FourMemeService {
 
   /**
    * 批量预取轮次数据（Change 3c）
-   * 用 multicall 一次性获取所有卖出钱包的 balanceOf + 所有钱包的 allowance
+   * 用 multicall 一次性获取：
+   * - 卖出钱包的目标代币余额 (balanceOf)
+   * - 买入钱包的底池代币 allowance (ASTER → FourMeme)
+   * - 卖出钱包的目标代币 allowance (meme token → FourMeme)
    */
   async batchPrepareRound(params: {
     tokenAddress: string;
     baseTokenAddress: string;
+    buyWalletAddresses: string[];
     sellWalletAddresses: string[];
-    allWalletAddresses: string[];
   }): Promise<Map<string, { tokenBalance: bigint; allowanceSufficient: boolean }>> {
     const results = new Map<string, { tokenBalance: bigint; allowanceSufficient: boolean }>();
     const tokenAddr = params.tokenAddress as `0x${string}`;
     const baseTokenAddr = params.baseTokenAddress as `0x${string}`;
-    const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff'); // 足够大的阈值
+    const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
+
+    const allowanceAbi = [{
+      type: 'function' as const,
+      name: 'allowance' as const,
+      stateMutability: 'view' as const,
+      inputs: [
+        { name: 'owner' as const, type: 'address' as const },
+        { name: 'spender' as const, type: 'address' as const }
+      ],
+      outputs: [{ name: '' as const, type: 'uint256' as const }]
+    }] as const;
+
+    const balanceOfAbi = [{
+      type: 'function' as const,
+      name: 'balanceOf' as const,
+      stateMutability: 'view' as const,
+      inputs: [{ name: 'account' as const, type: 'address' as const }],
+      outputs: [{ name: '' as const, type: 'uint256' as const }]
+    }] as const;
 
     // 构建 multicall 合约调用
-    const calls: {
-      address: `0x${string}`;
-      abi: typeof import('../viem/abis/erc20').erc20Abi;
-      functionName: string;
-      args: readonly [`0x${string}`] | readonly [`0x${string}`, `0x${string}`];
-    }[] = [];
+    const calls: any[] = [];
+    const callMeta: { type: 'balance' | 'baseAllowance' | 'targetAllowance'; wallet: string }[] = [];
 
-    // 索引映射：记录每个 call 对应的含义
-    const callMeta: { type: 'balance' | 'allowance'; wallet: string }[] = [];
-
-    // 卖出钱包的代币余额
+    // 卖出钱包：查目标代币余额
     for (const addr of params.sellWalletAddresses) {
       calls.push({
         address: tokenAddr,
-        abi: [{
-          type: 'function' as const,
-          name: 'balanceOf' as const,
-          stateMutability: 'view' as const,
-          inputs: [{ name: 'account' as const, type: 'address' as const }],
-          outputs: [{ name: '' as const, type: 'uint256' as const }]
-        }] as const,
+        abi: balanceOfAbi,
         functionName: 'balanceOf',
         args: [addr as `0x${string}`]
       });
       callMeta.push({ type: 'balance', wallet: addr });
     }
 
-    // 所有钱包的底池代币 allowance（对 FourMeme 合约）
-    for (const addr of params.allWalletAddresses) {
+    // 买入钱包：查底池代币 (ASTER) 对 FourMeme 的 allowance
+    for (const addr of params.buyWalletAddresses) {
       calls.push({
         address: baseTokenAddr,
-        abi: [{
-          type: 'function' as const,
-          name: 'allowance' as const,
-          stateMutability: 'view' as const,
-          inputs: [
-            { name: 'owner' as const, type: 'address' as const },
-            { name: 'spender' as const, type: 'address' as const }
-          ],
-          outputs: [{ name: '' as const, type: 'uint256' as const }]
-        }] as const,
+        abi: allowanceAbi,
         functionName: 'allowance',
         args: [addr as `0x${string}`, FOURMEME_CONTRACT]
       });
-      callMeta.push({ type: 'allowance', wallet: addr });
+      callMeta.push({ type: 'baseAllowance', wallet: addr });
+    }
+
+    // 卖出钱包：查目标代币 (meme token) 对 FourMeme 的 allowance
+    for (const addr of params.sellWalletAddresses) {
+      calls.push({
+        address: tokenAddr,
+        abi: allowanceAbi,
+        functionName: 'allowance',
+        args: [addr as `0x${string}`, FOURMEME_CONTRACT]
+      });
+      callMeta.push({ type: 'targetAllowance', wallet: addr });
     }
 
     if (calls.length === 0) return results;
 
-    // 执行 multicall（Viem batch.multicall 会自动合并为 Multicall3 调用）
     try {
       const multicallResults = await this.publicClient.multicall({
-        contracts: calls as any,
+        contracts: calls,
         allowFailure: true
       });
 
@@ -818,13 +828,16 @@ export class FourMemeService {
         if (res.status === 'success') {
           if (meta.type === 'balance') {
             entry.tokenBalance = res.result as bigint;
-          } else if (meta.type === 'allowance') {
+          } else if (meta.type === 'baseAllowance') {
+            // 买入钱包：底池代币授权
+            entry.allowanceSufficient = (res.result as bigint) >= maxUint128;
+          } else if (meta.type === 'targetAllowance') {
+            // 卖出钱包：目标代币授权
             entry.allowanceSufficient = (res.result as bigint) >= maxUint128;
           }
         }
       }
     } catch (error) {
-      // multicall 失败时返回空 map，调用方会 fallback 到慢路径
       console.error('batchPrepareRound multicall failed:', error);
     }
 
