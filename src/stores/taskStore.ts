@@ -861,6 +861,16 @@ export const useTaskStore = defineStore('task', () => {
       fourMemeServiceCache.set(taskId, service);
     }
 
+    // 立即设置状态为运行中（必须在 await 之前，否则 UI 不更新）
+    task.status = 'running';
+    task.stats.startTime = Date.now();
+    task.currentBuyWalletIndex = 0;
+    task.currentSellWalletIndex = 0;
+
+    const buyThreadCount = task.config.buyThreadCount || 0;
+    const sellThreadCount = task.config.sellThreadCount || 0;
+    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，买${buyThreadCount}/卖${sellThreadCount}，钱包数: ${task.walletAddresses.length}`);
+
     // ASTER 池预授权守卫：等待预授权完成（最多 30 秒）
     if (task.config.marketType === 'inner' && task.config.poolBaseToken && !task.preApprovalDone) {
       const tracker = preApprovalTracker.get(taskId);
@@ -876,16 +886,6 @@ export const useTaskStore = defineStore('task', () => {
         }
       }
     }
-
-    // 立即设置状态为运行中
-    task.status = 'running';
-    task.stats.startTime = Date.now();
-    task.currentBuyWalletIndex = 0;
-    task.currentSellWalletIndex = 0;
-
-    const buyThreadCount = task.config.buyThreadCount || 0;
-    const sellThreadCount = task.config.sellThreadCount || 0;
-    addLog(task.id, 'info', `任务开始执行，间隔: ${task.config.interval}秒，买${buyThreadCount}/卖${sellThreadCount}，钱包数: ${task.walletAddresses.length}`);
 
     // 立即执行一轮
     executeRound(task);
