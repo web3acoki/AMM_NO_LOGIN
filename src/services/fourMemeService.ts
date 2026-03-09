@@ -148,6 +148,16 @@ export function resetNonceForAddress(address: string) {
   nonceManager.delete(address.toLowerCase());
 }
 
+// 纯本地 nonce 获取（不发 RPC，用于快速交易路径）
+// 从 nonceManager 读取并递增，若无本地记录返回 null（调用方 fallback 到 acquireNonce）
+export function acquireNonceLocal(address: string): number | null {
+  const key = address.toLowerCase();
+  const localNonce = nonceManager.get(key);
+  if (localNonce === undefined) return null;
+  nonceManager.set(key, localNonce + 1);
+  return localNonce;
+}
+
 // ==================== 服务类 ====================
 
 export class FourMemeService {
@@ -162,7 +172,8 @@ export class FourMemeService {
     const chain = chainId === 97 ? bscTestnet : bsc;
     this.publicClient = createPublicClient({
       chain,
-      transport: http(rpcUrl)
+      transport: http(rpcUrl, { batch: true }),
+      batch: { multicall: true }
     });
   }
 
@@ -688,6 +699,299 @@ export class FourMemeService {
       return {
         success: false,
         error: error.message || '卖出执行失败'
+      };
+    }
+  }
+
+  /**
+   * 批量预取所有钱包的 nonce（Change 3a）
+   * 利用 batch: true，Viem 会自动将同一 tick 内的多个 getTransactionCount 合并为 1 个 HTTP 请求
+   */
+  async batchFetchNonces(walletAddresses: string[]): Promise<Map<string, number>> {
+    const results = new Map<string, number>();
+
+    const noncePromises = walletAddresses.map(async (addr) => {
+      const nonce = await this.publicClient.getTransactionCount({
+        address: addr as `0x${string}`,
+        blockTag: 'pending'
+      });
+      return { addr, nonce };
+    });
+
+    const settled = await Promise.allSettled(noncePromises);
+    for (const result of settled) {
+      if (result.status === 'fulfilled') {
+        const { addr, nonce } = result.value;
+        const key = addr.toLowerCase();
+        results.set(key, nonce);
+        // 同步写入全局 nonceManager，以便 acquireNonceLocal 使用
+        const localNonce = nonceManager.get(key) || 0;
+        nonceManager.set(key, Math.max(nonce, localNonce));
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * 批量预取轮次数据（Change 3c）
+   * 用 multicall 一次性获取所有卖出钱包的 balanceOf + 所有钱包的 allowance
+   */
+  async batchPrepareRound(params: {
+    tokenAddress: string;
+    baseTokenAddress: string;
+    sellWalletAddresses: string[];
+    allWalletAddresses: string[];
+  }): Promise<Map<string, { tokenBalance: bigint; allowanceSufficient: boolean }>> {
+    const results = new Map<string, { tokenBalance: bigint; allowanceSufficient: boolean }>();
+    const tokenAddr = params.tokenAddress as `0x${string}`;
+    const baseTokenAddr = params.baseTokenAddress as `0x${string}`;
+    const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff'); // 足够大的阈值
+
+    // 构建 multicall 合约调用
+    const calls: {
+      address: `0x${string}`;
+      abi: typeof import('../viem/abis/erc20').erc20Abi;
+      functionName: string;
+      args: readonly [`0x${string}`] | readonly [`0x${string}`, `0x${string}`];
+    }[] = [];
+
+    // 索引映射：记录每个 call 对应的含义
+    const callMeta: { type: 'balance' | 'allowance'; wallet: string }[] = [];
+
+    // 卖出钱包的代币余额
+    for (const addr of params.sellWalletAddresses) {
+      calls.push({
+        address: tokenAddr,
+        abi: [{
+          type: 'function' as const,
+          name: 'balanceOf' as const,
+          stateMutability: 'view' as const,
+          inputs: [{ name: 'account' as const, type: 'address' as const }],
+          outputs: [{ name: '' as const, type: 'uint256' as const }]
+        }] as const,
+        functionName: 'balanceOf',
+        args: [addr as `0x${string}`]
+      });
+      callMeta.push({ type: 'balance', wallet: addr });
+    }
+
+    // 所有钱包的底池代币 allowance（对 FourMeme 合约）
+    for (const addr of params.allWalletAddresses) {
+      calls.push({
+        address: baseTokenAddr,
+        abi: [{
+          type: 'function' as const,
+          name: 'allowance' as const,
+          stateMutability: 'view' as const,
+          inputs: [
+            { name: 'owner' as const, type: 'address' as const },
+            { name: 'spender' as const, type: 'address' as const }
+          ],
+          outputs: [{ name: '' as const, type: 'uint256' as const }]
+        }] as const,
+        functionName: 'allowance',
+        args: [addr as `0x${string}`, FOURMEME_CONTRACT]
+      });
+      callMeta.push({ type: 'allowance', wallet: addr });
+    }
+
+    if (calls.length === 0) return results;
+
+    // 执行 multicall（Viem batch.multicall 会自动合并为 Multicall3 调用）
+    try {
+      const multicallResults = await this.publicClient.multicall({
+        contracts: calls as any,
+        allowFailure: true
+      });
+
+      for (let i = 0; i < multicallResults.length; i++) {
+        const meta = callMeta[i];
+        const res = multicallResults[i];
+        const key = meta.wallet.toLowerCase();
+
+        if (!results.has(key)) {
+          results.set(key, { tokenBalance: 0n, allowanceSufficient: false });
+        }
+        const entry = results.get(key)!;
+
+        if (res.status === 'success') {
+          if (meta.type === 'balance') {
+            entry.tokenBalance = res.result as bigint;
+          } else if (meta.type === 'allowance') {
+            entry.allowanceSufficient = (res.result as bigint) >= maxUint128;
+          }
+        }
+      }
+    } catch (error) {
+      // multicall 失败时返回空 map，调用方会 fallback 到慢路径
+      console.error('batchPrepareRound multicall failed:', error);
+    }
+
+    return results;
+  }
+
+  /**
+   * 快速交易路径（Change 4a）
+   * 跳过 allowance 检查、getAmountOut、RPC nonce 查询
+   */
+  async executeTradeFast(params: FourMemeTradeParams, prefetchedBalance?: bigint): Promise<FourMemeTradeResult> {
+    try {
+      const chain = this.chainId === 97 ? bscTestnet : bsc;
+      const account = privateKeyToAccount(params.privateKey as `0x${string}`);
+      const walletClient = createWalletClient({
+        account,
+        chain,
+        transport: http(this.rpcUrl)
+      });
+
+      if (params.mode === 'buy') {
+        return await this.executeBuyFast(walletClient, params);
+      } else {
+        return await this.executeSellFast(walletClient, params, prefetchedBalance);
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message || '快速交易执行失败'
+      };
+    }
+  }
+
+  /**
+   * 快速买入（跳过 allowance 检查和 getAmountOut，使用本地 nonce）
+   */
+  private async executeBuyFast(
+    walletClient: WalletClient,
+    params: FourMemeTradeParams
+  ): Promise<FourMemeTradeResult> {
+    try {
+      const tokenAddress = params.tokenAddress as Address;
+      const walletAddress = walletClient.account!.address;
+      const isNonBnbPool = !!params.poolBaseToken;
+
+      const amountStr = params.amount.toFixed(18).replace(/\.?0+$/, '');
+      const buyAmountWei = parseEther(amountStr);
+
+      // 跳过 allowance 检查（已预授权）
+      // 跳过 getAmountOut（使用 minAmount = 0n 接受任意滑点，内盘交易量小影响不大）
+      const minAmount = 0n;
+
+      const callData = encodeFunctionData({
+        abi: FOURMEME_ABI,
+        functionName: 'buyTokenAMAP',
+        args: [0n, tokenAddress, buyAmountWei, minAmount]
+      });
+
+      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : undefined;
+      const gasLimit = params.gasLimit ? BigInt(params.gasLimit) : BigInt(300000);
+
+      // 优先使用本地 nonce（零 RPC），fallback 到链上查询
+      let nonce = acquireNonceLocal(walletAddress);
+      if (nonce === null) {
+        nonce = await acquireNonce(this.publicClient, walletAddress);
+      }
+
+      const txHash = await walletClient.sendTransaction({
+        to: FOURMEME_CONTRACT,
+        data: callData,
+        value: isNonBnbPool ? 0n : buyAmountWei,
+        gas: gasLimit,
+        gasPrice: gasPrice,
+        nonce: nonce
+      });
+
+      const unit = isNonBnbPool ? '底池代币' : 'BNB';
+      return {
+        success: true,
+        txHash: txHash,
+        amountIn: `${params.amount} ${unit}`
+      };
+    } catch (error: any) {
+      if (walletClient.account?.address) {
+        resetNonceForAddress(walletClient.account.address);
+      }
+      return {
+        success: false,
+        error: error.message || '快速买入执行失败'
+      };
+    }
+  }
+
+  /**
+   * 快速卖出（使用预取的余额，跳过 allowance 检查，使用本地 nonce）
+   */
+  private async executeSellFast(
+    walletClient: WalletClient,
+    params: FourMemeTradeParams,
+    prefetchedBalance?: bigint
+  ): Promise<FourMemeTradeResult> {
+    try {
+      const tokenAddress = params.tokenAddress as Address;
+      const walletAddress = walletClient.account!.address;
+
+      // 使用预取的余额，如果没有则查询链上
+      let tokenBalance: bigint;
+      if (prefetchedBalance !== undefined) {
+        tokenBalance = prefetchedBalance;
+      } else {
+        tokenBalance = await this.getTokenBalance(tokenAddress, walletAddress);
+      }
+
+      if (tokenBalance <= 0n) {
+        return { success: false, error: '代币余额为零' };
+      }
+
+      // 计算卖出数量
+      let sellAmount: bigint;
+      if (params.sellPercent && params.sellPercent > 0) {
+        sellAmount = (tokenBalance * BigInt(params.sellPercent)) / 100n;
+      } else {
+        sellAmount = tokenBalance;
+      }
+
+      if (sellAmount <= 0n) {
+        return { success: false, error: '卖出数量为零' };
+      }
+
+      // 跳过 allowance 检查（已预授权）
+      // 跳过 getAmountOut（使用 minEthAmount = 0n）
+      const minEthAmount = 0n;
+
+      const callData = encodeFunctionData({
+        abi: FOURMEME_ABI,
+        functionName: 'sellToken',
+        args: [tokenAddress, sellAmount, minEthAmount]
+      });
+
+      const gasPrice = params.gasPrice ? BigInt(params.gasPrice * 1e9) : undefined;
+      const gasLimit = params.gasLimit ? BigInt(params.gasLimit) : BigInt(300000);
+
+      // 优先使用本地 nonce（零 RPC），fallback 到链上查询
+      let nonce = acquireNonceLocal(walletAddress);
+      if (nonce === null) {
+        nonce = await acquireNonce(this.publicClient, walletAddress);
+      }
+
+      const txHash = await walletClient.sendTransaction({
+        to: FOURMEME_CONTRACT,
+        data: callData,
+        value: 0n,
+        gas: gasLimit,
+        gasPrice: gasPrice,
+        nonce: nonce
+      });
+
+      return {
+        success: true,
+        txHash: txHash,
+        amountIn: formatEther(sellAmount) + ' Token'
+      };
+    } catch (error: any) {
+      resetNonceForAddress(params.walletAddress);
+      return {
+        success: false,
+        error: error.message || '快速卖出执行失败'
       };
     }
   }

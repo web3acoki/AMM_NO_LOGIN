@@ -4,7 +4,7 @@ import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
 import { useDexStore } from './dexStore';
 import { createTradingService, type TradeParams } from '../services/tradingService';
-import { createFourMemeService, FourMemeService, ANTI_SANDWICH_RPC, type FourMemeTradeParams, type SellPrepareResult } from '../services/fourMemeService';
+import { createFourMemeService, FourMemeService, ANTI_SANDWICH_RPC, type FourMemeTradeParams, type SellPrepareResult, acquireNonceLocal } from '../services/fourMemeService';
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
@@ -62,6 +62,7 @@ export interface Task {
   intervalId?: number;        // 定时器ID
   currentBuyWalletIndex: number;  // 买入轮询钱包索引（round-robin）
   currentSellWalletIndex: number; // 卖出轮询钱包索引（round-robin）
+  preApprovalDone?: boolean;      // 预授权是否完成（ASTER 池）
 }
 
 export const useTaskStore = defineStore('task', () => {
@@ -71,6 +72,9 @@ export const useTaskStore = defineStore('task', () => {
 
   // 缓存每个任务的 FourMemeService 实例（避免每次执行都重新创建）
   const fourMemeServiceCache = new Map<string, InstanceType<typeof FourMemeService>>();
+
+  // 预授权状态跟踪（ASTER 池任务创建时发起预授权，开始时检查是否完成）
+  const preApprovalTracker = new Map<string, { promise: Promise<void>; completed: boolean }>();
 
   // 计算属性
   const runningTasks = computed(() => tasks.value.filter(t => t.status === 'running'));
@@ -165,9 +169,156 @@ export const useTaskStore = defineStore('task', () => {
       ]).then(() => {
         addLog(task.id, 'info', 'RPC 预热完成，可以开始任务');
       }).catch(() => {});
+
+      // ASTER 池任务：创建时预授权所有钱包（后台异步，不阻塞 UI）
+      if (config.poolBaseToken) {
+        preApproveWallets(task);
+      }
     }
 
     return task;
+  }
+
+  // 预授权所有钱包的底池代币（ASTER 池任务创建时调用）
+  function preApproveWallets(task: Task) {
+    const walletStore = useWalletStore();
+    const chainStore = useChainStore();
+    const baseTokenAddress = task.config.poolBaseToken;
+    if (!baseTokenAddress) return;
+
+    const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as const;
+    // 使用 Binance 官方 RPC 执行 approve，不占用防夹节点
+    const approveRpcUrl = 'https://bsc-dataseed.binance.org';
+    const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
+
+    const maxUint256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+    const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
+
+    const promise = (async () => {
+      try {
+        addLog(task.id, 'info', `开始预授权 ${task.walletAddresses.length} 个钱包的底池代币...`);
+
+        // 1. 用 multicall 批量查询所有钱包的 allowance（1 次 RPC 代替 N 次）
+        const approvePublicClient = createPublicClient({
+          chain,
+          transport: http(approveRpcUrl, { batch: true }),
+          batch: { multicall: true }
+        });
+
+        const allowancePromises = task.walletAddresses.map(addr =>
+          approvePublicClient.readContract({
+            address: baseTokenAddress as `0x${string}`,
+            abi: [{
+              type: 'function' as const,
+              name: 'allowance' as const,
+              stateMutability: 'view' as const,
+              inputs: [
+                { name: 'owner' as const, type: 'address' as const },
+                { name: 'spender' as const, type: 'address' as const }
+              ],
+              outputs: [{ name: '' as const, type: 'uint256' as const }]
+            }] as const,
+            functionName: 'allowance',
+            args: [addr as `0x${string}`, FOURMEME_CONTRACT]
+          }).then(val => ({ addr, allowance: val as bigint }))
+            .catch(() => ({ addr, allowance: 0n }))
+        );
+
+        const allowanceResults = await Promise.all(allowancePromises);
+
+        // 2. 筛出 allowance 不足的钱包
+        const needApproval = allowanceResults
+          .filter(r => r.allowance < maxUint128)
+          .map(r => r.addr);
+
+        if (needApproval.length === 0) {
+          addLog(task.id, 'success', '所有钱包已有足够授权，预授权跳过');
+          task.preApprovalDone = true;
+          return;
+        }
+
+        addLog(task.id, 'info', `${needApproval.length} 个钱包需要授权，开始并行发送 approve 交易...`);
+
+        // 3. 并行发送所有 approve TX（每批 10 个）
+        const BATCH_SIZE = 10;
+        const allTxHashes: { addr: string; txHash: string }[] = [];
+
+        for (let i = 0; i < needApproval.length; i += BATCH_SIZE) {
+          const batch = needApproval.slice(i, i + BATCH_SIZE);
+          const batchResults = await Promise.allSettled(
+            batch.map(async (addr) => {
+              const privateKey = getWalletPrivateKey(walletStore, addr);
+              if (!privateKey) throw new Error('无私钥');
+
+              const account = (await import('viem/accounts')).privateKeyToAccount(privateKey as `0x${string}`);
+              const walletClient = (await import('viem')).createWalletClient({
+                account,
+                chain,
+                transport: http(approveRpcUrl)
+              });
+
+              // ERC20 approve 方法选择器: 0x095ea7b3
+              const callData = ('0x095ea7b3' +
+                FOURMEME_CONTRACT.slice(2).padStart(64, '0') +
+                maxUint256.toString(16).padStart(64, '0')) as `0x${string}`;
+
+              const txHash = await walletClient.sendTransaction({
+                to: baseTokenAddress as `0x${string}`,
+                data: callData,
+                value: 0n,
+                gas: BigInt(100000)
+              });
+
+              return { addr, txHash };
+            })
+          );
+
+          for (const result of batchResults) {
+            if (result.status === 'fulfilled') {
+              allTxHashes.push(result.value);
+            } else {
+              addLog(task.id, 'warning', `预授权发送失败: ${result.reason?.message || '未知错误'}`);
+            }
+          }
+        }
+
+        // 4. 并行等待所有 receipt（Promise.allSettled 一次等，非逐个等）
+        if (allTxHashes.length > 0) {
+          addLog(task.id, 'info', `等待 ${allTxHashes.length} 笔授权交易确认...`);
+          const receiptResults = await Promise.allSettled(
+            allTxHashes.map(({ txHash }) =>
+              approvePublicClient.waitForTransactionReceipt({
+                hash: txHash as `0x${string}`,
+                timeout: 60000
+              })
+            )
+          );
+
+          let successCount = 0;
+          let failCount = 0;
+          for (const result of receiptResults) {
+            if (result.status === 'fulfilled' && result.value.status === 'success') {
+              successCount++;
+            } else {
+              failCount++;
+            }
+          }
+          addLog(task.id, 'info', `预授权确认完成: ${successCount} 成功, ${failCount} 失败`);
+        }
+
+        task.preApprovalDone = true;
+        addLog(task.id, 'success', '预授权完成，所有钱包已就绪');
+      } catch (error: any) {
+        addLog(task.id, 'warning', `预授权异常: ${error.message}，交易时将使用 inline approve 兜底`);
+        // 不设置 preApprovalDone = true，让 startTask 中的兜底逻辑处理
+      }
+    })();
+
+    preApprovalTracker.set(task.id, { promise, completed: false });
+    promise.then(() => {
+      const tracker = preApprovalTracker.get(task.id);
+      if (tracker) tracker.completed = true;
+    });
   }
 
   // 检查停止条件
@@ -327,6 +478,94 @@ export const useTaskStore = defineStore('task', () => {
     } else {
       addLog(task.id, 'error', `[内盘] 交易失败: ${result.error}`, walletAddress, result.txHash);
       return false;
+    }
+  }
+
+  // 快速交易路径（Change 4b）：使用预取数据，跳过冗余 RPC 调用
+  async function executeWalletTradeFast(
+    task: Task,
+    walletAddress: string,
+    tradeDirection: 'buy' | 'sell',
+    sharedFourMemeService: InstanceType<typeof FourMemeService>,
+    prefetchData?: { tokenBalance: bigint; allowanceSufficient: boolean }
+  ): Promise<boolean> {
+    const walletStore = useWalletStore();
+    const chainStore = useChainStore();
+
+    const privateKey = getWalletPrivateKey(walletStore, walletAddress);
+    if (!privateKey) {
+      addLog(task.id, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+      return false;
+    }
+
+    // 如果预取数据显示 allowance 不足，fallback 到原有慢路径
+    if (prefetchData && !prefetchData.allowanceSufficient && tradeDirection === 'buy') {
+      addLog(task.id, 'warning', `${walletAddress.slice(0, 10)}... 授权不足，使用慢路径`, walletAddress);
+      return await executeWalletTrade(task, walletAddress, tradeDirection, sharedFourMemeService);
+    }
+
+    // 卖出时如果余额为 0，直接跳过
+    if (tradeDirection === 'sell' && prefetchData && prefetchData.tokenBalance <= 0n) {
+      addLog(task.id, 'info', `${walletAddress.slice(0, 10)}... 代币余额为零，跳过卖出`, walletAddress);
+      return false;
+    }
+
+    try {
+      const chainId = chainStore.selectedChainId;
+      const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+
+      // 计算随机金额
+      const amountMin = task.config.amountMin || 0;
+      const amountMax = task.config.amountMax || amountMin;
+      const randomAmount = amountMin + Math.random() * (amountMax - amountMin);
+      const roundedAmount = Number(randomAmount.toFixed(8));
+
+      const sellAll = tradeDirection === 'sell' && task.config.sellAll;
+
+      const tradeParams: FourMemeTradeParams = {
+        chainId,
+        rpcUrl: antiSandwichRpc,
+        privateKey,
+        walletAddress,
+        tokenAddress: task.config.innerTokenAddress || task.config.tokenContract,
+        amount: roundedAmount,
+        mode: tradeDirection === 'buy' ? 'buy' : 'sell',
+        gasPrice: task.config.gasPrice,
+        gasLimit: task.config.gasLimit,
+        sellPercent: sellAll ? 100 : undefined,
+        slippage: task.config.innerSlippage,
+        poolBaseToken: task.config.poolBaseToken,
+      };
+
+      const result = await sharedFourMemeService.executeTradeFast(
+        tradeParams,
+        tradeDirection === 'sell' ? prefetchData?.tokenBalance : undefined
+      );
+
+      if (result.success) {
+        if (tradeDirection === 'buy') {
+          task.stats.buyCount++;
+        } else {
+          task.stats.sellCount++;
+        }
+        task.stats.spentAmount += roundedAmount;
+
+        const actionText = tradeDirection === 'buy' ? '买入' : '卖出';
+        const amountUnit = task.config.poolBaseToken ? 'ASTER' : 'BNB';
+        const resultText = result.amountOut
+          ? `[内盘-快速] ${actionText}成功，花费: ${result.amountIn}, 获得: ${result.amountOut}`
+          : `[内盘-快速] ${actionText}成功，金额: ${roundedAmount} ${amountUnit}`;
+
+        addLog(task.id, 'success', resultText, walletAddress, result.txHash);
+        return true;
+      } else {
+        addLog(task.id, 'error', `[内盘-快速] 交易失败: ${result.error}`, walletAddress, result.txHash);
+        return false;
+      }
+    } catch (error: any) {
+      addLog(task.id, 'error', `[内盘-快速] 交易异常: ${error.message}，尝试慢路径`, walletAddress);
+      // fallback 到原有慢路径
+      return await executeWalletTrade(task, walletAddress, tradeDirection, sharedFourMemeService);
     }
   }
 
@@ -492,11 +731,7 @@ export const useTaskStore = defineStore('task', () => {
       return;
     }
 
-    // 收集所有交易 Promise
-    const allPromises: Promise<boolean>[] = [];
-
-    // 内盘模式：使用缓存的 FourMemeService 实例（在 startTask 时创建）
-    // 如果缓存中没有，才创建新的（兼容旧任务或异常情况）
+    // 内盘模式：使用缓存的 FourMemeService 实例
     let sharedFourMemeService: InstanceType<typeof FourMemeService> | undefined;
     if (task.config.marketType === 'inner') {
       sharedFourMemeService = fourMemeServiceCache.get(task.id);
@@ -508,40 +743,91 @@ export const useTaskStore = defineStore('task', () => {
       }
     }
 
-    // 1. 买入线程：从钱包池按 currentBuyWalletIndex 取 buyThreadCount 个钱包
+    // 确定本轮参与的买入和卖出钱包
+    const buyWallets: string[] = [];
+    const sellWallets: string[] = [];
+
     if (buyThreadCount > 0) {
-      const buyWallets: string[] = [];
       for (let i = 0; i < buyThreadCount; i++) {
         const walletIndex = (task.currentBuyWalletIndex + i) % wallets.length;
         buyWallets.push(wallets[walletIndex]);
       }
-      // 更新买入钱包索引
       task.currentBuyWalletIndex = (task.currentBuyWalletIndex + buyThreadCount) % wallets.length;
-
-      addLog(task.id, 'info', `买入: ${buyWallets.length} 个钱包`);
-      for (const addr of buyWallets) {
-        allPromises.push(executeWalletTrade(task, addr, 'buy', sharedFourMemeService));
-      }
     }
 
-    // 2. 卖出线程：从钱包池按 currentSellWalletIndex 取 sellThreadCount 个钱包
     if (sellThreadCount > 0) {
-      const sellWallets: string[] = [];
       for (let i = 0; i < sellThreadCount; i++) {
         const walletIndex = (task.currentSellWalletIndex + i) % wallets.length;
         sellWallets.push(wallets[walletIndex]);
       }
-      // 更新卖出钱包索引
       task.currentSellWalletIndex = (task.currentSellWalletIndex + sellThreadCount) % wallets.length;
-
-      addLog(task.id, 'info', `卖出: ${sellWallets.length} 个钱包`);
-      for (const addr of sellWallets) {
-        allPromises.push(executeWalletTrade(task, addr, 'sell', sharedFourMemeService));
-      }
     }
 
-    // 3. 买入和卖出并行执行
-    await Promise.allSettled(allPromises);
+    // ===== ASTER 池内盘快速路径（两阶段执行） =====
+    const isAsterInner = task.config.marketType === 'inner' && !!task.config.poolBaseToken && task.preApprovalDone;
+
+    if (isAsterInner && sharedFourMemeService) {
+      const allWallets = [...new Set([...buyWallets, ...sellWallets])];
+
+      addLog(task.id, 'info', `[快速路径] 批量预取数据，钱包数: ${allWallets.length}`);
+
+      // 阶段1：批量预取（并行执行 nonce + balance/allowance）
+      const tokenAddress = task.config.innerTokenAddress || task.config.tokenContract;
+      const baseTokenAddress = task.config.poolBaseToken!;
+
+      const [, prefetchData] = await Promise.all([
+        // 批量获取 nonce（因 batch: true，Viem 自动合并为 1 个 HTTP 请求）
+        sharedFourMemeService.batchFetchNonces(allWallets),
+        // 批量获取余额 + allowance（通过 multicall 合约）
+        sharedFourMemeService.batchPrepareRound({
+          tokenAddress,
+          baseTokenAddress,
+          sellWalletAddresses: sellWallets,
+          allWalletAddresses: allWallets
+        })
+      ]);
+
+      // 阶段2：同时发送所有交易（火发即忘）
+      const allPromises: Promise<boolean>[] = [];
+
+      if (buyWallets.length > 0) {
+        addLog(task.id, 'info', `买入: ${buyWallets.length} 个钱包 [快速]`);
+        for (const addr of buyWallets) {
+          const data = prefetchData.get(addr.toLowerCase());
+          allPromises.push(executeWalletTradeFast(task, addr, 'buy', sharedFourMemeService, data));
+        }
+      }
+
+      if (sellWallets.length > 0) {
+        addLog(task.id, 'info', `卖出: ${sellWallets.length} 个钱包 [快速]`);
+        for (const addr of sellWallets) {
+          const data = prefetchData.get(addr.toLowerCase());
+          allPromises.push(executeWalletTradeFast(task, addr, 'sell', sharedFourMemeService, data));
+        }
+      }
+
+      await Promise.allSettled(allPromises);
+
+    } else {
+      // ===== 非 ASTER 池 / 外盘 / 预授权未完成：走原有路径 =====
+      const allPromises: Promise<boolean>[] = [];
+
+      if (buyWallets.length > 0) {
+        addLog(task.id, 'info', `买入: ${buyWallets.length} 个钱包`);
+        for (const addr of buyWallets) {
+          allPromises.push(executeWalletTrade(task, addr, 'buy', sharedFourMemeService));
+        }
+      }
+
+      if (sellWallets.length > 0) {
+        addLog(task.id, 'info', `卖出: ${sellWallets.length} 个钱包`);
+        for (const addr of sellWallets) {
+          allPromises.push(executeWalletTrade(task, addr, 'sell', sharedFourMemeService));
+        }
+      }
+
+      await Promise.allSettled(allPromises);
+    }
 
     // 执行后检查停止条件（内盘模式不检查市值，因为没有 DEX 交易对）
     if (task.config.marketType !== 'inner') {
@@ -558,7 +844,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 开始任务
-  function startTask(taskId: string): boolean {
+  async function startTask(taskId: string): Promise<boolean> {
     const task = tasks.value.find(t => t.id === taskId);
     if (!task) return false;
 
@@ -573,6 +859,22 @@ export const useTaskStore = defineStore('task', () => {
       const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
       const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
       fourMemeServiceCache.set(taskId, service);
+    }
+
+    // ASTER 池预授权守卫：等待预授权完成（最多 30 秒）
+    if (task.config.marketType === 'inner' && task.config.poolBaseToken && !task.preApprovalDone) {
+      const tracker = preApprovalTracker.get(taskId);
+      if (tracker && !tracker.completed) {
+        addLog(task.id, 'info', '等待预授权完成...');
+        try {
+          await Promise.race([
+            tracker.promise,
+            new Promise<void>((_, reject) => setTimeout(() => reject(new Error('预授权超时')), 30000))
+          ]);
+        } catch {
+          addLog(task.id, 'warning', '预授权超时，将使用 inline approve 兜底继续执行');
+        }
+      }
     }
 
     // 立即设置状态为运行中
@@ -638,7 +940,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 继续任务
-  function resumeTask(taskId: string): boolean {
+  async function resumeTask(taskId: string): Promise<boolean> {
     const task = tasks.value.find(t => t.id === taskId);
     if (!task || task.status !== 'paused') return false;
 
@@ -659,6 +961,8 @@ export const useTaskStore = defineStore('task', () => {
 
     // 清理缓存的 FourMemeService 实例
     fourMemeServiceCache.delete(taskId);
+    // 清理预授权追踪
+    preApprovalTracker.delete(taskId);
 
     addLog(task.id, 'info', `任务已停止${reason ? `，原因: ${reason}` : ''}`);
     return true;
@@ -671,6 +975,8 @@ export const useTaskStore = defineStore('task', () => {
 
     // 清理缓存的 FourMemeService 实例
     fourMemeServiceCache.delete(taskId);
+    // 清理预授权追踪
+    preApprovalTracker.delete(taskId);
 
     const task = tasks.value[taskIndex];
 
