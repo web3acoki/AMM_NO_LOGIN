@@ -739,19 +739,19 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 查询批次余额
-    // 并发批量查询批次钱包余额（优化版本）
+    // 并发批量查询批次钱包余额（优化版本，RPC节点轮询）
     async refreshBatchBalances(batchId: string) {
       const batch = this.walletBatches.find(b => b.id === batchId);
       if (!batch) return;
 
-      const publicClient = this.getPublicClient();
+      const clients = this.getPublicClients();
       const tokenDecimals = this.targetToken?.decimals || 18;
 
-      console.log(`开始查询批次余额: ${batch.wallets.length} 个钱包`);
+      console.log(`开始查询批次余额: ${batch.wallets.length} 个钱包, 使用 ${clients.length} 个RPC节点轮询`);
 
-      // 使用并发查询
       const results = await Promise.all(
-        batch.wallets.map(async wallet => {
+        batch.wallets.map(async (wallet, idx) => {
+          const publicClient = clients[idx % clients.length];
           try {
             const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
             let tokenBalance = BigInt(0);
@@ -777,15 +777,16 @@ export const useWalletStore = defineStore('wallet', {
               console.warn(`Failed to fetch ASTER balance for ${wallet.address}:`, e);
             }
 
-            return { native: balance, token: tokenBalance, aster: asterBalance };
+            return { native: balance, token: tokenBalance, aster: asterBalance, failed: false };
           } catch (error) {
             console.error(`Failed to fetch balance for ${wallet.address}:`, error);
-            return { native: BigInt(0), token: BigInt(0), aster: BigInt(0) };
+            return { native: BigInt(0), token: BigInt(0), aster: BigInt(0), failed: true };
           }
         })
       );
 
-      // 汇总结果
+      // 汇总结果（排除失败的钱包）
+      const failedCount = results.filter(r => r.failed).length;
       const totalNative = results.reduce((sum, r) => sum + r.native, BigInt(0));
       const totalToken = results.reduce((sum, r) => sum + r.token, BigInt(0));
       const totalAster = results.reduce((sum, r) => sum + r.aster, BigInt(0));
@@ -795,6 +796,9 @@ export const useWalletStore = defineStore('wallet', {
       batch.totalAsterBalance = formatUnits(totalAster, ASTER_DECIMALS);
       this.persistBatches();
 
+      if (failedCount > 0) {
+        console.warn(`批次余额查询完成，${failedCount}/${results.length} 个钱包查询失败`);
+      }
       console.log(`批次余额查询完成: ${batch.totalNativeBalance} BNB, ${batch.totalAsterBalance} ASTER`);
 
       return {
@@ -1007,28 +1011,34 @@ export const useWalletStore = defineStore('wallet', {
       };
     },
 
-    // 刷新目标代币余额
+    // 刷新目标代币余额（并发 + RPC节点轮询）
     async refreshTargetTokenBalance() {
       if (!this.targetToken) return;
 
-      const publicClient = this.getPublicClient();
+      const clients = this.getPublicClients();
       const tokenAddress = this.targetToken.address as `0x${string}`;
       const decimals = this.targetToken.decimals;
 
-      for (const wallet of this.localWallets) {
-        try {
-          const balance = await publicClient.readContract({
-            address: tokenAddress,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [wallet.address as `0x${string}`]
-          });
-          wallet.tokenBalance = formatUnits(balance as bigint, decimals);
-        } catch (error) {
-          console.error(`Failed to fetch target token balance for ${wallet.address}:`, error);
-          wallet.tokenBalance = '-';
-        }
-      }
+      const wallets = this.localWallets;
+      console.log(`开始查询目标代币余额: ${wallets.length} 个钱包, 使用 ${clients.length} 个RPC节点轮询`);
+
+      await Promise.all(
+        wallets.map(async (wallet, idx) => {
+          const publicClient = clients[idx % clients.length];
+          try {
+            const balance = await publicClient.readContract({
+              address: tokenAddress,
+              abi: erc20Abi,
+              functionName: 'balanceOf',
+              args: [wallet.address as `0x${string}`]
+            });
+            wallet.tokenBalance = formatUnits(balance as bigint, decimals);
+          } catch (error) {
+            console.error(`Failed to fetch target token balance for ${wallet.address}:`, error);
+            wallet.tokenBalance = '-';
+          }
+        })
+      );
 
       this.persist();
     },
@@ -1424,6 +1434,25 @@ export const useWalletStore = defineStore('wallet', {
       });
     },
 
+    // 获取当前链的所有可用 RPC URL 列表
+    getRpcUrls(): string[] {
+      const chainStore = useChainStore();
+      const chain = chainStore.selectedChain;
+      if (!chain || !chain.rpcOptions || chain.rpcOptions.length === 0) {
+        return [chainStore.effectiveRpcUrl || this.getChainConfig().rpcUrls.default.http[0]];
+      }
+      return chain.rpcOptions.map(opt => opt.url);
+    },
+
+    // 创建多个 publicClient（每个 RPC 节点一个），用于余额查询轮询
+    getPublicClients(): ReturnType<typeof createPublicClient>[] {
+      const chain = this.getChainConfig();
+      const rpcUrls = this.getRpcUrls();
+      return rpcUrls.map(url =>
+        createPublicClient({ chain, transport: http(url) })
+      );
+    },
+
     getWalletClient() {
       if (!this.connectedAddress) {
         return null;
@@ -1446,29 +1475,30 @@ export const useWalletStore = defineStore('wallet', {
       });
     },
 
-    // 并发批量查询余额（优化版本）
+    // 并发批量查询余额（优化版本，RPC节点轮询）
     async refreshAllBalances() {
-      const publicClient = this.getPublicClient();
+      const clients = this.getPublicClients();
       const usdtAddress = getUsdtAddress(this.currentChainId);
-      const usdtDecimals = usdtAddress ? await fetchTokenDecimals(publicClient, usdtAddress) : 18;
+      // 用第一个client获取精度（只需一次）
+      const usdtDecimals = usdtAddress ? await fetchTokenDecimals(clients[0], usdtAddress) : 18;
 
       const wallets = this.localWallets;
-      const batchSize = 50; // 每批50个钱包
+      const batchSize = 50;
       const totalBatches = Math.ceil(wallets.length / batchSize);
 
-      console.log(`开始批量查询余额: ${wallets.length} 个钱包, ${totalBatches} 批`);
+      console.log(`开始批量查询余额: ${wallets.length} 个钱包, ${totalBatches} 批, 使用 ${clients.length} 个RPC节点轮询`);
 
       for (let i = 0; i < totalBatches; i++) {
         const start = i * batchSize;
         const end = Math.min(start + batchSize, wallets.length);
         const batch = wallets.slice(start, end);
 
-        // 批内并发查询
         await Promise.all(
-          batch.map(wallet =>
-            refreshWalletBalancesForWallet(wallet, publicClient, usdtAddress, usdtDecimals)
-              .catch(err => console.error(`查询余额失败 ${wallet.address}:`, err))
-          )
+          batch.map((wallet, idx) => {
+            const client = clients[(start + idx) % clients.length];
+            return refreshWalletBalancesForWallet(wallet, client, usdtAddress, usdtDecimals)
+              .catch(err => console.error(`查询余额失败 ${wallet.address}:`, err));
+          })
         );
 
         console.log(`已完成 ${end}/${wallets.length} 个钱包`);
@@ -1489,25 +1519,25 @@ export const useWalletStore = defineStore('wallet', {
       this.persist();
     },
 
-    // 并发批量查询代币余额（优化版本）
+    // 并发批量查询代币余额（优化版本，RPC节点轮询）
     async refreshTokenBalance(tokenAddress: string) {
-      const publicClient = this.getPublicClient();
-      const decimals = await fetchTokenDecimals(publicClient, tokenAddress as `0x${string}`);
+      const clients = this.getPublicClients();
+      const decimals = await fetchTokenDecimals(clients[0], tokenAddress as `0x${string}`);
 
       const wallets = this.localWallets;
-      const batchSize = 50; // 每批50个钱包
+      const batchSize = 50;
       const totalBatches = Math.ceil(wallets.length / batchSize);
 
-      console.log(`开始批量查询代币余额: ${wallets.length} 个钱包, ${totalBatches} 批`);
+      console.log(`开始批量查询代币余额: ${wallets.length} 个钱包, ${totalBatches} 批, 使用 ${clients.length} 个RPC节点轮询`);
 
       for (let i = 0; i < totalBatches; i++) {
         const start = i * batchSize;
         const end = Math.min(start + batchSize, wallets.length);
         const batch = wallets.slice(start, end);
 
-        // 批内并发查询
         await Promise.all(
-          batch.map(async wallet => {
+          batch.map(async (wallet, idx) => {
+            const publicClient = clients[(start + idx) % clients.length];
             try {
               const balance = await publicClient.readContract({
                 address: tokenAddress as `0x${string}`,
