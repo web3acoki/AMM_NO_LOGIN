@@ -322,6 +322,9 @@ export const useTaskStore = defineStore('task', () => {
         addLog(task.id, 'success', '预授权完成，所有钱包已就绪');
       } catch (error: any) {
         addLog(task.id, 'warning', `预授权异常: ${error.message}，交易时将使用 inline approve 兜底`);
+        // 即使异常也标记为完成，否则 executeRound 永远走不到快速路径
+        // 快速路径有 allowance 检查兜底：allowanceSufficient=false 时会 fallback 到慢路径
+        task.preApprovalDone = true;
       }
     })();
 
@@ -755,6 +758,8 @@ export const useTaskStore = defineStore('task', () => {
         const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
         sharedFourMemeService = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
         fourMemeServiceCache.set(task.id, sharedFourMemeService);
+        // 新建的 service 连接是冷的，立即预热（不阻塞当前轮次，下一轮受益）
+        sharedFourMemeService.warmupConnections().catch(() => {});
       }
     }
 
@@ -801,7 +806,9 @@ export const useTaskStore = defineStore('task', () => {
           sellWalletAddresses: sellWallets
         }),
         // 获取当前 gasPrice（1 次 RPC，避免每个钱包的 sendTransaction 各自查询）
-        task.config.gasPrice ? Promise.resolve(undefined) : sharedFourMemeService.fetchGasPrice()
+        task.config.gasPrice ? Promise.resolve(undefined) : sharedFourMemeService.fetchGasPrice(),
+        // 并行预热防夹节点连接（Phase 2 发交易要用，确保 TCP/TLS 已建立）
+        sharedFourMemeService.warmupTradeRpc()
       ]);
 
       // 阶段2：同时发送所有交易（火发即忘）
@@ -876,6 +883,8 @@ export const useTaskStore = defineStore('task', () => {
       const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
       const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
       fourMemeServiceCache.set(taskId, service);
+      // 预热连接（异步，不阻塞）- 停止后重启时 service 是新创建的，连接需要重新建立
+      service.warmupConnections().catch(() => {});
     }
 
     // 立即设置状态为运行中（必须在 await 之前，否则 UI 不更新）

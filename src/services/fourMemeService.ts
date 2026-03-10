@@ -198,6 +198,14 @@ export class FourMemeService {
   }
 
   /**
+   * 预热防夹节点连接（仅 publicClient）
+   * 在 Phase 1 并行调用，确保 Phase 2 发送交易时连接已建立
+   */
+  async warmupTradeRpc(): Promise<void> {
+    await this.publicClient.getChainId().catch(() => {});
+  }
+
+  /**
    * 计算滑点保护的最小输出金额
    */
   private calculateMinAmountOut(expectedOut: bigint, slippage: number): bigint {
