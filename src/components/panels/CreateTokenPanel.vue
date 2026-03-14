@@ -22,6 +22,40 @@
     </div>
 
     <div class="panel-body">
+      <!-- 模式选择 -->
+      <div class="card mb-3">
+        <div class="card-header">
+          <h6 class="mb-0">
+            <i class="bi bi-toggles me-1"></i>
+            创建模式
+          </h6>
+        </div>
+        <div class="card-body py-2">
+          <div class="d-flex gap-2">
+            <button
+              class="btn btn-sm flex-fill"
+              :class="createMode === 'standard' ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="createMode = 'standard'"
+            >
+              <i class="bi bi-box me-1"></i>
+              标准模式
+            </button>
+            <button
+              class="btn btn-sm flex-fill"
+              :class="createMode === 'agent' ? 'btn-info' : 'btn-outline-secondary'"
+              @click="createMode = 'agent'"
+            >
+              <i class="bi bi-robot me-1"></i>
+              AI Agent 模式
+            </button>
+          </div>
+          <small v-if="createMode === 'agent'" class="text-info d-block mt-2">
+            <i class="bi bi-info-circle me-1"></i>
+            AI Agent 模式将注册 EIP-8004 Identity NFT，代币会获得 Agent 标识
+          </small>
+        </div>
+      </div>
+
       <!-- 钱包连接 -->
       <div class="card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -50,6 +84,83 @@
               {{ NETWORKS[currentNetwork].name }}
             </span>
           </div>
+        </div>
+      </div>
+
+      <!-- Agent NFT 注册 (仅 Agent 模式) -->
+      <div v-if="createMode === 'agent'" class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h6 class="mb-0">
+            <i class="bi bi-person-badge me-1"></i>
+            Agent NFT 注册
+          </h6>
+          <div class="form-check form-switch mb-0">
+            <input
+              class="form-check-input"
+              type="checkbox"
+              v-model="enableNftRegistration"
+              id="nftToggle"
+            />
+            <label class="form-check-label small" for="nftToggle">
+              注册 EIP-8004 NFT
+            </label>
+          </div>
+        </div>
+        <div v-if="enableNftRegistration" class="card-body">
+          <div class="mb-3">
+            <label class="form-label">Agent 名称 *</label>
+            <input
+              type="text"
+              class="form-control form-control-sm"
+              v-model="agentInfo.name"
+              placeholder="My AI Agent"
+            />
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Agent 描述 (可选)</label>
+            <textarea
+              class="form-control form-control-sm"
+              v-model="agentInfo.description"
+              rows="2"
+              placeholder="I'm four.meme trading agent"
+            ></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Agent 头像 (可选)</label>
+            <input
+              type="file"
+              class="form-control form-control-sm"
+              @change="handleAgentImageSelect"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+            />
+            <div v-if="agentImagePreview" class="mt-2">
+              <img :src="agentImagePreview" alt="Agent Image" class="img-thumbnail" style="max-width: 80px;" />
+            </div>
+          </div>
+
+          <button
+            class="btn btn-info btn-sm w-100"
+            @click="registerAgentNFT"
+            :disabled="!connectedWallet || !agentInfo.name.trim() || isLoading || nftRegistered"
+          >
+            <i class="bi bi-shield-check me-1"></i>
+            {{ nftRegistered ? 'Agent NFT 已注册' : '注册 Agent NFT' }}
+          </button>
+
+          <div v-if="nftRegistered" class="alert alert-success py-2 small mt-2 mb-0">
+            <i class="bi bi-check-circle me-1"></i>
+            Agent ID: <strong>{{ agentId }}</strong>
+            <br />
+            <small class="text-muted">TX: {{ nftTxHash.slice(0, 14) }}...{{ nftTxHash.slice(-8) }}</small>
+          </div>
+        </div>
+        <div v-else class="card-body py-2">
+          <small class="text-muted">
+            <i class="bi bi-info-circle me-1"></i>
+            已跳过 NFT 注册，将直接使用 Agent 模式参数创建代币
+          </small>
         </div>
       </div>
 
@@ -408,6 +519,22 @@ const CREATE_FEE = parseEther('0.01');
 // buyTokenAMAP 函数选择器
 const BUY_SELECTOR = '87f27655';
 
+// EIP-8004 NFT contract
+const NFT_8004_ADDRESS = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
+const REGISTRATION_TYPE = 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1';
+
+// EIP-8004 ABI
+const NFT_8004_ABI = [
+  { name: 'register', type: 'function', inputs: [{ name: 'agentURI', type: 'string' }], outputs: [{ name: 'agentId', type: 'uint256' }], stateMutability: 'nonpayable' },
+  { name: 'Registered', type: 'event', inputs: [{ name: 'agentId', type: 'uint256', indexed: true }, { name: 'agentURI', type: 'string', indexed: false }, { name: 'owner', type: 'address', indexed: true }] }
+] as const;
+
+// TokenManager2 fee query ABI (for dynamic fee)
+const TM2_FEE_ABI = [
+  { name: '_launchFee', type: 'function', inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { name: '_tradingFeeRate', type: 'function', inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' }
+] as const;
+
 // FourMeme createToken ABI
 const FOURMEME_ABI = [
   {
@@ -501,6 +628,27 @@ const apiStatus = reactive({
   signature: ''
 });
 
+// Mode selection: 'standard' or 'agent'
+const createMode = ref<'standard' | 'agent'>('standard');
+
+// Agent info (separate from token info)
+const agentInfo = reactive({
+  name: '',
+  description: '',
+});
+const agentImage = ref<File | null>(null);
+const agentImagePreview = ref<string | null>(null);
+const agentImageUrl = ref('');
+
+// NFT registration state
+const nftRegistered = ref(false);
+const agentId = ref<number | null>(null);
+const nftTxHash = ref('');
+const enableNftRegistration = ref(true);
+
+// Public config (raisedToken)
+const publicConfig = ref<any>(null);
+
 // ========== 计算属性 ==========
 
 const selectedBatch = computed(() => {
@@ -519,6 +667,19 @@ const canLaunch = computed(() => {
     connectedWallet.value &&
     selectedWalletAddresses.value.length > 0 &&
     buyAmountPerWallet.value > 0;
+});
+
+// Reset agent state when mode changes
+watch(createMode, () => {
+  nftRegistered.value = false;
+  agentId.value = null;
+  nftTxHash.value = '';
+  agentInfo.name = '';
+  agentInfo.description = '';
+  agentImage.value = null;
+  agentImagePreview.value = null;
+  agentImageUrl.value = '';
+  publicConfig.value = null;
 });
 
 // ========== 工具函数 ==========
@@ -721,6 +882,178 @@ function handleImageSelect(event: Event) {
   }
 }
 
+// ========== Agent 图片处理 ==========
+
+function handleAgentImageSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (input.files && input.files[0]) {
+    agentImage.value = input.files[0];
+    agentImagePreview.value = URL.createObjectURL(input.files[0]);
+    agentImageUrl.value = '';
+  }
+}
+
+async function uploadAgentImage() {
+  if (!agentImage.value) return;
+
+  // Ensure logged in
+  if (!apiStatus.loggedIn) {
+    await loginToFourMeme();
+    if (!apiStatus.loggedIn) {
+      throw new Error('需要先登录 FourMeme API 才能上传图片');
+    }
+  }
+
+  addLog('info', '正在上传 Agent 图片...');
+  const formData = new FormData();
+  formData.append('file', agentImage.value);
+
+  const response = await fetch('/api/fourmeme/upload', {
+    method: 'POST',
+    headers: { 'meme-web-access': apiStatus.accessToken },
+    body: formData
+  });
+  const data = await response.json();
+  if (data.code !== 0 && data.code !== '0') {
+    throw new Error(`上传 Agent 图片失败: ${JSON.stringify(data)}`);
+  }
+
+  agentImageUrl.value = data.data;
+  addLog('success', 'Agent 图片上传成功');
+}
+
+// ========== NFT Registration ==========
+
+async function registerAgentNFT() {
+  if (!connectedWallet.value) {
+    addLog('error', '请先连接钱包');
+    return;
+  }
+  if (!agentInfo.name.trim()) {
+    addLog('error', '请填写 Agent 名称');
+    return;
+  }
+
+  isLoading.value = true;
+  try {
+    // Upload agent image if selected
+    if (agentImage.value && !agentImageUrl.value) {
+      await uploadAgentImage();
+    }
+
+    // Build agentURI
+    const payload = {
+      type: REGISTRATION_TYPE,
+      name: agentInfo.name.trim(),
+      description: agentInfo.description.trim() || "I'm four.meme trading agent",
+      image: agentImageUrl.value,
+      active: true,
+      supportedTrust: ['']
+    };
+    const agentURI = `data:application/json;base64,${btoa(JSON.stringify(payload))}`;
+
+    addLog('info', '正在注册 EIP-8004 Agent NFT...');
+    addLog('info', '请在钱包中确认交易...');
+
+    const mainClient = getMainWalletClient();
+    const publicClient = getPublicClient();
+
+    const txHash = await mainClient.writeContract({
+      address: NFT_8004_ADDRESS,
+      abi: NFT_8004_ABI,
+      functionName: 'register',
+      args: [agentURI],
+      account: connectedWallet.value as `0x${string}`
+    });
+
+    nftTxHash.value = txHash;
+    addLog('info', `NFT 注册交易已发送: ${txHash.slice(0, 14)}...`);
+    addLog('info', '等待交易确认...');
+
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+    if (receipt.status !== 'success') {
+      throw new Error('NFT 注册交易失败');
+    }
+
+    // Parse Registered event to get agentId
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() === NFT_8004_ADDRESS.toLowerCase() && log.topics[0]) {
+        // Registered event: topics[1] is agentId (indexed uint256)
+        if (log.topics[1]) {
+          agentId.value = Number(BigInt(log.topics[1]));
+          break;
+        }
+      }
+    }
+
+    nftRegistered.value = true;
+    addLog('success', `Agent NFT 注册成功! Agent ID: ${agentId.value}`);
+    addLog('info', `交易哈希: ${txHash}`);
+  } catch (error: any) {
+    addLog('error', `NFT 注册失败: ${error.message}`);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+// ========== Public Config ==========
+
+async function fetchPublicConfig() {
+  try {
+    addLog('info', '正在获取公共配置...');
+    const response = await fetch('/api/fourmeme/config');
+    const data = await response.json();
+
+    if (data.code !== 0 && data.code !== '0') {
+      throw new Error(`获取配置失败: ${JSON.stringify(data)}`);
+    }
+
+    // Find BNB raisedToken with status PUBLISH
+    const configList = data.data || [];
+    let bnbConfig = null;
+    for (const item of configList) {
+      if (item.raisedToken && item.raisedToken.symbol === 'BNB' && item.status === 'PUBLISH') {
+        bnbConfig = item;
+        break;
+      }
+      // Also check top-level symbol
+      if (item.symbol === 'BNB' && item.status === 'PUBLISH') {
+        bnbConfig = item;
+        break;
+      }
+    }
+
+    if (bnbConfig) {
+      publicConfig.value = {
+        totalSupply: bnbConfig.totalSupply || 1000000000,
+        raisedAmount: bnbConfig.raisedAmount || 24,
+        saleRate: bnbConfig.saleRate || 0.8,
+        raisedToken: bnbConfig.raisedToken || undefined,
+        tokenManager: bnbConfig.tokenManager || bnbConfig.contractAddress || undefined,
+      };
+      addLog('success', `公共配置已获取: totalSupply=${publicConfig.value.totalSupply}, raisedAmount=${publicConfig.value.raisedAmount}`);
+    } else {
+      // Use the raw data if structure is different
+      publicConfig.value = {
+        totalSupply: data.data?.totalSupply || 1000000000,
+        raisedAmount: data.data?.raisedAmount || 24,
+        saleRate: data.data?.saleRate || 0.8,
+        raisedToken: data.data?.raisedToken || undefined,
+        tokenManager: data.data?.tokenManager || data.data?.contractAddress || undefined,
+      };
+      addLog('warning', '使用默认配置值');
+    }
+  } catch (error: any) {
+    addLog('error', `获取配置失败: ${error.message}，使用默认值`);
+    publicConfig.value = {
+      totalSupply: 1000000000,
+      raisedAmount: 24,
+      saleRate: 0.8,
+    };
+  }
+}
+
 // ========== FourMeme API ==========
 
 async function loginToFourMeme() {
@@ -839,6 +1172,11 @@ async function prepareTokenCreate() {
 
   isLoading.value = true;
   try {
+    // In agent mode, fetch public config first
+    if (createMode.value === 'agent') {
+      await fetchPublicConfig();
+    }
+
     addLog('info', '正在准备创建代币...');
 
     const payload: Record<string, any> = {
@@ -851,15 +1189,25 @@ async function prepareTokenCreate() {
       preSale: String(tokenInfo.presaleBNB || '0'),
       onlyMPC: false,
       lpTradingFee: 0.0025,
-      totalSupply: 1000000000,
-      raisedAmount: 24,
-      saleRate: 0.8,
+      totalSupply: createMode.value === 'agent' ? (publicConfig.value?.totalSupply || 1000000000) : 1000000000,
+      raisedAmount: createMode.value === 'agent' ? (publicConfig.value?.raisedAmount || 24) : 24,
+      saleRate: createMode.value === 'agent' ? (publicConfig.value?.saleRate || 0.8) : 0.8,
       reserveRate: 0,
       funGroup: false,
       clickFun: false,
       symbol: 'BNB',
       symbolAddress: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'
     };
+
+    // Add agent-mode-specific params
+    if (createMode.value === 'agent') {
+      if (publicConfig.value?.raisedToken) {
+        payload.raisedToken = publicConfig.value.raisedToken;
+      }
+      payload.dexType = 'PANCAKE_SWAP';
+      payload.rushMode = false;
+      payload.feePlan = false;
+    }
 
     if (tokenInfo.webUrl) payload.webUrl = tokenInfo.webUrl;
     if (tokenInfo.twitterUrl) payload.twitterUrl = tokenInfo.twitterUrl;
@@ -973,9 +1321,50 @@ async function launchAndBuy() {
     addLog('info', `创建 Gas: ${actualCreateGas} Gwei, 买入 Gas: ${actualBuyGas} Gwei`);
 
     const presaleWei = parseEther(String(tokenInfo.presaleBNB || 0));
-    const totalValue = CREATE_FEE + presaleWei;
+    let totalValue: bigint;
 
-    addLog('info', `创建费: 0.01 BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB = ${formatEther(totalValue)} BNB`);
+    if (createMode.value === 'agent') {
+      // Dynamic fee: query on-chain _launchFee from TokenManager2
+      let launchFee = CREATE_FEE; // fallback
+      let tradingFee = 0n;
+
+      if (publicConfig.value?.tokenManager) {
+        try {
+          addLog('info', '正在查询链上创建费用...');
+          const onChainFee = await publicClient.readContract({
+            address: publicConfig.value.tokenManager as `0x${string}`,
+            abi: TM2_FEE_ABI,
+            functionName: '_launchFee'
+          });
+          launchFee = onChainFee as bigint;
+          addLog('info', `链上创建费: ${formatEther(launchFee)} BNB`);
+
+          // If presale > 0, also query trading fee rate
+          if (presaleWei > 0n) {
+            try {
+              const feeRate = await publicClient.readContract({
+                address: publicConfig.value.tokenManager as `0x${string}`,
+                abi: TM2_FEE_ABI,
+                functionName: '_tradingFeeRate'
+              });
+              // tradingFee = presaleWei * feeRate / 10000 (assuming basis points)
+              tradingFee = (presaleWei * (feeRate as bigint)) / 10000n;
+              addLog('info', `交易费率: ${feeRate}, 交易费: ${formatEther(tradingFee)} BNB`);
+            } catch (e: any) {
+              addLog('warning', `查询交易费率失败: ${e.message}，跳过`);
+            }
+          }
+        } catch (e: any) {
+          addLog('warning', `查询链上费用失败: ${e.message}，使用默认 0.01 BNB`);
+        }
+      }
+
+      totalValue = launchFee + presaleWei + tradingFee;
+      addLog('info', `创建费: ${formatEther(launchFee)} BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB + 交易费: ${formatEther(tradingFee)} BNB = ${formatEther(totalValue)} BNB`);
+    } else {
+      totalValue = CREATE_FEE + presaleWei;
+      addLog('info', `创建费: 0.01 BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB = ${formatEther(totalValue)} BNB`);
+    }
 
     // 3. 预先创建所有买入钱包客户端
     const buyAmount = parseEther(String(buyAmountPerWallet.value));
