@@ -441,15 +441,9 @@
             </div>
           </div>
 
-          <!-- 预测地址 -->
-          <div v-if="predictedAddress" class="alert alert-info py-2 small mb-3">
-            <i class="bi bi-crosshair me-1"></i>
-            预测代币地址: <code>{{ predictedAddress }}</code>
-          </div>
-
-          <div class="alert alert-warning py-2 small mb-3">
-            <i class="bi bi-lightning-charge me-1"></i>
-            <strong>同区块操作</strong>：创建交易高 Gas 先执行，买入交易紧跟其后，同一区块完成！
+          <div class="alert alert-info py-2 small mb-3">
+            <i class="bi bi-info-circle me-1"></i>
+            创建交易确认后自动从链上获取代币地址，然后立即发送买入交易
           </div>
 
           <button
@@ -1356,20 +1350,12 @@ async function launchAndBuy() {
         throw new Error(`请手动切换钱包到 ${network.name} 后重试`);
       }
     }
+
     const mainWalletClient = getMainWalletClient();
     const publicClient = getPublicClient();
-    const network = NETWORKS[currentNetwork.value];
     const mainAddress = connectedWallet.value as `0x${string}`;
 
-    // 1. 预测代币地址
-    let tokenAddress = predictedAddress.value;
-    if (!tokenAddress) {
-      addLog('warning', '无预测地址，将在创建后从链上获取');
-    } else {
-      addLog('info', `预测代币地址: ${tokenAddress}`);
-    }
-
-    // 2. 准备买入钱包
+    // 1. 准备买入钱包
     const selectedWallets = selectedBatch.value.wallets
       .filter(w => selectedWalletAddresses.value.includes(w.address));
 
@@ -1384,8 +1370,7 @@ async function launchAndBuy() {
     let totalValue: bigint;
 
     if (createMode.value === 'agent') {
-      // Dynamic fee: query on-chain _launchFee from TokenManager2
-      let launchFee = CREATE_FEE; // fallback
+      let launchFee = CREATE_FEE;
       let tradingFee = 0n;
 
       if (publicConfig.value?.tokenManager) {
@@ -1399,7 +1384,6 @@ async function launchAndBuy() {
           launchFee = onChainFee as bigint;
           addLog('info', `链上创建费: ${formatEther(launchFee)} BNB`);
 
-          // If presale > 0, also query trading fee rate
           if (presaleWei > 0n) {
             try {
               const feeRate = await publicClient.readContract({
@@ -1407,7 +1391,6 @@ async function launchAndBuy() {
                 abi: TM2_FEE_ABI,
                 functionName: '_tradingFeeRate'
               });
-              // tradingFee = presaleWei * feeRate / 10000 (assuming basis points)
               tradingFee = (presaleWei * (feeRate as bigint)) / 10000n;
               addLog('info', `交易费率: ${feeRate}, 交易费: ${formatEther(tradingFee)} BNB`);
             } catch (e: any) {
@@ -1426,7 +1409,7 @@ async function launchAndBuy() {
       addLog('info', `创建费: 0.01 BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB = ${formatEther(totalValue)} BNB`);
     }
 
-    // 3. 预先创建所有买入钱包客户端
+    // 2. 预先创建所有买入钱包客户端
     const buyAmount = parseEther(String(buyAmountPerWallet.value));
     const buyClients = selectedWallets.map(wallet => {
       const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
@@ -1445,7 +1428,7 @@ async function launchAndBuy() {
 
     addLog('info', `已准备 ${buyClients.length} 个买入客户端`);
 
-    // 4. 发送创建交易（用户在钱包中确认）
+    // 3. 发送创建交易（用户在钱包中确认）
     addLog('info', '请在钱包中确认创建交易...');
 
     const createHash = await mainWalletClient.writeContract({
@@ -1461,100 +1444,59 @@ async function launchAndBuy() {
 
     addLog('success', `创建交易已发送: ${createHash.slice(0, 14)}...`);
 
-    // 5. 立即发送所有买入交易（不等创建确认）
-    if (tokenAddress) {
-      addLog('info', `正在同时发送 ${buyClients.length} 笔买入交易...`);
-
-      const buyCalldata = encodeBuyCalldata(tokenAddress);
-
-      const buyResults = await Promise.allSettled(
-        buyClients.map(({ client, address }) =>
-          client.sendTransaction({
-            to: FOURMEME_ADDRESS,
-            data: buyCalldata,
-            value: buyAmount,
-            gasPrice: parseGwei(String(actualBuyGas)),
-            gas: 300000n
-          }).then(hash => {
-            addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
-            return hash;
-          }).catch(err => {
-            addLog('error', `钱包 ${address.slice(0, 8)}... 买入失败: ${err.message}`);
-            throw err;
-          })
-        )
-      );
-
-      const successCount = buyResults.filter(r => r.status === 'fulfilled').length;
-      const failCount = buyResults.filter(r => r.status === 'rejected').length;
-      addLog('info', `买入交易结果: ${successCount} 成功, ${failCount} 失败`);
-    } else {
-      // 没有预测地址，等创建确认后从链上获取地址再买
-      addLog('warning', '无预测地址，等待创建交易确认...');
-
-      const createReceipt = await publicClient.waitForTransactionReceipt({ hash: createHash });
-      if (createReceipt.status !== 'success') {
-        addLog('error', '创建交易失败');
-        return;
-      }
-      addLog('success', '创建交易已确认，正在获取代币地址...');
-
-      // 从链上获取代币地址（通过事件日志）
-      // 查找 Transfer 事件来获取代币地址
-      for (const log of createReceipt.logs) {
-        if (log.address && log.address !== FOURMEME_ADDRESS.toLowerCase()) {
-          tokenAddress = log.address;
-          break;
-        }
-      }
-
-      if (!tokenAddress) {
-        addLog('error', '无法获取代币地址');
-        return;
-      }
-
-      addLog('success', `代币地址: ${tokenAddress}`);
-
-      // 发送买入交易（晚一个区块）
-      addLog('info', `正在发送 ${buyClients.length} 笔买入交易...`);
-      const buyCalldata = encodeBuyCalldata(tokenAddress);
-
-      const buyResults = await Promise.allSettled(
-        buyClients.map(({ client, address }) =>
-          client.sendTransaction({
-            to: FOURMEME_ADDRESS,
-            data: buyCalldata,
-            value: buyAmount,
-            gasPrice: parseGwei(String(actualBuyGas)),
-            gas: 300000n
-          }).then(hash => {
-            addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
-            return hash;
-          }).catch(err => {
-            addLog('error', `钱包 ${address.slice(0, 8)}... 买入失败: ${err.message}`);
-            throw err;
-          })
-        )
-      );
-
-      const successCount = buyResults.filter(r => r.status === 'fulfilled').length;
-      const failCount = buyResults.filter(r => r.status === 'rejected').length;
-      addLog('info', `买入交易结果: ${successCount} 成功, ${failCount} 失败`);
-    }
-
-    // 6. 等待创建交易确认
+    // 4. 等待创建交易确认，从链上获取真实代币地址
     addLog('info', '等待创建交易确认...');
     const receipt = await publicClient.waitForTransactionReceipt({ hash: createHash });
 
-    if (receipt.status === 'success') {
-      addLog('success', `创建交易确认成功! Gas: ${receipt.gasUsed}`);
-      if (tokenAddress) {
-        addLog('success', `代币地址: ${tokenAddress}`);
-        addLog('success', `查看: https://four.meme/token/${tokenAddress}`);
-      }
-    } else {
-      addLog('error', '创建交易失败，买入交易也会失败');
+    if (receipt.status !== 'success') {
+      addLog('error', '创建交易失败');
+      return;
     }
+
+    addLog('success', `创建交易确认成功! Gas: ${receipt.gasUsed}`);
+
+    // 从 receipt logs 获取真实代币地址
+    let tokenAddress = '';
+    for (const log of receipt.logs) {
+      if (log.address && log.address.toLowerCase() !== FOURMEME_ADDRESS.toLowerCase()) {
+        tokenAddress = log.address;
+        break;
+      }
+    }
+
+    if (!tokenAddress) {
+      addLog('error', '无法从链上获取代币地址');
+      return;
+    }
+
+    addLog('success', `代币地址: ${tokenAddress}`);
+    addLog('success', `查看: https://four.meme/token/${tokenAddress}`);
+
+    // 5. 发送所有买入交易
+    addLog('info', `正在发送 ${buyClients.length} 笔买入交易...`);
+    const buyCalldata = encodeBuyCalldata(tokenAddress);
+
+    const buyResults = await Promise.allSettled(
+      buyClients.map(({ client, address }) =>
+        client.sendTransaction({
+          to: FOURMEME_ADDRESS,
+          data: buyCalldata,
+          value: buyAmount,
+          gasPrice: parseGwei(String(actualBuyGas)),
+          gas: 300000n
+        }).then(hash => {
+          addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
+          return hash;
+        }).catch(err => {
+          addLog('error', `钱包 ${address.slice(0, 8)}... 买入失败: ${err.message}`);
+          throw err;
+        })
+      )
+    );
+
+    const successCount = buyResults.filter(r => r.status === 'fulfilled').length;
+    const failCount = buyResults.filter(r => r.status === 'rejected').length;
+    addLog('info', `买入交易结果: ${successCount} 成功, ${failCount} 失败`);
   } catch (error: any) {
     addLog('error', `发射失败: ${error.message}`);
   } finally {
