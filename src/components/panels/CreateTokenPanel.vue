@@ -962,6 +962,23 @@ async function registerAgentNFT() {
 
   isLoading.value = true;
   try {
+    // 检查并切换链
+    const provider = getWalletProvider();
+    if (!provider) throw new Error('钱包未连接');
+    const network = NETWORKS[currentNetwork.value];
+    const chainId = await provider.request({ method: 'eth_chainId' });
+    if (chainId !== network.chainId) {
+      addLog('warning', `钱包当前链不对，正在切换到 ${network.name}...`);
+      try {
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: network.chainId }]
+        });
+        addLog('success', `已切换到 ${network.name}`);
+      } catch (switchErr: any) {
+        throw new Error(`请手动切换钱包到 ${network.name} 后重试`);
+      }
+    }
     // Upload agent image if selected
     if (agentImage.value && !agentImageUrl.value) {
       await uploadAgentImage();
@@ -1322,6 +1339,23 @@ async function launchAndBuy() {
 
   isLoading.value = true;
   try {
+    // 检查并切换链
+    const provider = getWalletProvider();
+    if (!provider) throw new Error('钱包未连接');
+    const network = NETWORKS[currentNetwork.value];
+    const chainId = await provider.request({ method: 'eth_chainId' });
+    if (chainId !== network.chainId) {
+      addLog('warning', `钱包当前链不对，正在切换到 ${network.name}...`);
+      try {
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: network.chainId }]
+        });
+        addLog('success', `已切换到 ${network.name}`);
+      } catch (switchErr: any) {
+        throw new Error(`请手动切换钱包到 ${network.name} 后重试`);
+      }
+    }
     const mainWalletClient = getMainWalletClient();
     const publicClient = getPublicClient();
     const network = NETWORKS[currentNetwork.value];
