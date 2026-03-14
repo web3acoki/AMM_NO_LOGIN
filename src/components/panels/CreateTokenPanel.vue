@@ -49,10 +49,6 @@
               AI Agent 模式
             </button>
           </div>
-          <small v-if="createMode === 'agent'" class="text-info d-block mt-2">
-            <i class="bi bi-info-circle me-1"></i>
-            AI Agent 模式将注册 EIP-8004 Identity NFT，代币会获得 Agent 标识
-          </small>
         </div>
       </div>
 
@@ -72,9 +68,18 @@
             >
               连接钱包
             </button>
-            <span v-else class="badge bg-success">
-              {{ connectedWallet.slice(0, 6) }}...{{ connectedWallet.slice(-4) }}
-            </span>
+            <template v-else>
+              <span class="badge bg-success">
+                {{ connectedWallet.slice(0, 6) }}...{{ connectedWallet.slice(-4) }}
+              </span>
+              <button
+                class="btn btn-sm btn-outline-danger"
+                @click="disconnectWallet"
+                :disabled="isLoading"
+              >
+                断开
+              </button>
+            </template>
           </div>
         </div>
         <div v-if="connectedWallet" class="card-body py-2 small">
@@ -684,6 +689,15 @@ watch(createMode, () => {
 
 // ========== 工具函数 ==========
 
+function unicodeToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
 function addLog(type: 'info' | 'success' | 'error' | 'warning', message: string) {
   logs.value.push({ type, message, timestamp: Date.now() });
   nextTick(() => {
@@ -781,6 +795,18 @@ async function connectWallet() {
   } finally {
     isLoading.value = false;
   }
+}
+
+function disconnectWallet() {
+  connectedWallet.value = null;
+  apiStatus.loggedIn = false;
+  apiStatus.accessToken = '';
+  apiStatus.imageUrl = '';
+  apiStatus.prepared = false;
+  apiStatus.createArgs = '';
+  apiStatus.signature = '';
+  predictedAddress.value = '';
+  addLog('info', '钱包已断开');
 }
 
 function getMainWalletClient() {
@@ -950,7 +976,7 @@ async function registerAgentNFT() {
       active: true,
       supportedTrust: ['']
     };
-    const agentURI = `data:application/json;base64,${btoa(JSON.stringify(payload))}`;
+    const agentURI = `data:application/json;base64,${unicodeToBase64(JSON.stringify(payload))}`;
 
     addLog('info', '正在注册 EIP-8004 Agent NFT...');
     addLog('info', '请在钱包中确认交易...');
