@@ -71,43 +71,29 @@
         </div>
       </div>
 
-      <!-- 钱包连接 -->
+      <!-- 主钱包选择 -->
       <div class="card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h6 class="mb-0">
             <i class="bi bi-wallet2 me-1"></i>
             主钱包 (创建代币)
           </h6>
-          <div class="d-flex align-items-center gap-2">
-            <button
-              v-if="!connectedWallet"
-              class="btn btn-sm btn-primary"
-              @click="connectWallet"
-              :disabled="isLoading"
-            >
-              连接钱包
-            </button>
-            <template v-else>
-              <span class="badge bg-success">
-                {{ connectedWallet.slice(0, 6) }}...{{ connectedWallet.slice(-4) }}
-              </span>
-              <button
-                class="btn btn-sm btn-outline-danger"
-                @click="disconnectWallet"
-                :disabled="isLoading"
-              >
-                断开
-              </button>
-            </template>
-          </div>
+          <span v-if="connectedWallet" class="badge bg-success">
+            {{ connectedWallet.slice(0, 6) }}...{{ connectedWallet.slice(-4) }}
+          </span>
         </div>
-        <div v-if="connectedWallet" class="card-body py-2 small">
-          <div class="d-flex justify-content-between">
-            <span class="text-muted">当前网络:</span>
-            <span :class="currentNetwork === 'bscTestnet' ? 'text-warning fw-bold' : 'text-success fw-bold'">
-              {{ NETWORKS[currentNetwork].name }}
-            </span>
-          </div>
+        <div class="card-body py-2">
+          <label class="form-label small">选择钱包批次 (取第1个钱包)</label>
+          <select class="form-select form-select-sm" v-model="mainWalletBatchId" @change="onMainBatchChange">
+            <option value="">选择批次...</option>
+            <option
+              v-for="batch in walletStore.walletBatches"
+              :key="batch.id"
+              :value="batch.id"
+            >
+              {{ batch.remark }} ({{ batch.wallets.length }} 个钱包)
+            </option>
+          </select>
         </div>
       </div>
 
@@ -515,7 +501,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, reactive } from 'vue';
-import { createPublicClient, createWalletClient, custom, http, parseEther, formatEther, parseGwei, keccak256, encodePacked } from 'viem';
+import { createPublicClient, createWalletClient, http, parseEther, formatEther, parseGwei, keccak256, encodePacked } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { bsc } from 'viem/chains';
 import { useWalletStore } from '../../stores/walletStore';
@@ -594,7 +580,6 @@ watch(currentNetwork, (val) => {
 });
 
 function onNetworkChange() {
-  connectedWallet.value = null;
   apiStatus.loggedIn = false;
   apiStatus.accessToken = '';
   apiStatus.imageUrl = '';
@@ -605,7 +590,7 @@ function onNetworkChange() {
   addLog('info', `已切换到 ${NETWORKS[currentNetwork.value].name}`);
 }
 
-const connectedWallet = ref<string | null>(null);
+const mainWalletBatchId = ref('');
 const isLoading = ref(false);
 const isRefreshingBalances = ref(false);
 const selectedBatchId = ref('');
@@ -677,6 +662,18 @@ const publicConfig = ref<any>(null);
 
 // ========== 计算属性 ==========
 
+const mainWalletBatch = computed(() => {
+  if (!mainWalletBatchId.value) return null;
+  return walletStore.walletBatches.find(b => b.id === mainWalletBatchId.value);
+});
+
+const mainWallet = computed(() => {
+  if (!mainWalletBatch.value || mainWalletBatch.value.wallets.length === 0) return null;
+  return mainWalletBatch.value.wallets[0];
+});
+
+const connectedWallet = computed(() => mainWallet.value?.address || null);
+
 const selectedBatch = computed(() => {
   if (!selectedBatchId.value) return null;
   return walletStore.walletBatches.find(b => b.id === selectedBatchId.value);
@@ -739,88 +736,7 @@ function formatTime(timestamp: number): string {
 
 // ========== 钱包操作 ==========
 
-function getWalletProvider() {
-  if (window.ethereum) return window.ethereum;
-  if ((window as any).okxwallet) return (window as any).okxwallet;
-  if ((window as any).trustwallet) return (window as any).trustwallet;
-  if ((window as any).coinbaseWalletExtension) return (window as any).coinbaseWalletExtension;
-  return null;
-}
-
-function detectWalletName(): string {
-  if (!window.ethereum) return 'Unknown';
-  if (window.ethereum.isMetaMask) return 'MetaMask';
-  if ((window.ethereum as any).isOkxWallet || (window as any).okxwallet) return 'OKX Wallet';
-  if ((window.ethereum as any).isTrust || (window as any).trustwallet) return 'Trust Wallet';
-  if ((window.ethereum as any).isCoinbaseWallet) return 'Coinbase Wallet';
-  if ((window.ethereum as any).isTokenPocket) return 'TokenPocket';
-  if ((window.ethereum as any).isBitKeep) return 'BitKeep';
-  if ((window.ethereum as any).isSafePal) return 'SafePal';
-  return 'Web3 Wallet';
-}
-
-async function connectWallet() {
-  const provider = getWalletProvider();
-  if (!provider) {
-    addLog('error', '请安装 Web3 钱包（如 MetaMask、OKX Wallet、Trust Wallet 等）');
-    return;
-  }
-
-  isLoading.value = true;
-  try {
-    await provider.request({ method: 'eth_requestAccounts' });
-    const network = NETWORKS[currentNetwork.value];
-
-    const chainId = await provider.request({ method: 'eth_chainId' });
-    if (chainId !== network.chainId) {
-      addLog('warning', `请切换到 ${network.name}`);
-      try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: network.chainId }]
-        });
-      } catch (switchError: any) {
-        if (switchError.code === 4902) {
-          try {
-            await provider.request({
-              method: 'wallet_addEthereumChain',
-              params: [{
-                chainId: network.chainId,
-                chainName: network.name,
-                nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
-                rpcUrls: [network.rpcUrl],
-                blockExplorerUrls: [currentNetwork.value === 'bscMainnet'
-                  ? 'https://bscscan.com'
-                  : 'https://testnet.bscscan.com']
-              }]
-            });
-          } catch (addError) {
-            addLog('error', '添加网络失败');
-            return;
-          }
-        } else {
-          addLog('error', `请手动切换到 ${network.name}`);
-          return;
-        }
-      }
-    }
-
-    const accounts = await provider.request({ method: 'eth_accounts' });
-    if (accounts && accounts.length > 0) {
-      connectedWallet.value = accounts[0];
-      const walletName = detectWalletName();
-      addLog('success', `${walletName} 已连接: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`);
-      addLog('info', `当前网络: ${network.name}`);
-    }
-  } catch (error: any) {
-    addLog('error', `连接钱包失败: ${error.message}`);
-  } finally {
-    isLoading.value = false;
-  }
-}
-
-function disconnectWallet() {
-  connectedWallet.value = null;
+function onMainBatchChange() {
   apiStatus.loggedIn = false;
   apiStatus.accessToken = '';
   apiStatus.imageUrl = '';
@@ -828,16 +744,18 @@ function disconnectWallet() {
   apiStatus.createArgs = '';
   apiStatus.signature = '';
   predictedAddress.value = '';
-  addLog('info', '钱包已断开');
+  if (mainWallet.value) {
+    addLog('info', `主钱包已选择: ${mainWallet.value.address.slice(0, 6)}...${mainWallet.value.address.slice(-4)}`);
+  }
 }
 
 function getMainWalletClient() {
-  const provider = getWalletProvider();
-  if (!provider || !connectedWallet.value) {
-    throw new Error('请先连接钱包');
+  if (!mainWallet.value) {
+    throw new Error('请先选择主钱包批次');
   }
 
   const network = NETWORKS[currentNetwork.value];
+  const account = privateKeyToAccount(mainWallet.value.privateKey as `0x${string}`);
   const chain = currentNetwork.value === 'bscMainnet' ? bsc : {
     id: 97,
     name: 'BSC Testnet',
@@ -846,8 +764,9 @@ function getMainWalletClient() {
   };
 
   return createWalletClient({
+    account,
     chain,
-    transport: custom(provider)
+    transport: http(network.rpcUrl)
   });
 }
 
@@ -973,8 +892,8 @@ async function uploadAgentImage() {
 // ========== NFT Registration ==========
 
 async function registerAgentNFT() {
-  if (!connectedWallet.value) {
-    addLog('error', '请先连接钱包');
+  if (!mainWallet.value) {
+    addLog('error', '请先选择主钱包批次');
     return;
   }
   if (!agentInfo.name.trim()) {
@@ -984,23 +903,6 @@ async function registerAgentNFT() {
 
   isLoading.value = true;
   try {
-    // 检查并切换链
-    const provider = getWalletProvider();
-    if (!provider) throw new Error('钱包未连接');
-    const network = NETWORKS[currentNetwork.value];
-    const chainId = await provider.request({ method: 'eth_chainId' });
-    if (chainId !== network.chainId) {
-      addLog('warning', `钱包当前链不对，正在切换到 ${network.name}...`);
-      try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: network.chainId }]
-        });
-        addLog('success', `已切换到 ${network.name}`);
-      } catch (switchErr: any) {
-        throw new Error(`请手动切换钱包到 ${network.name} 后重试`);
-      }
-    }
     // Upload agent image if selected
     if (agentImage.value && !agentImageUrl.value) {
       await uploadAgentImage();
@@ -1018,7 +920,6 @@ async function registerAgentNFT() {
     const agentURI = `data:application/json;base64,${unicodeToBase64(JSON.stringify(payload))}`;
 
     addLog('info', '正在注册 EIP-8004 Agent NFT...');
-    addLog('info', '请在钱包中确认交易...');
 
     const mainClient = getMainWalletClient();
     const publicClient = getPublicClient();
@@ -1028,7 +929,6 @@ async function registerAgentNFT() {
       abi: NFT_8004_ABI,
       functionName: 'register',
       args: [agentURI],
-      account: connectedWallet.value as `0x${string}`
     });
 
     nftTxHash.value = txHash;
@@ -1122,14 +1022,15 @@ async function fetchPublicConfig() {
 // ========== FourMeme API ==========
 
 async function loginToFourMeme() {
-  if (!connectedWallet.value) {
-    addLog('error', '请先连接钱包');
+  if (!mainWallet.value) {
+    addLog('error', '请先选择主钱包批次');
     return;
   }
 
   isLoading.value = true;
   try {
-    const address = connectedWallet.value.toLowerCase();
+    const account = privateKeyToAccount(mainWallet.value.privateKey as `0x${string}`);
+    const address = account.address.toLowerCase();
 
     addLog('info', '正在获取登录 nonce...');
     const nonceResponse = await fetch('/api/fourmeme/nonce', {
@@ -1149,18 +1050,11 @@ async function loginToFourMeme() {
     addLog('info', `获取 nonce 成功: ${nonce}`);
 
     const message = `You are sign in Meme ${nonce}`;
-    addLog('info', '请在钱包中签名...');
+    addLog('info', '正在使用私钥签名...');
 
-    const provider = getWalletProvider();
-    if (!provider) throw new Error('钱包未连接');
+    const signature = await account.signMessage({ message });
 
-    const signature = await provider.request({
-      method: 'personal_sign',
-      params: [message, connectedWallet.value]
-    });
-
-    const walletName = detectWalletName();
-    addLog('info', `正在登录 FourMeme API (${walletName})...`);
+    addLog('info', '正在登录 FourMeme API...');
     const loginResponse = await fetch('/api/fourmeme/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1175,7 +1069,7 @@ async function loginToFourMeme() {
           signature: signature,
           verifyType: 'LOGIN'
         },
-        walletName: walletName
+        walletName: 'Web3 Wallet'
       })
     });
     const loginData = await loginResponse.json();
@@ -1361,27 +1255,9 @@ async function launchAndBuy() {
 
   isLoading.value = true;
   try {
-    // 检查并切换链
-    const provider = getWalletProvider();
-    if (!provider) throw new Error('钱包未连接');
-    const network = NETWORKS[currentNetwork.value];
-    const chainId = await provider.request({ method: 'eth_chainId' });
-    if (chainId !== network.chainId) {
-      addLog('warning', `钱包当前链不对，正在切换到 ${network.name}...`);
-      try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: network.chainId }]
-        });
-        addLog('success', `已切换到 ${network.name}`);
-      } catch (switchErr: any) {
-        throw new Error(`请手动切换钱包到 ${network.name} 后重试`);
-      }
-    }
-
     const mainWalletClient = getMainWalletClient();
     const publicClient = getPublicClient();
-    const mainAddress = connectedWallet.value as `0x${string}`;
+    const network = NETWORKS[currentNetwork.value];
 
     // 1. 准备买入钱包
     const selectedWallets = selectedBatch.value.wallets
@@ -1456,8 +1332,8 @@ async function launchAndBuy() {
 
     addLog('info', `已准备 ${buyClients.length} 个买入客户端`);
 
-    // 3. 发送创建交易（用户在钱包中确认）
-    addLog('info', '请在钱包中确认创建交易...');
+    // 3. 发送创建交易
+    addLog('info', '正在发送创建交易...');
 
     const createHash = await mainWalletClient.writeContract({
       address: FOURMEME_ADDRESS,
@@ -1465,7 +1341,6 @@ async function launchAndBuy() {
       functionName: 'createToken',
       args: [apiStatus.createArgs as `0x${string}`, apiStatus.signature as `0x${string}`],
       value: totalValue,
-      account: mainAddress,
       gasPrice: parseGwei(String(actualCreateGas)),
       gas: 3000000n
     });
@@ -1534,18 +1409,8 @@ async function launchAndBuy() {
 
 // ========== 初始化 ==========
 
-onMounted(async () => {
-  const provider = getWalletProvider();
-  if (provider) {
-    try {
-      const accounts = await provider.request({ method: 'eth_accounts' });
-      if (accounts && accounts.length > 0) {
-        connectedWallet.value = accounts[0];
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
+onMounted(() => {
+  // 主钱包现在从批次中选择，无需自动连接
 });
 </script>
 
