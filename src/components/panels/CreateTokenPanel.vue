@@ -21,6 +21,26 @@
       </div>
     </div>
 
+    <!-- RPC 节点选择 -->
+    <div class="px-3 py-2" style="background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--bs-border-color);">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted text-nowrap">RPC 节点:</small>
+        <select
+          class="form-select form-select-sm"
+          style="font-size: 0.75rem;"
+          v-model="selectedRpcUrl"
+        >
+          <option
+            v-for="node in currentRpcNodes"
+            :key="node.url"
+            :value="node.url"
+          >
+            {{ node.label }}
+          </option>
+        </select>
+      </div>
+    </div>
+
     <div class="panel-body">
       <!-- 模式选择 -->
       <div class="card mb-3">
@@ -554,19 +574,35 @@ const FOURMEME_ABI = [
 ] as const;
 
 // 网络配置
-const NETWORKS: Record<string, { chainId: string; chainIdDecimal: number; name: string; rpcUrl: string }> = {
+const NETWORKS: Record<string, { chainId: string; chainIdDecimal: number; name: string }> = {
   bscMainnet: {
     chainId: '0x38',
     chainIdDecimal: 56,
     name: 'BSC Mainnet',
-    rpcUrl: 'https://bsc-dataseed.bnbchain.org'
   },
   bscTestnet: {
     chainId: '0x61',
     chainIdDecimal: 97,
     name: 'BSC Testnet',
-    rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org'
   }
+};
+
+// RPC 节点列表
+const RPC_NODES: Record<string, { label: string; url: string }[]> = {
+  bscMainnet: [
+    { label: 'BNB Chain 官方', url: 'https://bsc-dataseed.bnbchain.org' },
+    { label: 'BNB Chain 备用1', url: 'https://bsc-dataseed1.bnbchain.org' },
+    { label: 'BNB Chain 备用2', url: 'https://bsc-dataseed2.bnbchain.org' },
+    { label: 'BNB Chain 备用3', url: 'https://bsc-dataseed3.bnbchain.org' },
+    { label: 'BNB Chain 备用4', url: 'https://bsc-dataseed4.bnbchain.org' },
+    { label: 'PublicNode', url: 'https://bsc-rpc.publicnode.com' },
+    { label: 'Nodereal', url: 'https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3' },
+    { label: '1RPC', url: 'https://1rpc.io/bnb' },
+  ],
+  bscTestnet: [
+    { label: 'BNB Chain 测试网', url: 'https://bsc-testnet-dataseed.bnbchain.org' },
+    { label: 'PublicNode 测试网', url: 'https://bsc-testnet-rpc.publicnode.com' },
+  ]
 };
 
 // ========== 状态 ==========
@@ -575,8 +611,22 @@ const currentNetwork = ref<'bscMainnet' | 'bscTestnet'>(
   (localStorage.getItem('selectedNetwork') as 'bscMainnet' | 'bscTestnet') || 'bscMainnet'
 );
 
+const selectedRpcUrl = ref(
+  localStorage.getItem('selectedRpcUrl') || RPC_NODES.bscMainnet[0].url
+);
+
+// 当前网络可用的 RPC 节点
+const currentRpcNodes = computed(() => RPC_NODES[currentNetwork.value] || []);
+
 watch(currentNetwork, (val) => {
   localStorage.setItem('selectedNetwork', val);
+  // 切换网络时重置 RPC 为该网络的第一个节点
+  selectedRpcUrl.value = RPC_NODES[val][0].url;
+  localStorage.setItem('selectedRpcUrl', selectedRpcUrl.value);
+});
+
+watch(selectedRpcUrl, (val) => {
+  localStorage.setItem('selectedRpcUrl', val);
 });
 
 function onNetworkChange() {
@@ -760,13 +810,13 @@ function getMainWalletClient() {
     id: 97,
     name: 'BSC Testnet',
     nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-    rpcUrls: { default: { http: [network.rpcUrl] } }
+    rpcUrls: { default: { http: [selectedRpcUrl.value] } }
   };
 
   return createWalletClient({
     account,
     chain,
-    transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
+    transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 
@@ -777,9 +827,9 @@ function getPublicClient() {
       id: 97,
       name: 'BSC Testnet',
       nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-      rpcUrls: { default: { http: [network.rpcUrl] } }
+      rpcUrls: { default: { http: [selectedRpcUrl.value] } }
     },
-    transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
+    transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 
@@ -1323,9 +1373,9 @@ async function launchAndBuy() {
           id: 97,
           name: 'BSC Testnet',
           nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-          rpcUrls: { default: { http: [network.rpcUrl] } }
+          rpcUrls: { default: { http: [selectedRpcUrl.value] } }
         },
-        transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
+        transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
       });
       return { client, account, address: wallet.address };
     });
