@@ -49,6 +49,25 @@
               AI Agent 模式
             </button>
           </div>
+          <div v-if="createMode === 'agent'" class="mt-2">
+            <small class="text-muted d-block mb-1">底池代币</small>
+            <div class="d-flex gap-2">
+              <button
+                class="btn btn-sm flex-fill"
+                :class="selectedRaisedToken === 'BNB' ? 'btn-warning' : 'btn-outline-secondary'"
+                @click="selectedRaisedToken = 'BNB'"
+              >
+                BNB
+              </button>
+              <button
+                class="btn btn-sm flex-fill"
+                :class="selectedRaisedToken === 'ASTER' ? 'btn-warning' : 'btn-outline-secondary'"
+                @click="selectedRaisedToken = 'ASTER'"
+              >
+                ASTER
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -630,6 +649,14 @@ const apiStatus = reactive({
 // Mode selection: 'standard' or 'agent'
 const createMode = ref<'standard' | 'agent'>('standard');
 
+// Raised token selection (agent mode)
+const selectedRaisedToken = ref<'BNB' | 'ASTER'>('BNB');
+
+const RAISED_TOKEN_MAP: Record<string, string> = {
+  'BNB': '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+  'ASTER': '0x000ae314e2a2172a039b26378814c252734f556a',
+};
+
 // Agent info (separate from token info)
 const agentInfo = reactive({
   name: '',
@@ -670,6 +697,7 @@ const canLaunch = computed(() => {
 
 // Reset agent state when mode changes
 watch(createMode, () => {
+  selectedRaisedToken.value = 'BNB';
   nftRegistered.value = false;
   agentId.value = null;
   nftTxHash.value = '';
@@ -1046,30 +1074,30 @@ async function fetchPublicConfig() {
       throw new Error(`获取配置失败: ${JSON.stringify(data)}`);
     }
 
-    // Find BNB raisedToken with status PUBLISH
+    // Find raisedToken matching selected token with status PUBLISH
     const configList = data.data || [];
-    let bnbConfig = null;
+    let tokenConfig = null;
     for (const item of configList) {
-      if (item.raisedToken && item.raisedToken.symbol === 'BNB' && item.status === 'PUBLISH') {
-        bnbConfig = item;
+      if (item.raisedToken && item.raisedToken.symbol === selectedRaisedToken.value && item.status === 'PUBLISH') {
+        tokenConfig = item;
         break;
       }
       // Also check top-level symbol
-      if (item.symbol === 'BNB' && item.status === 'PUBLISH') {
-        bnbConfig = item;
+      if (item.symbol === selectedRaisedToken.value && item.status === 'PUBLISH') {
+        tokenConfig = item;
         break;
       }
     }
 
-    if (bnbConfig) {
+    if (tokenConfig) {
       publicConfig.value = {
-        totalSupply: bnbConfig.totalSupply || 1000000000,
-        raisedAmount: bnbConfig.raisedAmount || 24,
-        saleRate: bnbConfig.saleRate || 0.8,
-        raisedToken: bnbConfig.raisedToken || undefined,
-        tokenManager: bnbConfig.tokenManager || bnbConfig.contractAddress || undefined,
+        totalSupply: tokenConfig.totalSupply || 1000000000,
+        raisedAmount: tokenConfig.raisedAmount || 24,
+        saleRate: tokenConfig.saleRate || 0.8,
+        raisedToken: tokenConfig.raisedToken || undefined,
+        tokenManager: tokenConfig.tokenManager || tokenConfig.contractAddress || undefined,
       };
-      addLog('success', `公共配置已获取: totalSupply=${publicConfig.value.totalSupply}, raisedAmount=${publicConfig.value.raisedAmount}`);
+      addLog('success', `公共配置已获取 (${selectedRaisedToken.value}): totalSupply=${publicConfig.value.totalSupply}, raisedAmount=${publicConfig.value.raisedAmount}`);
     } else {
       // Use the raw data if structure is different
       publicConfig.value = {
@@ -1232,8 +1260,8 @@ async function prepareTokenCreate() {
       reserveRate: 0,
       funGroup: false,
       clickFun: false,
-      symbol: 'BNB',
-      symbolAddress: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'
+      symbol: createMode.value === 'agent' ? selectedRaisedToken.value : 'BNB',
+      symbolAddress: createMode.value === 'agent' ? RAISED_TOKEN_MAP[selectedRaisedToken.value] : RAISED_TOKEN_MAP['BNB']
     };
 
     // Add agent-mode-specific params
