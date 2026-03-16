@@ -559,13 +559,13 @@ const NETWORKS: Record<string, { chainId: string; chainIdDecimal: number; name: 
     chainId: '0x38',
     chainIdDecimal: 56,
     name: 'BSC Mainnet',
-    rpcUrl: 'https://bsc-rpc.publicnode.com'
+    rpcUrl: 'https://bsc-dataseed.bnbchain.org'
   },
   bscTestnet: {
     chainId: '0x61',
     chainIdDecimal: 97,
     name: 'BSC Testnet',
-    rpcUrl: 'https://bsc-testnet-rpc.publicnode.com'
+    rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org'
   }
 };
 
@@ -766,7 +766,7 @@ function getMainWalletClient() {
   return createWalletClient({
     account,
     chain,
-    transport: http(network.rpcUrl)
+    transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 
@@ -779,7 +779,7 @@ function getPublicClient() {
       nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
       rpcUrls: { default: { http: [network.rpcUrl] } }
     },
-    transport: http(network.rpcUrl)
+    transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 
@@ -1325,7 +1325,7 @@ async function launchAndBuy() {
           nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
           rpcUrls: { default: { http: [network.rpcUrl] } }
         },
-        transport: http(network.rpcUrl)
+        transport: http(network.rpcUrl, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
       });
       return { client, account, address: wallet.address };
     });
