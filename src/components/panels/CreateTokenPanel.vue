@@ -1377,14 +1377,60 @@ async function launchAndBuy() {
 
     addLog('info', `已准备 ${buyClients.length} 个买入客户端`);
 
-    // 3. 发送创建交易
-    addLog('info', '正在发送创建交易...');
+    // 3. 重新获取 fresh createArgs（避免签名过期 Expired）
+    addLog('info', '正在获取 fresh createArgs...');
+    const freshPayload: Record<string, any> = {
+      name: tokenInfo.name,
+      shortName: tokenInfo.symbol,
+      desc: tokenInfo.desc,
+      imgUrl: apiStatus.imageUrl,
+      launchTime: Date.now() + 60000,
+      label: tokenInfo.label,
+      preSale: String(tokenInfo.presaleBNB || '0'),
+      onlyMPC: false,
+      lpTradingFee: 0.0025,
+      totalSupply: createMode.value === 'agent' ? (publicConfig.value?.totalSupply || 1000000000) : 1000000000,
+      raisedAmount: createMode.value === 'agent' ? (publicConfig.value?.raisedAmount || 24) : 24,
+      saleRate: createMode.value === 'agent' ? (publicConfig.value?.saleRate || 0.8) : 0.8,
+      reserveRate: 0,
+      funGroup: false,
+      clickFun: false,
+      symbol: createMode.value === 'agent' ? selectedRaisedToken.value : 'BNB',
+      symbolAddress: createMode.value === 'agent' ? RAISED_TOKEN_MAP[selectedRaisedToken.value] : RAISED_TOKEN_MAP['BNB']
+    };
+    if (createMode.value === 'agent') {
+      if (publicConfig.value?.raisedToken) freshPayload.raisedToken = publicConfig.value.raisedToken;
+      freshPayload.dexType = 'PANCAKE_SWAP';
+      freshPayload.rushMode = false;
+      freshPayload.feePlan = false;
+    }
+    if (tokenInfo.webUrl) freshPayload.webUrl = tokenInfo.webUrl;
+    if (tokenInfo.twitterUrl) freshPayload.twitterUrl = tokenInfo.twitterUrl;
+    if (tokenInfo.telegramUrl) freshPayload.telegramUrl = tokenInfo.telegramUrl;
 
+    const freshResp = await fetch('/api/fourmeme/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'meme-web-access': apiStatus.accessToken },
+      body: JSON.stringify(freshPayload)
+    });
+    const freshData = await freshResp.json();
+    if (freshData.code !== 0 && freshData.code !== '0') {
+      throw new Error(`获取 fresh createArgs 失败: ${JSON.stringify(freshData)}`);
+    }
+    const freshResult = freshData.data;
+    const freshCreateArgs = freshResult.createArg || freshResult.create_arg || freshResult.arg;
+    const freshSignature = freshResult.signature || freshResult.sign || freshResult.signatureHex;
+    if (!freshCreateArgs || !freshSignature) {
+      throw new Error(`fresh API 返回数据格式错误: ${JSON.stringify(freshResult)}`);
+    }
+    addLog('success', 'fresh createArgs 已获取，立即发送交易');
+
+    // 4. 立即发送创建交易（minimize delay after getting fresh args）
     const createHash = await mainWalletClient.writeContract({
       address: FOURMEME_ADDRESS,
       abi: FOURMEME_ABI,
       functionName: 'createToken',
-      args: [apiStatus.createArgs as `0x${string}`, apiStatus.signature as `0x${string}`],
+      args: [freshCreateArgs as `0x${string}`, freshSignature as `0x${string}`],
       value: totalValue,
       gasPrice: parseGwei(String(actualCreateGas)),
       gas: 3000000n
