@@ -334,7 +334,7 @@
               </select>
             </div>
             <div class="col-6">
-              <label class="form-label">创建者预购 (BNB)</label>
+              <label class="form-label">创建者预购 ({{ createMode === 'agent' ? selectedRaisedToken : 'BNB' }})</label>
               <input
                 type="number"
                 class="form-control form-control-sm"
@@ -1425,7 +1425,7 @@ async function launchAndBuy() {
     }
     addLog('success', 'fresh createArgs 已获取，立即发送交易');
 
-    // 4. 立即发送创建交易（minimize delay after getting fresh args）
+    // 5. 立即发送创建交易（minimize delay after getting fresh args）
     const createHash = await mainWalletClient.writeContract({
       address: FOURMEME_ADDRESS,
       abi: FOURMEME_ABI,
