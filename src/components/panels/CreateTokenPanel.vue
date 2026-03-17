@@ -1313,9 +1313,9 @@ async function launchAndBuy() {
     const selectedWallets = selectedBatch.value.wallets
       .filter(w => selectedWalletAddresses.value.includes(w.address));
 
-    // Gas Price 最低保护（BSC 最低 3 Gwei）
-    const actualCreateGas = Math.max(createGasPrice.value || 5, 3);
-    const actualBuyGas = Math.max(buyGasPrice.value || 3, 3);
+    // Gas Price 最低保护（BSC 最低 1 Gwei）
+    const actualCreateGas = Math.max(createGasPrice.value ?? 5, 1);
+    const actualBuyGas = Math.max(buyGasPrice.value ?? 3, 1);
 
     addLog('info', `主钱包创建代币，${selectedWallets.length} 个钱包准备买入`);
     addLog('info', `创建 Gas: ${actualCreateGas} Gwei, 买入 Gas: ${actualBuyGas} Gwei`);
