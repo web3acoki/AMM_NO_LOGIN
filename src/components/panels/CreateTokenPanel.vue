@@ -194,94 +194,11 @@
         </div>
       </div>
 
-      <!-- 步骤 1: 选择买入钱包 -->
-      <div class="card mb-3">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <h6 class="mb-0">
-            <span class="badge bg-primary me-2">1</span>
-            选择买入钱包
-          </h6>
-          <button
-            class="btn btn-sm btn-outline-info"
-            @click="refreshWalletBalances"
-            :disabled="!selectedBatch || isLoading"
-          >
-            <i class="bi bi-arrow-clockwise" :class="{ 'spin': isRefreshingBalances }"></i>
-            刷新余额
-          </button>
-        </div>
-        <div class="card-body">
-          <!-- 钱包批次选择 -->
-          <div class="mb-3">
-            <label class="form-label">选择钱包批次</label>
-            <select class="form-select form-select-sm" v-model="selectedBatchId" @change="onBatchChange">
-              <option value="">选择批次...</option>
-              <option
-                v-for="batch in walletStore.walletBatches"
-                :key="batch.id"
-                :value="batch.id"
-              >
-                {{ batch.remark }} ({{ batch.wallets.length }} 个钱包)
-              </option>
-            </select>
-          </div>
-
-          <!-- 买入金额 -->
-          <div class="mb-3">
-            <label class="form-label">每个钱包买入金额 (BNB)</label>
-            <input
-              type="number"
-              class="form-control form-control-sm"
-              v-model.number="buyAmountPerWallet"
-              placeholder="0.01"
-              step="0.001"
-              min="0"
-            />
-          </div>
-
-          <!-- 钱包列表 + 勾选 -->
-          <div v-if="selectedBatch" class="mb-2">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <small class="text-muted">已选 {{ selectedWalletAddresses.length }} / {{ selectedBatch.wallets.length }} 个钱包</small>
-              <div class="d-flex gap-1">
-                <button class="btn btn-sm btn-outline-secondary" @click="selectAllWallets">全选</button>
-                <button class="btn btn-sm btn-outline-secondary" @click="deselectAllWallets">取消</button>
-              </div>
-            </div>
-            <div class="wallet-list">
-              <div
-                v-for="(wallet, index) in selectedBatch.wallets"
-                :key="wallet.address"
-                class="wallet-item d-flex align-items-center"
-              >
-                <input
-                  type="checkbox"
-                  class="form-check-input me-2"
-                  :value="wallet.address"
-                  v-model="selectedWalletAddresses"
-                />
-                <span class="badge bg-secondary me-2">{{ index + 1 }}</span>
-                <code class="small flex-grow-1">{{ wallet.address.slice(0, 8) }}...{{ wallet.address.slice(-6) }}</code>
-                <span class="small text-info ms-2">
-                  {{ walletBalances[wallet.address] || '—' }} BNB
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="selectedWalletAddresses.length > 0" class="alert alert-info py-2 small mb-0">
-            <i class="bi bi-calculator me-1"></i>
-            总买入: <strong>{{ (selectedWalletAddresses.length * buyAmountPerWallet).toFixed(4) }} BNB</strong>
-            ({{ selectedWalletAddresses.length }} 钱包 x {{ buyAmountPerWallet }} BNB)
-          </div>
-        </div>
-      </div>
-
-      <!-- 步骤 2: 代币信息 -->
+      <!-- 步骤 1: 代币信息 -->
       <div class="card mb-3">
         <div class="card-header">
           <h6 class="mb-0">
-            <span class="badge bg-primary me-2">2</span>
+            <span class="badge bg-primary me-2">1</span>
             代币信息
           </h6>
         </div>
@@ -399,7 +316,7 @@
       <div class="card mb-3">
         <div class="card-header">
           <h6 class="mb-0">
-            <span class="badge bg-primary me-2">3</span>
+            <span class="badge bg-primary me-2">2</span>
             发射
           </h6>
         </div>
@@ -442,7 +359,7 @@
 
           <!-- Gas 设置 -->
           <div class="row mb-3">
-            <div class="col-6">
+            <div class="col-12">
               <label class="form-label small">创建 Gas Price (Gwei)</label>
               <input
                 type="number"
@@ -453,22 +370,6 @@
               />
               <small class="text-muted">高优先级，确保先执行</small>
             </div>
-            <div class="col-6">
-              <label class="form-label small">买入 Gas Price (Gwei)</label>
-              <input
-                type="number"
-                class="form-control form-control-sm"
-                v-model.number="buyGasPrice"
-                step="0.1"
-                min="1"
-              />
-              <small class="text-muted">紧跟创建，同一区块</small>
-            </div>
-          </div>
-
-          <div class="alert alert-info py-2 small mb-3">
-            <i class="bi bi-info-circle me-1"></i>
-            创建交易确认后自动从链上获取代币地址，然后立即发送买入交易
           </div>
 
           <button
@@ -477,7 +378,7 @@
             :disabled="!canLaunch || isLoading"
           >
             <i class="bi bi-rocket-takeoff me-1"></i>
-            {{ isLoading ? '处理中...' : `发射 (创建 + ${selectedWalletAddresses.length} 钱包买入)` }}
+            {{ isLoading ? '处理中...' : '发射创建代币' }}
           </button>
         </div>
       </div>
@@ -539,9 +440,6 @@ const INIT_CODE_HASH = '0x3eb722ec5d79ddc2f52880ea62f1b7e7d95c66d4ae0dfe32f988ca
 
 // 创建费用
 const CREATE_FEE = parseEther('0.01');
-
-// buyTokenAMAP 函数选择器
-const BUY_SELECTOR = '87f27655';
 
 // EIP-8004 NFT contract
 const NFT_8004_ADDRESS = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
@@ -642,18 +540,12 @@ function onNetworkChange() {
 
 const mainWalletBatchId = ref('');
 const isLoading = ref(false);
-const isRefreshingBalances = ref(false);
-const selectedBatchId = ref('');
-const selectedWalletAddresses = ref<string[]>([]);
-const buyAmountPerWallet = ref(0.01);
-const walletBalances = ref<Record<string, string>>({});
 const logs = ref<{ type: string; message: string; timestamp: number }[]>([]);
 const logContainer = ref<HTMLElement | null>(null);
 const predictedAddress = ref('');
 
 // Gas 设置
 const createGasPrice = ref(5);
-const buyGasPrice = ref(3);
 
 // 代币信息
 const tokenInfo = reactive({
@@ -724,11 +616,6 @@ const mainWallet = computed(() => {
 
 const connectedWallet = computed(() => mainWallet.value?.address || null);
 
-const selectedBatch = computed(() => {
-  if (!selectedBatchId.value) return null;
-  return walletStore.walletBatches.find(b => b.id === selectedBatchId.value);
-});
-
 const canPrepare = computed(() => {
   return tokenInfo.name && tokenInfo.symbol && tokenInfo.desc && tokenInfo.label;
 });
@@ -737,9 +624,7 @@ const canLaunch = computed(() => {
   return apiStatus.prepared &&
     apiStatus.createArgs &&
     apiStatus.signature &&
-    connectedWallet.value &&
-    selectedWalletAddresses.value.length > 0 &&
-    buyAmountPerWallet.value > 0;
+    connectedWallet.value;
 });
 
 // Reset agent state when mode changes
@@ -831,60 +716,6 @@ function getPublicClient() {
     },
     transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
-}
-
-// ========== 钱包批次操作 ==========
-
-function onBatchChange() {
-  selectedWalletAddresses.value = [];
-  walletBalances.value = {};
-  if (selectedBatch.value) {
-    selectedWalletAddresses.value = selectedBatch.value.wallets.map(w => w.address);
-  }
-}
-
-function selectAllWallets() {
-  if (selectedBatch.value) {
-    selectedWalletAddresses.value = selectedBatch.value.wallets.map(w => w.address);
-  }
-}
-
-function deselectAllWallets() {
-  selectedWalletAddresses.value = [];
-}
-
-async function refreshWalletBalances() {
-  if (!selectedBatch.value) return;
-
-  isRefreshingBalances.value = true;
-  try {
-    const publicClient = getPublicClient();
-    const wallets = selectedBatch.value.wallets;
-
-    addLog('info', `正在查询 ${wallets.length} 个钱包余额...`);
-
-    const balancePromises = wallets.map(async (wallet) => {
-      try {
-        const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
-        return { address: wallet.address, balance: formatEther(balance) };
-      } catch {
-        return { address: wallet.address, balance: '错误' };
-      }
-    });
-
-    const results = await Promise.all(balancePromises);
-    const newBalances: Record<string, string> = {};
-    for (const r of results) {
-      newBalances[r.address] = r.balance;
-    }
-    walletBalances.value = newBalances;
-
-    addLog('success', `已查询 ${wallets.length} 个钱包余额`);
-  } catch (error: any) {
-    addLog('error', `查询余额失败: ${error.message}`);
-  } finally {
-    isRefreshingBalances.value = false;
-  }
 }
 
 // ========== 图片处理 ==========
@@ -1288,37 +1119,21 @@ function predictTokenAddress(salt: `0x${string}`): string {
   return '0x' + hash.slice(26);
 }
 
-// ========== 买入 calldata 编码 ==========
-
-function encodeBuyCalldata(tokenAddress: string): `0x${string}` {
-  // buyTokenAMAP(address token, uint256 minAmountOut, uint256 flags)
-  const token = tokenAddress.slice(2).toLowerCase().padStart(64, '0');
-  const minOut = '0'.repeat(64);
-  const flags = '0'.repeat(64);
-  return `0x${BUY_SELECTOR}${token}${minOut}${flags}`;
-}
-
-// ========== 核心：发射 + 买入 ==========
+// ========== 核心：发射 ==========
 
 async function launchAndBuy() {
-  if (!canLaunch.value || !selectedBatch.value) return;
+  if (!canLaunch.value) return;
 
   isLoading.value = true;
   try {
     const mainWalletClient = getMainWalletClient();
     const publicClient = getPublicClient();
-    const network = NETWORKS[currentNetwork.value];
-
-    // 1. 准备买入钱包
-    const selectedWallets = selectedBatch.value.wallets
-      .filter(w => selectedWalletAddresses.value.includes(w.address));
 
     // Gas Price 最低保护（BSC 最低 1 Gwei）
     const actualCreateGas = Math.max(createGasPrice.value ?? 5, 1);
-    const actualBuyGas = Math.max(buyGasPrice.value ?? 3, 1);
 
-    addLog('info', `主钱包创建代币，${selectedWallets.length} 个钱包准备买入`);
-    addLog('info', `创建 Gas: ${actualCreateGas} Gwei, 买入 Gas: ${actualBuyGas} Gwei`);
+    addLog('info', `主钱包创建代币`);
+    addLog('info', `创建 Gas: ${actualCreateGas} Gwei`);
 
     const presaleWei = parseEther(String(tokenInfo.presaleBNB || 0));
     let totalValue: bigint;
@@ -1356,28 +1171,9 @@ async function launchAndBuy() {
     }
 
     totalValue = launchFee + presaleWei + tradingFee;
-    addLog('info', `创建费: ${formatEther(launchFee)} BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB + 交易费: ${formatEther(tradingFee)} BNB = ${formatEther(totalValue)} BNB`);
+    addLog('info', `创建费: ${formatEther(launchFee)} BNB + 预购: ${tokenInfo.presaleBNB || 0} + 交易费: ${formatEther(tradingFee)} BNB = ${formatEther(totalValue)} BNB`);
 
-    // 2. 预先创建所有买入钱包客户端
-    const buyAmount = parseEther(String(buyAmountPerWallet.value));
-    const buyClients = selectedWallets.map(wallet => {
-      const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
-      const client = createWalletClient({
-        account,
-        chain: currentNetwork.value === 'bscMainnet' ? bsc : {
-          id: 97,
-          name: 'BSC Testnet',
-          nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-          rpcUrls: { default: { http: [selectedRpcUrl.value] } }
-        },
-        transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
-      });
-      return { client, account, address: wallet.address };
-    });
-
-    addLog('info', `已准备 ${buyClients.length} 个买入客户端`);
-
-    // 3. 重新获取 fresh createArgs（避免签名过期 Expired）
+    // 获取 fresh createArgs（避免签名过期 Expired）
     addLog('info', '正在获取 fresh createArgs...');
     const freshPayload: Record<string, any> = {
       name: tokenInfo.name,
@@ -1425,7 +1221,7 @@ async function launchAndBuy() {
     }
     addLog('success', 'fresh createArgs 已获取，立即发送交易');
 
-    // 5. 立即发送创建交易（minimize delay after getting fresh args）
+    // 发送创建交易
     const createHash = await mainWalletClient.writeContract({
       address: FOURMEME_ADDRESS,
       abi: FOURMEME_ABI,
@@ -1438,7 +1234,7 @@ async function launchAndBuy() {
 
     addLog('success', `创建交易已发送: ${createHash.slice(0, 14)}...`);
 
-    // 4. 等待创建交易确认，从链上获取真实代币地址
+    // 等待创建交易确认
     addLog('info', '等待创建交易确认...');
     const receipt = await publicClient.waitForTransactionReceipt({ hash: createHash });
 
@@ -1449,7 +1245,7 @@ async function launchAndBuy() {
 
     addLog('success', `创建交易确认成功! Gas: ${receipt.gasUsed}`);
 
-    // 从 receipt logs 获取真实代币地址
+    // 从 receipt logs 获取代币地址
     let tokenAddress = '';
     for (const log of receipt.logs) {
       if (log.address && log.address.toLowerCase() !== FOURMEME_ADDRESS.toLowerCase()) {
@@ -1465,32 +1261,6 @@ async function launchAndBuy() {
 
     addLog('success', `代币地址: ${tokenAddress}`);
     addLog('success', `查看: https://four.meme/token/${tokenAddress}`);
-
-    // 5. 发送所有买入交易
-    addLog('info', `正在发送 ${buyClients.length} 笔买入交易...`);
-    const buyCalldata = encodeBuyCalldata(tokenAddress);
-
-    const buyResults = await Promise.allSettled(
-      buyClients.map(({ client, address }) =>
-        client.sendTransaction({
-          to: FOURMEME_ADDRESS,
-          data: buyCalldata,
-          value: buyAmount,
-          gasPrice: parseGwei(String(actualBuyGas)),
-          gas: 300000n
-        }).then(hash => {
-          addLog('info', `钱包 ${address.slice(0, 8)}... 买入已发送: ${hash.slice(0, 14)}...`);
-          return hash;
-        }).catch(err => {
-          addLog('error', `钱包 ${address.slice(0, 8)}... 买入失败: ${err.message}`);
-          throw err;
-        })
-      )
-    );
-
-    const successCount = buyResults.filter(r => r.status === 'fulfilled').length;
-    const failCount = buyResults.filter(r => r.status === 'rejected').length;
-    addLog('info', `买入交易结果: ${successCount} 成功, ${failCount} 失败`);
   } catch (error: any) {
     addLog('error', `发射失败: ${error.message}`);
   } finally {
@@ -1532,23 +1302,6 @@ onMounted(() => {
   padding: 0.75rem 1rem;
 }
 
-.wallet-list {
-  max-height: 300px;
-  overflow-y: auto;
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 0.25rem;
-  padding: 0.5rem;
-}
-
-.wallet-item {
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.wallet-item:last-child {
-  border-bottom: none;
-}
-
 .log-body {
   height: 200px;
   overflow-y: auto;
@@ -1584,15 +1337,6 @@ onMounted(() => {
 
 .font-monospace {
   font-family: monospace;
-}
-
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 .img-thumbnail {
