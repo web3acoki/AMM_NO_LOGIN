@@ -1323,45 +1323,40 @@ async function launchAndBuy() {
     const presaleWei = parseEther(String(tokenInfo.presaleBNB || 0));
     let totalValue: bigint;
 
-    if (createMode.value === 'agent') {
-      let launchFee = CREATE_FEE;
-      let tradingFee = 0n;
+    // 始终从链上查询实际费用，避免硬编码值与合约不一致导致 revert
+    let launchFee = CREATE_FEE;
+    let tradingFee = 0n;
+    const feeQueryAddress = (publicConfig.value?.tokenManager || FOURMEME_ADDRESS) as `0x${string}`;
 
-      if (publicConfig.value?.tokenManager) {
+    try {
+      addLog('info', '正在查询链上创建费用...');
+      const onChainFee = await publicClient.readContract({
+        address: feeQueryAddress,
+        abi: TM2_FEE_ABI,
+        functionName: '_launchFee'
+      });
+      launchFee = onChainFee as bigint;
+      addLog('info', `链上创建费: ${formatEther(launchFee)} BNB`);
+
+      if (presaleWei > 0n) {
         try {
-          addLog('info', '正在查询链上创建费用...');
-          const onChainFee = await publicClient.readContract({
-            address: publicConfig.value.tokenManager as `0x${string}`,
+          const feeRate = await publicClient.readContract({
+            address: feeQueryAddress,
             abi: TM2_FEE_ABI,
-            functionName: '_launchFee'
+            functionName: '_tradingFeeRate'
           });
-          launchFee = onChainFee as bigint;
-          addLog('info', `链上创建费: ${formatEther(launchFee)} BNB`);
-
-          if (presaleWei > 0n) {
-            try {
-              const feeRate = await publicClient.readContract({
-                address: publicConfig.value.tokenManager as `0x${string}`,
-                abi: TM2_FEE_ABI,
-                functionName: '_tradingFeeRate'
-              });
-              tradingFee = (presaleWei * (feeRate as bigint)) / 10000n;
-              addLog('info', `交易费率: ${feeRate}, 交易费: ${formatEther(tradingFee)} BNB`);
-            } catch (e: any) {
-              addLog('warning', `查询交易费率失败: ${e.message}，跳过`);
-            }
-          }
+          tradingFee = (presaleWei * (feeRate as bigint)) / 10000n;
+          addLog('info', `交易费率: ${feeRate}, 交易费: ${formatEther(tradingFee)} BNB`);
         } catch (e: any) {
-          addLog('warning', `查询链上费用失败: ${e.message}，使用默认 0.01 BNB`);
+          addLog('warning', `查询交易费率失败: ${e.message}，跳过`);
         }
       }
-
-      totalValue = launchFee + presaleWei + tradingFee;
-      addLog('info', `创建费: ${formatEther(launchFee)} BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB + 交易费: ${formatEther(tradingFee)} BNB = ${formatEther(totalValue)} BNB`);
-    } else {
-      totalValue = CREATE_FEE + presaleWei;
-      addLog('info', `创建费: 0.01 BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB = ${formatEther(totalValue)} BNB`);
+    } catch (e: any) {
+      addLog('warning', `查询链上费用失败: ${e.message}，使用默认 ${formatEther(CREATE_FEE)} BNB`);
     }
+
+    totalValue = launchFee + presaleWei + tradingFee;
+    addLog('info', `创建费: ${formatEther(launchFee)} BNB + 预购: ${tokenInfo.presaleBNB || 0} BNB + 交易费: ${formatEther(tradingFee)} BNB = ${formatEther(totalValue)} BNB`);
 
     // 2. 预先创建所有买入钱包客户端
     const buyAmount = parseEther(String(buyAmountPerWallet.value));
@@ -1402,7 +1397,7 @@ async function launchAndBuy() {
     const receipt = await publicClient.waitForTransactionReceipt({ hash: createHash });
 
     if (receipt.status !== 'success') {
-      addLog('error', '创建交易失败');
+      addLog('error', `创建交易失败 (gasUsed: ${receipt.gasUsed}, tx: ${createHash})`);
       return;
     }
 
