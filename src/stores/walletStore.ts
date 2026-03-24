@@ -3083,6 +3083,7 @@ export const useWalletStore = defineStore('wallet', {
       options?: {
         privateKeyMap?: Record<string, string>;
         transferAllBalance?: boolean;
+        intervalMs?: number;
       }
     ): Promise<{ source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[]> {
       console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}，转全部余额: ${options?.transferAllBalance}`);
@@ -3462,12 +3463,30 @@ export const useWalletStore = defineStore('wallet', {
 
       // 根据模式选择执行策略
       const CONCURRENT_BATCH_SIZE = 5;
+      const intervalMs = options?.intervalMs ?? 0;
 
       if (mode === 'oneToMany') {
         // 一对多：同一源钱包，nonce 需要串行递增
         for (let i = 0; i < tasks.length; i++) {
           const result = await executeTask(tasks[i], i);
           results.push(result);
+          // 启用间隔时，每笔之间等待指定毫秒数
+          if (intervalMs > 0 && i < tasks.length - 1) {
+            console.log(`转账间隔等待 ${intervalMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+          }
+        }
+      } else if (intervalMs > 0) {
+        // 启用间隔：改为顺序执行，每笔之间等待
+        for (let i = 0; i < tasks.length; i++) {
+          gasPrice = await publicClient.getGasPrice();
+          console.log(`顺序执行第 ${i + 1}/${tasks.length} 笔（间隔 ${intervalMs / 1000}s）`);
+          const result = await executeTask(tasks[i], i);
+          results.push(result);
+          if (i < tasks.length - 1) {
+            console.log(`转账间隔等待 ${intervalMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+          }
         }
       } else {
         // 多对多 / 多对一：不同源钱包，nonce 互不冲突，分批并发，RPC 节点轮询分散压力

@@ -227,6 +227,39 @@
           </div>
         </div>
 
+        <!-- 转账间隔设置 -->
+        <div class="row g-3 mt-2 align-items-center">
+          <div class="col-auto">
+            <div class="form-check">
+              <input
+                type="checkbox"
+                class="form-check-input"
+                id="intervalEnabled"
+                v-model="intervalEnabled"
+              >
+              <label class="form-check-label" for="intervalEnabled">
+                启用转账间隔
+                <small class="text-muted d-block">每笔转账之间等待指定秒数</small>
+              </label>
+            </div>
+          </div>
+          <div v-if="intervalEnabled" class="col-auto">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text"><i class="bi bi-clock me-1"></i>间隔</span>
+              <input
+                type="number"
+                class="form-control"
+                style="width: 80px;"
+                v-model.number="intervalSeconds"
+                min="1"
+                max="3600"
+                step="1"
+              >
+              <span class="input-group-text">秒</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 执行按钮 -->
         <div class="mt-3">
           <button
@@ -355,6 +388,10 @@ const showSecondTransfer = ref(false);
 const transferAmount2 = ref<number>(0.01);
 const transferTokenType2 = ref<'native' | 'token' | 'aster'>('aster');
 const transferAllBalance2 = ref(false);
+
+// 转账间隔
+const intervalEnabled = ref(false);
+const intervalSeconds = ref(3);
 
 // 批次选择
 const selectedSourceBatchId = ref('');
@@ -639,7 +676,8 @@ async function executeTransfer() {
         transferMode.value,
         {
           privateKeyMap: mergedPrivateKeyMap,
-          transferAllBalance: round.allBalance
+          transferAllBalance: round.allBalance,
+          intervalMs: intervalEnabled.value ? intervalSeconds.value * 1000 : 0
         }
       );
       // 标记每笔结果的代币类型和金额
@@ -717,7 +755,8 @@ async function retryFailedTransfers() {
         retryMode,
         {
           privateKeyMap: mergedPrivateKeyMap,
-          transferAllBalance: amount === 0
+          transferAllBalance: amount === 0,
+          intervalMs: intervalEnabled.value ? intervalSeconds.value * 1000 : 0
         }
       );
 
