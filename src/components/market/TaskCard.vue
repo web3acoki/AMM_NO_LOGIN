@@ -276,9 +276,9 @@ function handleStop() {
   }
 }
 
-function handleDelete() {
+async function handleDelete() {
   if (confirm(`确定要删除任务 "${props.task.name}" 吗？\n\n删除后无法恢复。`)) {
-    taskStore.deleteTask(props.task.id);
+    await taskStore.deleteTask(props.task.id);
   }
 }
 

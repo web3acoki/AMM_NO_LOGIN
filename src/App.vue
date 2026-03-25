@@ -40,8 +40,10 @@ import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 import SnipePanel from './components/panels/SnipePanel.vue';
 import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
 import { useWalletStore } from './stores/walletStore';
+import { useTaskStore } from './stores/taskStore';
 
 const walletStore = useWalletStore();
+const taskStore = useTaskStore();
 const requireLogin = ENABLE_LOGIN;
 
 const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken'>('wallet');
@@ -108,6 +110,8 @@ const loadSession = async () => {
 
     // 已登录状态下，初始化钱包数据（从服务器加载）
     await walletStore.init();
+    // 加载保存的任务
+    await taskStore.loadFromServer();
   } catch (error) {
     localStorage.removeItem('amm_token');
     // 认证失败时，仍然初始化钱包数据（本地模式）
@@ -135,6 +139,8 @@ const handleLoggedIn = async (payload: { user: any; token: string }) => {
 
   // 初始化钱包数据（从服务器加载）
   await walletStore.init();
+  // 加载保存的任务
+  await taskStore.loadFromServer();
 };
 
 const handleLogout = async () => {

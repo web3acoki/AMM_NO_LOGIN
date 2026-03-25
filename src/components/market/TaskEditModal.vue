@@ -399,7 +399,7 @@ function handleClose() {
 }
 
 // 保存修改
-function handleSave() {
+async function handleSave() {
   // 解析钱包地址
   const walletAddresses = formData.value.walletAddressesText
     .split('\n')
@@ -444,7 +444,7 @@ function handleSave() {
   };
 
   // 调用 store 更新任务
-  const success = taskStore.updateTask(props.task.id, updates);
+  const success = await taskStore.updateTask(props.task.id, updates);
 
   if (success) {
     alert('任务配置已更新');

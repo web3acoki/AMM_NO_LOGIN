@@ -279,7 +279,7 @@ function stopSelectedTasks() {
 }
 
 // 一键删除选中的任务（仅已停止）
-function deleteSelectedTasks() {
+async function deleteSelectedTasks() {
   const tasksToDelete = tasks.value.filter(t =>
     selectedTaskIds.value.includes(t.id) &&
     t.status === 'stopped'
@@ -300,14 +300,14 @@ function deleteSelectedTasks() {
   if (!confirm(msg)) return;
 
   const idsToDelete = tasksToDelete.map(t => t.id);
-  const deleted = taskStore.deleteMultipleTasks(idsToDelete);
+  const deleted = await taskStore.deleteMultipleTasks(idsToDelete);
 
   // 清理已删除的选中状态
   selectedTaskIds.value = selectedTaskIds.value.filter(id => !idsToDelete.includes(id));
 }
 
 // 批量更改代币地址
-function handleBatchUpdateToken() {
+async function handleBatchUpdateToken() {
   const innerTasks = tasks.value.filter(t =>
     selectedTaskIds.value.includes(t.id) &&
     t.config.marketType === 'inner' &&
@@ -329,7 +329,7 @@ function handleBatchUpdateToken() {
   }
 
   const taskIds = innerTasks.map(t => t.id);
-  const updatedCount = taskStore.batchUpdateTokenAddress(taskIds, newAddress);
+  const updatedCount = await taskStore.batchUpdateTokenAddress(taskIds, newAddress);
 
   alert(`已更新 ${updatedCount} 个内盘任务的代币地址`);
 }

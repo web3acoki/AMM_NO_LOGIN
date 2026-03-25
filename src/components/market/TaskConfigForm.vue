@@ -553,7 +553,7 @@ function formatAddress(address: string): string {
 }
 
 // 创建任务
-function handleCreateTask() {
+async function handleCreateTask() {
   if (!canCreate.value) return;
 
   const config = {
@@ -578,7 +578,7 @@ function handleCreateTask() {
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
-  const task = taskStore.createTask(
+  const task = await taskStore.createTask(
     taskName.value,
     config,
     [...finalWalletAddresses.value]

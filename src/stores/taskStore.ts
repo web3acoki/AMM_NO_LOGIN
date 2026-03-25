@@ -8,6 +8,12 @@ import { createFourMemeService, FourMemeService, ANTI_SANDWICH_RPC, type FourMem
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
+import * as taskApi from '../services/taskApi';
+import { ENABLE_LOGIN } from '../config';
+
+function shouldUseServerMode(): boolean {
+  return ENABLE_LOGIN && taskApi.isLoggedIn();
+}
 
 // 日志条目接口
 export interface LogEntry {
@@ -52,6 +58,7 @@ export interface TaskStats {
 
 // 任务接口
 export interface Task {
+  _id?: string;                 // 服务端 MongoDB ID
   id: string;
   name: string;
   status: 'running' | 'paused' | 'stopped';
@@ -87,6 +94,100 @@ export const useTaskStore = defineStore('task', () => {
     return tasks.value.find(t => t.id === activeLogTaskId.value) || null;
   });
 
+  // ========== 服务端同步 ==========
+
+  // 统计数据同步的防抖定时器
+  const statsSyncTimers = new Map<string, number>();
+
+  // 从服务器加载任务列表
+  async function loadFromServer(): Promise<void> {
+    if (!shouldUseServerMode()) return;
+    try {
+      const serverTasks = await taskApi.getTasks();
+      tasks.value = serverTasks.map(st => ({
+        _id: st._id,
+        id: st._id,
+        name: st.name,
+        status: 'stopped' as const,
+        config: st.config,
+        walletAddresses: st.walletAddresses || [],
+        logs: [],
+        stats: {
+          buyCount: st.stats?.buyCount || 0,
+          sellCount: st.stats?.sellCount || 0,
+          spentAmount: st.stats?.spentAmount || 0,
+          startTime: undefined,
+          elapsedTime: st.stats?.elapsedTime || 0
+        },
+        currentBuyWalletIndex: st.currentBuyWalletIndex || 0,
+        currentSellWalletIndex: st.currentSellWalletIndex || 0
+      }));
+      if (tasks.value.length > 0) {
+        activeLogTaskId.value = tasks.value[0].id;
+      }
+    } catch (error) {
+      console.error('从服务器加载任务失败:', error);
+    }
+  }
+
+  // 调度统计数据同步（30秒防抖）
+  function scheduleStatsSync(taskId: string) {
+    if (!shouldUseServerMode()) return;
+    const task = tasks.value.find(t => t.id === taskId);
+    if (!task || !task._id) return;
+
+    const existing = statsSyncTimers.get(taskId);
+    if (existing) clearTimeout(existing);
+
+    const timer = window.setTimeout(async () => {
+      statsSyncTimers.delete(taskId);
+      const t = tasks.value.find(t => t.id === taskId);
+      if (!t || !t._id) return;
+      try {
+        await taskApi.updateTaskStats(t._id, {
+          stats: {
+            buyCount: t.stats.buyCount,
+            sellCount: t.stats.sellCount,
+            spentAmount: t.stats.spentAmount,
+            elapsedTime: t.stats.elapsedTime
+          },
+          currentBuyWalletIndex: t.currentBuyWalletIndex,
+          currentSellWalletIndex: t.currentSellWalletIndex
+        });
+      } catch (error) {
+        console.error('同步任务统计失败:', error);
+      }
+    }, 30000);
+
+    statsSyncTimers.set(taskId, timer);
+  }
+
+  // 立即刷新统计数据到服务器（任务停止时调用）
+  function flushStatsSync(taskId: string) {
+    if (!shouldUseServerMode()) return;
+    const task = tasks.value.find(t => t.id === taskId);
+    if (!task || !task._id) return;
+
+    // 清除待执行的防抖定时器
+    const pendingTimer = statsSyncTimers.get(taskId);
+    if (pendingTimer) clearTimeout(pendingTimer);
+    statsSyncTimers.delete(taskId);
+
+    // 立即发送
+    taskApi.updateTaskStats(task._id, {
+      stats: {
+        buyCount: task.stats.buyCount,
+        sellCount: task.stats.sellCount,
+        spentAmount: task.stats.spentAmount,
+        elapsedTime: task.stats.elapsedTime
+      },
+      currentBuyWalletIndex: task.currentBuyWalletIndex,
+      currentSellWalletIndex: task.currentSellWalletIndex
+    }).catch(err => console.error('刷新任务统计失败:', err));
+  }
+
+  // ========== 原有逻辑 ==========
+
   // 生成唯一ID
   function generateId(): string {
     return `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -117,11 +218,11 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 创建新任务
-  function createTask(
+  async function createTask(
     name: string,
     config: TaskConfig,
     walletAddresses: string[]
-  ): Task {
+  ): Promise<Task> {
     const task: Task = {
       id: generateId(),
       name,
@@ -139,6 +240,18 @@ export const useTaskStore = defineStore('task', () => {
       currentSellWalletIndex: 0
     };
     tasks.value.push(task);
+
+    // 同步到服务器
+    if (shouldUseServerMode()) {
+      try {
+        const serverTask = await taskApi.createTask({ name, config, walletAddresses });
+        task._id = serverTask._id;
+        task.id = serverTask._id;
+      } catch (error) {
+        console.error('保存任务到服务器失败:', error);
+        addLog(task.id, 'warning', '任务保存到服务器失败，刷新页面后可能丢失');
+      }
+    }
 
     // 自动设置为当前查看的任务
     if (!activeLogTaskId.value) {
@@ -865,6 +978,9 @@ export const useTaskStore = defineStore('task', () => {
         stopTask(task.id, '已达到停止条件');
       }
     }
+
+    // 防抖同步统计数据到服务器
+    scheduleStatsSync(task.id);
   }
 
   // 开始任务
@@ -990,21 +1106,33 @@ export const useTaskStore = defineStore('task', () => {
     // 清理预授权追踪
     preApprovalTracker.delete(taskId);
 
+    // 立即刷新统计数据到服务器
+    flushStatsSync(taskId);
+
     addLog(task.id, 'info', `任务已停止${reason ? `，原因: ${reason}` : ''}`);
     return true;
   }
 
   // 删除任务
-  function deleteTask(taskId: string): boolean {
+  async function deleteTask(taskId: string): Promise<boolean> {
     const taskIndex = tasks.value.findIndex(t => t.id === taskId);
     if (taskIndex === -1) return false;
+
+    const task = tasks.value[taskIndex];
+
+    // 同步到服务器
+    if (shouldUseServerMode() && task._id) {
+      try {
+        await taskApi.deleteTask(task._id);
+      } catch (error) {
+        console.error('从服务器删除任务失败:', error);
+      }
+    }
 
     // 清理缓存的 FourMemeService 实例
     fourMemeServiceCache.delete(taskId);
     // 清理预授权追踪
     preApprovalTracker.delete(taskId);
-
-    const task = tasks.value[taskIndex];
 
     // 先停止任务
     if (task.status === 'running') {
@@ -1022,14 +1150,14 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 更新任务配置
-  function updateTask(
+  async function updateTask(
     taskId: string,
     updates: {
       name?: string;
       config?: Partial<TaskConfig>;
       walletAddresses?: string[];
     }
-  ): boolean {
+  ): Promise<boolean> {
     const task = tasks.value.find(t => t.id === taskId);
     if (!task) return false;
 
@@ -1054,12 +1182,26 @@ export const useTaskStore = defineStore('task', () => {
       task.walletAddresses = updates.walletAddresses;
     }
 
+    // 同步到服务器
+    if (shouldUseServerMode() && task._id) {
+      try {
+        await taskApi.updateTask(task._id, {
+          name: task.name,
+          config: task.config,
+          walletAddresses: task.walletAddresses
+        });
+      } catch (error) {
+        console.error('同步任务更新到服务器失败:', error);
+        addLog(taskId, 'warning', '任务更新同步到服务器失败');
+      }
+    }
+
     addLog(taskId, 'info', `任务配置已更新`);
     return true;
   }
 
   // 批量更改代币地址（仅内盘任务，仅停止/暂停状态）
-  function batchUpdateTokenAddress(taskIds: string[], newTokenAddress: string): number {
+  async function batchUpdateTokenAddress(taskIds: string[], newTokenAddress: string): Promise<number> {
     let updatedCount = 0;
     for (const taskId of taskIds) {
       const task = tasks.value.find(t => t.id === taskId);
@@ -1074,6 +1216,21 @@ export const useTaskStore = defineStore('task', () => {
       updatedCount++;
       addLog(taskId, 'info', `代币地址已更新为: ${newTokenAddress}`);
     }
+
+    // 同步到服务器
+    if (shouldUseServerMode() && updatedCount > 0) {
+      const serverIds = tasks.value
+        .filter(t => taskIds.includes(t.id) && t._id && t.config.marketType === 'inner')
+        .map(t => t._id!);
+      if (serverIds.length > 0) {
+        try {
+          await taskApi.batchUpdateTokenAddress(serverIds, newTokenAddress);
+        } catch (error) {
+          console.error('批量更新代币地址到服务器失败:', error);
+        }
+      }
+    }
+
     return updatedCount;
   }
 
@@ -1092,7 +1249,16 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 清空所有任务（页面刷新时调用）
-  function clearAllTasks() {
+  async function clearAllTasks() {
+    // 同步到服务器
+    if (shouldUseServerMode()) {
+      try {
+        await taskApi.clearAllTasks();
+      } catch (error) {
+        console.error('清空服务器任务失败:', error);
+      }
+    }
+
     // 停止所有运行中的任务
     tasks.value.forEach(task => {
       if (task.intervalId) {
@@ -1104,8 +1270,22 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   // 批量删除任务（一次性删除，避免多次触发Vue响应式更新导致渲染问题）
-  function deleteMultipleTasks(taskIds: string[]): number {
+  async function deleteMultipleTasks(taskIds: string[]): Promise<number> {
     if (taskIds.length === 0) return 0;
+
+    // 同步到服务器
+    if (shouldUseServerMode()) {
+      const serverIds = tasks.value
+        .filter(t => taskIds.includes(t.id) && t._id)
+        .map(t => t._id!);
+      if (serverIds.length > 0) {
+        try {
+          await taskApi.deleteTasks(serverIds);
+        } catch (error) {
+          console.error('批量删除服务器任务失败:', error);
+        }
+      }
+    }
 
     // 先停止所有运行中的任务
     for (const taskId of taskIds) {
@@ -1430,6 +1610,7 @@ export const useTaskStore = defineStore('task', () => {
     activeLogTask,
 
     // 方法
+    loadFromServer,
     createTask,
     startTask,
     pauseTask,
