@@ -239,9 +239,9 @@ export const useTaskStore = defineStore('task', () => {
       currentBuyWalletIndex: 0,
       currentSellWalletIndex: 0
     };
-    tasks.value.push(task);
 
-    // 同步到服务器
+    // 先同步到服务器获取稳定 ID，再 push 到数组
+    // 避免 push 后 ID 变更导致运行时引用失效
     if (shouldUseServerMode()) {
       try {
         const serverTask = await taskApi.createTask({ name, config, walletAddresses });
@@ -249,8 +249,14 @@ export const useTaskStore = defineStore('task', () => {
         task.id = serverTask._id;
       } catch (error) {
         console.error('保存任务到服务器失败:', error);
-        addLog(task.id, 'warning', '任务保存到服务器失败，刷新页面后可能丢失');
       }
+    }
+
+    tasks.value.push(task);
+
+    // 如果服务器保存失败，提示用户
+    if (shouldUseServerMode() && !task._id) {
+      addLog(task.id, 'warning', '任务保存到服务器失败，刷新页面后可能丢失');
     }
 
     // 自动设置为当前查看的任务
