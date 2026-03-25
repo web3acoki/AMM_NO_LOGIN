@@ -591,7 +591,7 @@ export const useTaskStore = defineStore('task', () => {
 
     const tradeParams: FourMemeTradeParams = {
       chainId,
-      rpcUrl: antiSandwichRpc,
+      rpcUrl: buyRpc,
       privateKey,
       walletAddress,
       tokenAddress: task.config.innerTokenAddress || task.config.tokenContract,
@@ -662,7 +662,7 @@ export const useTaskStore = defineStore('task', () => {
 
     try {
       const chainId = chainStore.selectedChainId;
-      const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      const buyRpcForFast = getBuyRpcUrl(task.config);
 
       // 计算随机金额
       const amountMin = task.config.amountMin || 0;
@@ -674,7 +674,7 @@ export const useTaskStore = defineStore('task', () => {
 
       const tradeParams: FourMemeTradeParams = {
         chainId,
-        rpcUrl: antiSandwichRpc,
+        rpcUrl: buyRpcForFast,
         privateKey,
         walletAddress,
         tokenAddress: task.config.innerTokenAddress || task.config.tokenContract,
@@ -1461,7 +1461,7 @@ export const useTaskStore = defineStore('task', () => {
 
         const prepareResult = await sharedFourMemeService.prepareSell({
           chainId,
-          rpcUrl: antiSandwichRpc,
+          rpcUrl: sellRpc,
           privateKey,
           walletAddress,
           tokenAddress,
@@ -1500,7 +1500,7 @@ export const useTaskStore = defineStore('task', () => {
       const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
         const result = await sharedFourMemeService.executeSellDirect({
           chainId,
-          rpcUrl: antiSandwichRpc,
+          rpcUrl: sellRpc,
           privateKey,
           walletAddress,
           tokenAddress,
