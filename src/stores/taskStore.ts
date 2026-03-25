@@ -4,7 +4,7 @@ import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
 import { useDexStore } from './dexStore';
 import { createTradingService, type TradeParams } from '../services/tradingService';
-import { createFourMemeService, FourMemeService, ANTI_SANDWICH_RPC, type FourMemeTradeParams, type SellPrepareResult, acquireNonceLocal } from '../services/fourMemeService';
+import { createFourMemeService, FourMemeService, ANTI_SANDWICH_RPC, getPremiumSellRpc, type FourMemeTradeParams, type SellPrepareResult, acquireNonceLocal } from '../services/fourMemeService';
 import { PriceCalculator } from '../utils/priceCalculator';
 import { createPublicClient, http, formatEther, formatUnits } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
@@ -45,6 +45,7 @@ export interface TaskConfig {
   innerSlippage?: number;     // 内盘滑点百分比（例如: 10 表示 10%）
   antiSandwichRpc?: string;   // 防夹节点 RPC URL（内盘和外盘都使用）
   poolBaseToken?: string;     // 底池基础代币地址（ASTER底池时设置）
+  buyUsePremiumRpc?: boolean; // 买入是否也使用高速节点（默认否，仅卖出使用）
 }
 
 // 任务统计接口
@@ -188,6 +189,17 @@ export const useTaskStore = defineStore('task', () => {
 
   // ========== 原有逻辑 ==========
 
+  // 获取任务的买入 RPC URL
+  function getBuyRpcUrl(config: TaskConfig): string {
+    if (config.buyUsePremiumRpc) return getPremiumSellRpc();
+    return config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+  }
+
+  // 获取任务的卖出 RPC URL（始终使用高速节点）
+  function getSellRpcUrl(): string {
+    return getPremiumSellRpc();
+  }
+
   // 生成唯一ID
   function generateId(): string {
     return `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -272,10 +284,11 @@ export const useTaskStore = defineStore('task', () => {
     // 这样当用户点击"开始"时，RPC 连接已经建立好了
     if (config.marketType === 'inner') {
       const chainStore = useChainStore();
-      const antiSandwichRpc = config.antiSandwichRpc || ANTI_SANDWICH_RPC;
+      const buyRpc = getBuyRpcUrl(config);
+      const sellRpc = getSellRpcUrl();
 
-      // 预创建并缓存 FourMemeService 实例
-      const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+      // 预创建并缓存 FourMemeService 实例（买入用 buyRpc，卖出用 sellRpc）
+      const service = createFourMemeService(chainStore.selectedChainId, buyRpc, sellRpc);
       fourMemeServiceCache.set(task.id, service);
 
       // 异步预热两个 RPC 端点的 TCP/TLS 连接（防夹节点 + Binance 官方节点）
@@ -568,9 +581,10 @@ export const useTaskStore = defineStore('task', () => {
     tradeDirection: 'buy' | 'sell',
     sharedService?: InstanceType<typeof FourMemeService>
   ): Promise<boolean> {
-    // 内盘交易使用配置的防夹节点，未配置则使用默认
-    const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-    const fourMemeService = sharedService || createFourMemeService(chainId, antiSandwichRpc);
+    // 内盘交易使用配置的节点
+    const buyRpc = getBuyRpcUrl(task.config);
+    const sellRpc = getSellRpcUrl();
+    const fourMemeService = sharedService || createFourMemeService(chainId, buyRpc, sellRpc);
 
     // 卖出模式：如果 sellAll 为 true 则卖出100%
     const sellAll = tradeDirection === 'sell' && task.config.sellAll;
@@ -724,8 +738,10 @@ export const useTaskStore = defineStore('task', () => {
       return false;
     }
 
-    // 外盘交易：优先使用配置的节点，未配置则跟随网络设置
-    const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
+    // 外盘交易：卖出走高速节点，买入走防夹节点
+    const effectiveRpcUrl = tradeDirection === 'sell'
+      ? getSellRpcUrl()
+      : (task.config.buyUsePremiumRpc ? getPremiumSellRpc() : (task.config.antiSandwichRpc || rpcUrl));
     const tradingService = createTradingService(chainId, effectiveRpcUrl, routerAddress);
 
     // 卖出模式：如果 sellAll 为 true 则卖出100%
@@ -874,8 +890,9 @@ export const useTaskStore = defineStore('task', () => {
       sharedFourMemeService = fourMemeServiceCache.get(task.id);
       if (!sharedFourMemeService) {
         const chainStore = useChainStore();
-        const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-        sharedFourMemeService = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+        const buyRpc = getBuyRpcUrl(task.config);
+        const sellRpc = getSellRpcUrl();
+        sharedFourMemeService = createFourMemeService(chainStore.selectedChainId, buyRpc, sellRpc);
         fourMemeServiceCache.set(task.id, sharedFourMemeService);
         // 新建的 service 连接是冷的，立即预热（不阻塞当前轮次，下一轮受益）
         sharedFourMemeService.warmupConnections().catch(() => {});
@@ -1002,8 +1019,9 @@ export const useTaskStore = defineStore('task', () => {
     // 内盘任务：确保 FourMemeService 实例存在（创建任务时已预热）
     if (task.config.marketType === 'inner' && !fourMemeServiceCache.has(taskId)) {
       const chainStore = useChainStore();
-      const antiSandwichRpc = task.config.antiSandwichRpc || ANTI_SANDWICH_RPC;
-      const service = createFourMemeService(chainStore.selectedChainId, antiSandwichRpc);
+      const buyRpc = getBuyRpcUrl(task.config);
+      const sellRpc = getSellRpcUrl();
+      const service = createFourMemeService(chainStore.selectedChainId, buyRpc, sellRpc);
       fourMemeServiceCache.set(taskId, service);
       // 预热连接（异步，不阻塞）- 停止后重启时 service 是新创建的，连接需要重新建立
       service.warmupConnections().catch(() => {});
@@ -1426,10 +1444,10 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     // 内盘模式：使用两阶段卖出，确保所有交易同时发送
-    // 批量卖出使用 Binance 官方节点（支持 CORS，不限流）
+    // 批量卖出使用高速节点
     if (task.config.marketType === 'inner') {
-      const antiSandwichRpc = 'https://bsc-dataseed.binance.org';
-      const sharedFourMemeService = createFourMemeService(chainId, antiSandwichRpc);
+      const sellRpc = getSellRpcUrl();
+      const sharedFourMemeService = createFourMemeService(chainId, sellRpc, sellRpc);
 
       addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);
 

@@ -30,6 +30,18 @@ export const FOURMEME_CONTRACT = '0x5c952063c7fc8610FFDB798152D69F0B9550762b' as
 // 批量卖出在 taskStore 中强制使用 Binance 官方节点
 export const ANTI_SANDWICH_RPC = 'https://bsc.rpc.blxrbdn.com' as const;
 
+// 高速卖出 RPC 节点（从后端获取，避免在开源前端暴露付费节点地址）
+// 登录后通过 /api/config 接口获取，未获取时 fallback 到防夹节点
+let _premiumSellRpc: string = '';
+
+export function getPremiumSellRpc(): string {
+  return _premiumSellRpc || ANTI_SANDWICH_RPC;
+}
+
+export function setPremiumSellRpc(url: string) {
+  _premiumSellRpc = url;
+}
+
 // FourMeme 合约 ABI (只包含我们需要的函数)
 const FOURMEME_ABI = [
   {
@@ -164,11 +176,13 @@ export class FourMemeService {
   private publicClient: PublicClient;
   private readClient: PublicClient;  // 只读操作使用 Binance 官方 RPC（低延迟，不占用防夹节点）
   private chainId: number;
-  private rpcUrl: string;
+  private rpcUrl: string;       // 买入发交易用的 RPC
+  private sellRpcUrl: string;   // 卖出发交易用的 RPC
 
-  constructor(chainId: number, rpcUrl: string) {
+  constructor(chainId: number, rpcUrl: string, sellRpcUrl?: string) {
     this.chainId = chainId;
     this.rpcUrl = rpcUrl;
+    this.sellRpcUrl = sellRpcUrl || rpcUrl;
 
     const chain = chainId === 97 ? bscTestnet : bsc;
     this.publicClient = createPublicClient({
@@ -243,12 +257,15 @@ export class FourMemeService {
     try {
       const chain = this.chainId === 97 ? bscTestnet : bsc;
 
+      // 买入和卖出使用不同的 RPC 节点发送交易
+      const tradeRpcUrl = params.mode === 'sell' ? this.sellRpcUrl : this.rpcUrl;
+
       // 创建钱包客户端
       const account = privateKeyToAccount(params.privateKey as `0x${string}`);
       const walletClient = createWalletClient({
         account,
         chain,
-        transport: http(this.rpcUrl)
+        transport: http(tradeRpcUrl)
       });
 
       if (params.mode === 'buy') {
@@ -583,12 +600,12 @@ export class FourMemeService {
       const tokenAddress = params.tokenAddress as Address;
       const walletAddress = params.walletAddress as Address;
 
-      // 创建钱包客户端
+      // 创建钱包客户端（卖出使用 sellRpcUrl）
       const account = privateKeyToAccount(params.privateKey as `0x${string}`);
       const walletClient = createWalletClient({
         account,
         chain,
-        transport: http(this.rpcUrl)
+        transport: http(this.sellRpcUrl)
       });
 
       // 并行查询余额和授权（都走 readClient）
@@ -674,12 +691,12 @@ export class FourMemeService {
       const tokenAddress = params.tokenAddress as Address;
       const walletAddress = params.walletAddress as Address;
 
-      // 创建钱包客户端
+      // 创建钱包客户端（卖出使用 sellRpcUrl）
       const account = privateKeyToAccount(params.privateKey as `0x${string}`);
       const walletClient = createWalletClient({
         account,
         chain,
-        transport: http(this.rpcUrl)
+        transport: http(this.sellRpcUrl)
       });
 
       // 计算滑点保护的最小获得 BNB 数量
@@ -899,10 +916,14 @@ export class FourMemeService {
     try {
       const chain = this.chainId === 97 ? bscTestnet : bsc;
       const account = privateKeyToAccount(params.privateKey as `0x${string}`);
+
+      // 买入和卖出使用不同的 RPC 节点发送交易
+      const tradeRpcUrl = params.mode === 'sell' ? this.sellRpcUrl : this.rpcUrl;
+
       const walletClient = createWalletClient({
         account,
         chain,
-        transport: http(this.rpcUrl)
+        transport: http(tradeRpcUrl)
       });
 
       if (params.mode === 'buy') {
@@ -1064,6 +1085,6 @@ export class FourMemeService {
 /**
  * 创建 FourMeme 服务实例
  */
-export function createFourMemeService(chainId: number, rpcUrl: string): FourMemeService {
-  return new FourMemeService(chainId, rpcUrl);
+export function createFourMemeService(chainId: number, rpcUrl: string, sellRpcUrl?: string): FourMemeService {
+  return new FourMemeService(chainId, rpcUrl, sellRpcUrl);
 }

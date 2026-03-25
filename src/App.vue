@@ -41,10 +41,24 @@ import SnipePanel from './components/panels/SnipePanel.vue';
 import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
 import { useWalletStore } from './stores/walletStore';
 import { useTaskStore } from './stores/taskStore';
+import { getServerConfig } from './services/configApi';
+import { setPremiumSellRpc } from './services/fourMemeService';
 
 const walletStore = useWalletStore();
 const taskStore = useTaskStore();
 const requireLogin = ENABLE_LOGIN;
+
+// 从服务端加载配置（付费 RPC 节点等）
+async function loadServerConfig() {
+  try {
+    const config = await getServerConfig();
+    if (config.premiumRpcUrl) {
+      setPremiumSellRpc(config.premiumRpcUrl);
+    }
+  } catch (error) {
+    console.error('加载服务端配置失败:', error);
+  }
+}
 
 const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken'>('wallet');
 const sidebarCollapsed = ref(false);
@@ -108,7 +122,9 @@ const loadSession = async () => {
     currentUser.value = response.data?.user;
     isAuthenticated.value = true;
 
-    // 已登录状态下，初始化钱包数据（从服务器加载）
+    // 已登录状态下，加载服务端配置（付费 RPC 等）
+    await loadServerConfig();
+    // 初始化钱包数据（从服务器加载）
     await walletStore.init();
     // 加载保存的任务
     await taskStore.loadFromServer();
@@ -137,6 +153,8 @@ const handleLoggedIn = async (payload: { user: any; token: string }) => {
     console.error('迁移钱包数据失败:', error);
   }
 
+  // 加载服务端配置（付费 RPC 等）
+  await loadServerConfig();
   // 初始化钱包数据（从服务器加载）
   await walletStore.init();
   // 加载保存的任务
