@@ -233,10 +233,11 @@
       <!-- 防夹节点设置（内盘和外盘都显示） -->
       <div class="mb-3">
         <label class="form-label small">
-          <i class="bi bi-shield-lock me-1"></i>RPC 节点
+          <i class="bi bi-shield-lock me-1"></i>买入 RPC 节点
         </label>
         <select class="form-select form-select-sm" v-model="antiSandwichRpcType">
           <option value="network">跟随网络设置</option>
+          <option value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
           <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
           <option value="binance">https://bsc-dataseed.binance.org</option>
           <option value="blocksec">https://bsc.rpc.blocksec.com</option>
@@ -252,7 +253,7 @@
           >
         </div>
         <div class="form-text small text-muted">
-          <i class="bi bi-info-circle me-1"></i>选择防夹节点可保护交易不被 MEV 机器人攻击，"跟随网络设置"使用网络选择器中的节点
+          <i class="bi bi-info-circle me-1"></i>卖出交易始终使用高速付费节点；此处仅控制买入节点
         </div>
       </div>
 
@@ -374,7 +375,7 @@ const amountUnitLabel = computed(() => {
 });
 
 // 防夹节点设置（外盘默认跟随网络设置，内盘默认使用防夹节点）
-const antiSandwichRpcType = ref<'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('network');
+const antiSandwichRpcType = ref<'network' | 'premium' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('network');
 const customAntiSandwichRpc = ref('');
 
 // 防夹节点 URL 映射
@@ -385,10 +386,11 @@ const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
   '48club': 'https://rpc-bsc.48.club',
 };
 
-// 计算实际使用的 RPC URL（undefined 表示跟随网络设置）
+// 计算实际使用的买入 RPC URL（undefined 表示跟随网络设置）
+// 选择 premium 时，antiSandwichRpc 不设置，通过 buyUsePremiumRpc 标志控制
 const antiSandwichRpcUrl = computed(() => {
-  if (antiSandwichRpcType.value === 'network') {
-    return undefined; // 跟随网络设置
+  if (antiSandwichRpcType.value === 'network' || antiSandwichRpcType.value === 'premium') {
+    return undefined;
   }
   if (antiSandwichRpcType.value === 'custom') {
     return customAntiSandwichRpc.value || undefined;
@@ -573,8 +575,9 @@ async function handleCreateTask() {
     marketType: marketType.value, // 盘口类型
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
     innerSlippage: (marketType.value === 'inner' && buyThreadCount.value > 0) ? innerSlippage.value : undefined, // 内盘买入滑点
-    antiSandwichRpc: antiSandwichRpcUrl.value, // 防夹节点（内盘和外盘都使用）
+    antiSandwichRpc: antiSandwichRpcUrl.value, // 买入防夹节点（内盘和外盘都使用）
     poolBaseToken: poolType.value === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined, // ASTER底池代币地址
+    buyUsePremiumRpc: antiSandwichRpcType.value === 'premium', // 买入是否使用高速付费节点
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）
