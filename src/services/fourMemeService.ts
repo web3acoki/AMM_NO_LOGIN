@@ -223,7 +223,7 @@ export class FourMemeService {
    */
   private async tryGetAmountOut(tokenAddress: Address, amountIn: bigint, isBuy: boolean): Promise<bigint> {
     try {
-      const result = await this.publicClient.readContract({
+      const result = await this.readClient.readContract({
         address: FOURMEME_CONTRACT,
         abi: FOURMEME_ABI,
         functionName: 'getAmountOut',
@@ -328,7 +328,7 @@ export class FourMemeService {
         : BigInt(300000);
 
       // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
-      const nonce = await acquireNonce(this.publicClient, walletAddress);
+      const nonce = await acquireNonce(this.readClient, walletAddress);
 
       // 发送交易
       // 非 BNB 底池：value = 0（通过 transferFrom 转底池代币）
@@ -375,8 +375,12 @@ export class FourMemeService {
       const tokenAddress = params.tokenAddress as Address;
       const walletAddress = walletClient.account!.address;
 
-      // 获取代币余额
-      const tokenBalance = await this.getTokenBalance(tokenAddress, walletAddress);
+      // 并行查询余额和授权（都走 readClient，通过 multicall 自动合并）
+      const [tokenBalance, allowance] = await Promise.all([
+        this.getTokenBalance(tokenAddress, walletAddress),
+        this.getTokenAllowance(tokenAddress, walletAddress, FOURMEME_CONTRACT)
+      ]);
+
       if (tokenBalance <= 0n) {
         return {
           success: false,
@@ -401,7 +405,6 @@ export class FourMemeService {
       }
 
       // 首先需要授权 FourMeme 合约
-      const allowance = await this.getTokenAllowance(tokenAddress, walletAddress, FOURMEME_CONTRACT);
       if (allowance < sellAmount) {
         const approveResult = await this.approveToken(walletClient, tokenAddress, FOURMEME_CONTRACT);
         if (!approveResult.success) {
@@ -412,15 +415,23 @@ export class FourMemeService {
         }
       }
 
-      // 计算滑点保护的最小获得 BNB 数量
+      // 计算滑点保护的最小获得 BNB 数量（与 nonce 查询并行）
       const slippage = params.slippage || 0;
-      let minEthAmount = 0n;
+      let minEthAmountPromise: Promise<bigint> = Promise.resolve(0n);
       if (slippage > 0) {
-        const expectedOut = await this.tryGetAmountOut(tokenAddress, sellAmount, false);
-        if (expectedOut > 0n) {
-          minEthAmount = this.calculateMinAmountOut(expectedOut, slippage);
-        }
+        minEthAmountPromise = this.tryGetAmountOut(tokenAddress, sellAmount, false).then(expectedOut => {
+          if (expectedOut > 0n) {
+            return this.calculateMinAmountOut(expectedOut, slippage);
+          }
+          return 0n;
+        });
       }
+
+      // 并行：滑点计算 + nonce 获取（readClient）
+      const [minEthAmount, nonce] = await Promise.all([
+        minEthAmountPromise,
+        acquireNonce(this.readClient, walletAddress)
+      ]);
 
       // 使用 ABI 编码卖出交易数据
       // sellToken(address token, uint256 amount, uint256 minEthAmount)
@@ -442,9 +453,6 @@ export class FourMemeService {
       const gasLimit = params.gasLimit
         ? BigInt(params.gasLimit)
         : BigInt(300000);
-
-      // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
-      const nonce = await acquireNonce(this.publicClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -479,7 +487,7 @@ export class FourMemeService {
    */
   private async getTokenBalance(tokenAddress: Address, walletAddress: Address): Promise<bigint> {
     try {
-      const data = await this.publicClient.readContract({
+      const data = await this.readClient.readContract({
         address: tokenAddress,
         abi: [{
           name: 'balanceOf',
@@ -506,7 +514,7 @@ export class FourMemeService {
     spenderAddress: Address
   ): Promise<bigint> {
     try {
-      const data = await this.publicClient.readContract({
+      const data = await this.readClient.readContract({
         address: tokenAddress,
         abi: [{
           name: 'allowance',
@@ -550,7 +558,7 @@ export class FourMemeService {
         gas: BigInt(100000)
       });
 
-      const receipt = await this.publicClient.waitForTransactionReceipt({
+      const receipt = await this.readClient.waitForTransactionReceipt({
         hash: txHash,
         timeout: 60000
       });
@@ -583,8 +591,12 @@ export class FourMemeService {
         transport: http(this.rpcUrl)
       });
 
-      // 获取代币余额
-      const tokenBalance = await this.getTokenBalance(tokenAddress, walletAddress);
+      // 并行查询余额和授权（都走 readClient）
+      const [tokenBalance, allowance] = await Promise.all([
+        this.getTokenBalance(tokenAddress, walletAddress),
+        this.getTokenAllowance(tokenAddress, walletAddress, FOURMEME_CONTRACT)
+      ]);
+
       if (tokenBalance <= 0n) {
         return {
           success: false,
@@ -616,7 +628,6 @@ export class FourMemeService {
       }
 
       // 检查授权
-      const allowance = await this.getTokenAllowance(tokenAddress, walletAddress, FOURMEME_CONTRACT);
       const needsApproval = allowance < sellAmount;
 
       // 如果需要授权，执行授权并等待确认
@@ -702,7 +713,7 @@ export class FourMemeService {
         : BigInt(300000);
 
       // 获取并预留 nonce（乐观锁：立即递增，失败时回滚）
-      const nonce = await acquireNonce(this.publicClient, walletAddress);
+      const nonce = await acquireNonce(this.readClient, walletAddress);
 
       // 发送交易
       const txHash = await walletClient.sendTransaction({
@@ -940,7 +951,7 @@ export class FourMemeService {
       // 优先使用本地 nonce（零 RPC），fallback 到链上查询
       let nonce = acquireNonceLocal(walletAddress);
       if (nonce === null) {
-        nonce = await acquireNonce(this.publicClient, walletAddress);
+        nonce = await acquireNonce(this.readClient, walletAddress);
       }
 
       const txHash = await walletClient.sendTransaction({
@@ -1023,7 +1034,7 @@ export class FourMemeService {
       // 优先使用本地 nonce（零 RPC），fallback 到链上查询
       let nonce = acquireNonceLocal(walletAddress);
       if (nonce === null) {
-        nonce = await acquireNonce(this.publicClient, walletAddress);
+        nonce = await acquireNonce(this.readClient, walletAddress);
       }
 
       const txHash = await walletClient.sendTransaction({
