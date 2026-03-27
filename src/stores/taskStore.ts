@@ -1444,9 +1444,9 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     // 内盘模式：使用两阶段卖出，确保所有交易同时发送
-    // 批量卖出使用高速节点
+    // 批量卖出跟随任务配置的 RPC 节点
     if (task.config.marketType === 'inner') {
-      const sellRpc = getSellRpcUrl();
+      const sellRpc = task.config.buyUsePremiumRpc ? getPremiumSellRpc() : (task.config.antiSandwichRpc || getSellRpcUrl());
       const sharedFourMemeService = createFourMemeService(chainId, sellRpc, sellRpc);
 
       addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);
@@ -1522,8 +1522,8 @@ export const useTaskStore = defineStore('task', () => {
       addLog(taskId, 'info', `批量卖出操作完成，共发送 ${readyWallets.length} 笔交易`);
 
     } else {
-      // 外盘模式：优先使用配置的节点，未配置则跟随网络设置
-      const effectiveRpcUrl = task.config.antiSandwichRpc || rpcUrl;
+      // 外盘模式：优先使用付费节点 > 配置的防夹节点 > 跟随网络设置
+      const effectiveRpcUrl = task.config.buyUsePremiumRpc ? getPremiumSellRpc() : (task.config.antiSandwichRpc || rpcUrl);
       // 判断是使用 ASTER 还是 BNB
       const useAster = !!task.config.poolBaseToken;
       const spendToken = useAster ? 'ASTER' : 'BNB';
