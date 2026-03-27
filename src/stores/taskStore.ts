@@ -1451,8 +1451,13 @@ export const useTaskStore = defineStore('task', () => {
 
       addLog(taskId, 'info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${task.walletAddresses.length}...`);
 
-      // ========== 第一阶段：准备（检查余额、处理授权）==========
-      const preparePromises = task.walletAddresses.map(async (walletAddress) => {
+      // ========== 第一阶段：分批准备（检查余额、处理授权）==========
+      const batchSize = task.config.sellThreadCount || 5;
+      const allPrepareResults: ({ walletAddress: string; privateKey: string; sellAmount: bigint } | null)[] = [];
+
+      for (let i = 0; i < task.walletAddresses.length; i += batchSize) {
+        const batch = task.walletAddresses.slice(i, i + batchSize);
+        const preparePromises = batch.map(async (walletAddress) => {
         const privateKey = getWalletPrivateKey(walletStore, walletAddress);
         if (!privateKey) {
           addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
@@ -1486,18 +1491,28 @@ export const useTaskStore = defineStore('task', () => {
         }
       });
 
-      const prepareResults = await Promise.all(preparePromises);
-      const readyWallets = prepareResults.filter((r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null);
+        const batchResults = await Promise.all(preparePromises);
+        allPrepareResults.push(...batchResults);
+        addLog(taskId, 'info', `[阶段1] 已完成 ${Math.min(i + batchSize, task.walletAddresses.length)}/${task.walletAddresses.length} 个钱包`);
+      }
+
+      const readyWallets = allPrepareResults.filter((r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null);
 
       if (readyWallets.length === 0) {
         addLog(taskId, 'warning', '没有钱包准备成功，取消批量卖出');
         return;
       }
 
-      addLog(taskId, 'info', `[阶段2] 准备完成，${readyWallets.length} 个钱包同时发送卖出交易...`);
+      addLog(taskId, 'info', `[阶段2] 准备完成，${readyWallets.length} 个钱包分批发送卖出交易（每批 ${batchSize} 个）...`);
 
-      // ========== 第二阶段：同时发送所有卖出交易 ==========
-      const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
+      // ========== 第二阶段：分批发送卖出交易 ==========
+      let successCount = 0;
+      let failCount = 0;
+
+      for (let i = 0; i < readyWallets.length; i += batchSize) {
+        const batch = readyWallets.slice(i, i + batchSize);
+
+        const sellPromises = batch.map(async ({ walletAddress, privateKey, sellAmount }) => {
         const result = await sharedFourMemeService.executeSellDirect({
           chainId,
           rpcUrl: sellRpc,
@@ -1512,14 +1527,24 @@ export const useTaskStore = defineStore('task', () => {
         }, sellAmount);
 
         if (result.success) {
+          successCount++;
           addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
         } else {
+          failCount++;
           addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
         }
       });
 
-      await Promise.allSettled(sellPromises);
-      addLog(taskId, 'info', `批量卖出操作完成，共发送 ${readyWallets.length} 笔交易`);
+        await Promise.allSettled(sellPromises);
+        addLog(taskId, 'info', `[阶段2] 已完成 ${Math.min(i + batchSize, readyWallets.length)}/${readyWallets.length} 个钱包`);
+
+        // 批次间等待 500ms，让链上状态更新
+        if (i + batchSize < readyWallets.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      addLog(taskId, 'info', `批量卖出操作完成，成功 ${successCount} 笔，失败 ${failCount} 笔`);
 
     } else {
       // 外盘模式：优先使用付费节点 > 配置的防夹节点 > 跟随网络设置
@@ -1527,9 +1552,16 @@ export const useTaskStore = defineStore('task', () => {
       // 判断是使用 ASTER 还是 BNB
       const useAster = !!task.config.poolBaseToken;
       const spendToken = useAster ? 'ASTER' : 'BNB';
-      addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，底池: ${spendToken}，使用最大线程并行执行...`);
+      const outerBatchSize = task.config.sellThreadCount || 5;
+      addLog(taskId, 'info', `开始批量卖出，钱包数: ${task.walletAddresses.length}，底池: ${spendToken}，每批 ${outerBatchSize} 个`);
 
-      const promises = task.walletAddresses.map(async (walletAddress) => {
+      let outerSuccessCount = 0;
+      let outerFailCount = 0;
+
+      for (let i = 0; i < task.walletAddresses.length; i += outerBatchSize) {
+        const batch = task.walletAddresses.slice(i, i + outerBatchSize);
+
+        const promises = batch.map(async (walletAddress) => {
         const privateKey = getWalletPrivateKey(walletStore, walletAddress);
         if (!privateKey) {
           addLog(taskId, 'error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
@@ -1559,21 +1591,31 @@ export const useTaskStore = defineStore('task', () => {
             gasPrice: task.config.gasPrice,
             gasLimit: task.config.gasLimit,
             balancePercent: 100,
-            // ASTER 底池时不需要 intermediateToken
           });
 
           if (result.success) {
+            outerSuccessCount++;
             addLog(taskId, 'success', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出成功`, walletAddress, result.txHash);
           } else {
+            outerFailCount++;
             addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 卖出失败: ${result.error}`, walletAddress);
           }
         } catch (error: any) {
+          outerFailCount++;
           addLog(taskId, 'error', `[批量卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`, walletAddress);
         }
       });
 
-      await Promise.allSettled(promises);
-      addLog(taskId, 'info', `批量卖出操作完成`);
+        await Promise.allSettled(promises);
+        addLog(taskId, 'info', `已完成 ${Math.min(i + outerBatchSize, task.walletAddresses.length)}/${task.walletAddresses.length} 个钱包`);
+
+        // 批次间等待 500ms
+        if (i + outerBatchSize < task.walletAddresses.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      addLog(taskId, 'info', `批量卖出操作完成，成功 ${outerSuccessCount} 笔，失败 ${outerFailCount} 笔`);
     }
   }
 
