@@ -513,16 +513,19 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 10)}...${address.slice(-8)}`;
 }
 
-// 格式化余额（保留4位小数）
+// 格式化余额（保留适当小数，不使用科学计数法）
 function formatBalance(balance: string | undefined): string {
   if (!balance) return '0';
   const num = parseFloat(balance);
   if (isNaN(num)) return '0';
-  // 如果数字很大，显示完整；如果很小，保留更多小数
+  if (num === 0) return '0';
+  // 使用固定小数位，避免科学计数法
   if (num >= 1000) return num.toFixed(2);
   if (num >= 1) return num.toFixed(4);
   if (num >= 0.0001) return num.toFixed(6);
-  return num.toExponential(2);
+  if (num >= 0.00000001) return num.toFixed(10);
+  // 极小数字使用原始字符串（formatUnits 返回的是完整小数字符串）
+  return balance;
 }
 
 // 打开导入钱包弹窗

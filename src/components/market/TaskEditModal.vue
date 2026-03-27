@@ -224,6 +224,7 @@
               </label>
               <select class="form-select" v-model="formData.antiSandwichRpcType">
                 <option value="network">跟随网络设置</option>
+                <option value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
                 <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
                 <option value="binance">https://bsc-dataseed.binance.org</option>
                 <option value="blocksec">https://bsc.rpc.blocksec.com</option>
@@ -308,11 +309,12 @@ const ANTI_SANDWICH_RPC_MAP: Record<string, string> = {
   '48club': 'https://rpc-bsc.48.club',
 };
 
-// 根据 URL 反推类型
-function getRpcTypeFromUrl(url: string | undefined): 'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom' {
-  if (!url) return 'network'; // 未设置时跟随网络设置
+// 根据 URL 和 premium 标志反推类型
+function getRpcTypeFromConfig(config: { antiSandwichRpc?: string; buyUsePremiumRpc?: boolean }): 'network' | 'premium' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom' {
+  if (config.buyUsePremiumRpc) return 'premium';
+  if (!config.antiSandwichRpc) return 'network';
   for (const [type, rpcUrl] of Object.entries(ANTI_SANDWICH_RPC_MAP)) {
-    if (url === rpcUrl) return type as 'blxrbdn' | 'binance' | 'blocksec' | '48club';
+    if (config.antiSandwichRpc === rpcUrl) return type as 'blxrbdn' | 'binance' | 'blocksec' | '48club';
   }
   return 'custom';
 }
@@ -332,7 +334,7 @@ const formData = ref({
   gasPrice: undefined as number | undefined,
   gasLimit: undefined as number | undefined,
   innerSlippage: undefined as number | undefined,  // 内盘滑点
-  antiSandwichRpcType: 'network' as 'network' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // RPC节点类型
+  antiSandwichRpcType: 'network' as 'network' | 'premium' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom',  // RPC节点类型
   customAntiSandwichRpc: '',  // 自定义 RPC URL
   sellAll: true,
   poolType: 'BNB' as 'BNB' | 'ASTER',  // 底池类型
@@ -367,8 +369,8 @@ onMounted(() => {
     ? (task.config.innerTokenAddress || task.config.tokenContract)
     : task.config.tokenContract;
 
-  // 解析防夹节点配置
-  const rpcType = getRpcTypeFromUrl(task.config.antiSandwichRpc);
+  // 解析防夹节点配置（包含 premium 检测）
+  const rpcType = getRpcTypeFromConfig(task.config);
   const customRpc = rpcType === 'custom' ? (task.config.antiSandwichRpc || '') : '';
 
   formData.value = {
@@ -409,9 +411,9 @@ async function handleSave() {
   // 判断是否是内盘任务
   const isInner = props.task.config.marketType === 'inner';
 
-  // 计算 RPC URL（'network' 返回 undefined 表示跟随网络设置）
+  // 计算 RPC URL（'network' 和 'premium' 返回 undefined 表示跟随网络设置/使用付费节点）
   let antiSandwichRpc: string | undefined;
-  if (formData.value.antiSandwichRpcType === 'network') {
+  if (formData.value.antiSandwichRpcType === 'network' || formData.value.antiSandwichRpcType === 'premium') {
     antiSandwichRpc = undefined;
   } else if (formData.value.antiSandwichRpcType === 'custom') {
     antiSandwichRpc = formData.value.customAntiSandwichRpc || undefined;
@@ -437,6 +439,7 @@ async function handleSave() {
       gasLimit: formData.value.gasLimit || undefined,
       innerSlippage: isInner ? formData.value.innerSlippage : undefined,
       antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
+      buyUsePremiumRpc: formData.value.antiSandwichRpcType === 'premium', // 买入是否使用高速付费节点
       sellAll: formData.value.sellAll,
       poolBaseToken: formData.value.poolType === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined,
     } as Partial<TaskConfig>,

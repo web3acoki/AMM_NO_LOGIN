@@ -374,8 +374,8 @@ const amountUnitLabel = computed(() => {
   return currentGovernanceToken.value;
 });
 
-// 防夹节点设置（外盘默认跟随网络设置，内盘默认使用防夹节点）
-const antiSandwichRpcType = ref<'network' | 'premium' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('network');
+// 防夹节点设置（默认使用高速付费节点）
+const antiSandwichRpcType = ref<'network' | 'premium' | 'blxrbdn' | 'binance' | 'blocksec' | '48club' | 'custom'>('premium');
 const customAntiSandwichRpc = ref('');
 
 // 防夹节点 URL 映射
@@ -420,12 +420,12 @@ watch(detectedInnerToken, (token) => {
 }, { immediate: true });
 
 // 监听盘口类型变化，自动切换默认节点
-// 内盘默认使用防夹节点，外盘默认跟随网络设置
+// 内盘默认使用防夹节点，外盘默认使用付费节点
 watch(marketType, (type) => {
   if (type === 'inner') {
     antiSandwichRpcType.value = 'blxrbdn';
   } else {
-    antiSandwichRpcType.value = 'network';
+    antiSandwichRpcType.value = 'premium';
   }
 }, { immediate: true });
 

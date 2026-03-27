@@ -325,7 +325,7 @@ async function executeBatchSell() {
 
     console.log(`批量卖出：共 ${walletAddresses.length} 个钱包，采用两阶段执行`);
 
-    // ========== 第一阶段：检查余额和授权 ==========
+    // ========== 第一阶段：分批检查余额和授权 ==========
     console.log(`[阶段1] 检查余额和处理授权...`);
 
     interface PreparedWallet {
@@ -335,7 +335,16 @@ async function executeBatchSell() {
       sellAmount: bigint;
     }
 
-    const preparePromises = walletAddresses.map(async (walletAddr) => {
+    const allPrepareResults: any[] = [];
+    const prepareBatchSize = concurrency.value;
+    const prepareBatchCount = Math.ceil(walletAddresses.length / prepareBatchSize);
+
+    for (let batchIdx = 0; batchIdx < prepareBatchCount; batchIdx++) {
+      const batchStart = batchIdx * prepareBatchSize;
+      const batchEnd = Math.min(batchStart + prepareBatchSize, walletAddresses.length);
+      const currentBatch = walletAddresses.slice(batchStart, batchEnd);
+
+      const preparePromises = currentBatch.map(async (walletAddr) => {
       // 计算卖出百分比
       let percent: number;
       if (sellMode.value === 'fixed') {
@@ -409,13 +418,21 @@ async function executeBatchSell() {
       }
     });
 
-    const prepareResults = await Promise.all(preparePromises);
-    const readyWallets: PreparedWallet[] = prepareResults
+      const batchPrepareResults = await Promise.all(preparePromises);
+      allPrepareResults.push(...batchPrepareResults);
+
+      // 非最后一批时等待间隔
+      if (batchIdx < prepareBatchCount - 1 && batchInterval.value > 0) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(batchInterval.value, 300)));
+      }
+    }
+
+    const readyWallets: PreparedWallet[] = allPrepareResults
       .filter((r): r is PreparedWallet & { success: true } => r.success === true && 'privateKey' in r)
       .map(r => ({ walletAddr: r.walletAddr, privateKey: r.privateKey, percent: r.percent, sellAmount: r.sellAmount }));
 
     // 添加失败的钱包到结果
-    prepareResults.filter(r => !r.success).forEach(r => {
+    allPrepareResults.filter(r => !r.success).forEach(r => {
       sellResults.value.push({
         wallet: r.walletAddr,
         percent: r.percent,
@@ -431,7 +448,7 @@ async function executeBatchSell() {
 
     console.log(`[阶段2] ${readyWallets.length} 个钱包准备就绪，同时发送卖出交易...`);
 
-    // ========== 第二阶段：同时发送所有卖出交易（不等待确认）==========
+    // ========== 第二阶段：分批发送卖出交易 ==========
     const { createPublicClient, createWalletClient, http, parseUnits, formatUnits } = await import('viem');
     const { privateKeyToAccount } = await import('viem/accounts');
     const { bsc, bscTestnet } = await import('viem/chains');
@@ -442,7 +459,18 @@ async function executeBatchSell() {
     const wbnbAddress = WBNB_ADDRESSES[chainId] || WBNB_ADDRESSES[56];
     const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + 1200);
 
-    const sellPromises = readyWallets.map(async ({ walletAddr, privateKey, percent, sellAmount }) => {
+    // 分批执行卖出，每批 concurrency 个钱包
+    const batchCount = Math.ceil(readyWallets.length / concurrency.value);
+    console.log(`[阶段2] ${readyWallets.length} 个钱包准备就绪，分 ${batchCount} 批执行，每批 ${concurrency.value} 个，间隔 ${batchInterval.value}ms`);
+
+    for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
+      const batchStart = batchIdx * concurrency.value;
+      const batchEnd = Math.min(batchStart + concurrency.value, readyWallets.length);
+      const currentBatch = readyWallets.slice(batchStart, batchEnd);
+
+      console.log(`[阶段2] 执行第 ${batchIdx + 1}/${batchCount} 批，${currentBatch.length} 个钱包`);
+
+      const sellPromises = currentBatch.map(async ({ walletAddr, privateKey, percent, sellAmount }) => {
       try {
         const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
         const account = privateKeyToAccount(privateKey as `0x${string}`);
@@ -469,7 +497,7 @@ async function executeBatchSell() {
           blockTag: 'pending'
         });
 
-        // 发送卖出交易（不等待确认）
+        // 发送卖出交易
         const txHash = await walletClient.writeContract({
           address: routerAddress as `0x${string}`,
           abi: pancakeV2RouterAbi,
@@ -499,9 +527,14 @@ async function executeBatchSell() {
       }
     });
 
-    // 同时发送所有交易
-    const sellResultsList = await Promise.all(sellPromises);
-    sellResults.value.push(...sellResultsList);
+      const batchResults = await Promise.all(sellPromises);
+      sellResults.value.push(...batchResults);
+
+      // 非最后一批时等待间隔
+      if (batchIdx < batchCount - 1 && batchInterval.value > 0) {
+        await new Promise(resolve => setTimeout(resolve, batchInterval.value));
+      }
+    }
 
     // 统计结果
     const successCount = sellResults.value.filter(r => r.success).length;

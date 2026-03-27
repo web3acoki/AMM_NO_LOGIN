@@ -739,19 +739,30 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     // 查询批次余额
-    // 并发批量查询批次钱包余额（优化版本，RPC节点轮询）
+    // 并发批量查询批次钱包余额（优化版本，分批查询 + 单一RPC保证一致性）
     async refreshBatchBalances(batchId: string) {
       const batch = this.walletBatches.find(b => b.id === batchId);
       if (!batch) return;
 
-      const clients = this.getPublicClients();
+      // 使用单一 RPC 客户端保证所有查询在同一区块高度，避免不同节点数据不一致
+      const publicClient = this.getPublicClient();
       const tokenDecimals = this.targetToken?.decimals || 18;
 
-      console.log(`开始查询批次余额: ${batch.wallets.length} 个钱包, 使用 ${clients.length} 个RPC节点轮询`);
+      const wallets = batch.wallets;
+      const batchSize = 20; // 每批20个，避免RPC限流
+      const totalBatches = Math.ceil(wallets.length / batchSize);
 
-      const results = await Promise.all(
-        batch.wallets.map(async (wallet, idx) => {
-          const publicClient = clients[idx % clients.length];
+      console.log(`开始查询批次余额: ${wallets.length} 个钱包, 分 ${totalBatches} 批, 每批 ${batchSize} 个`);
+
+      const results: { native: bigint; token: bigint; aster: bigint; failed: boolean }[] = [];
+
+      for (let i = 0; i < totalBatches; i++) {
+        const start = i * batchSize;
+        const end = Math.min(start + batchSize, wallets.length);
+        const currentBatch = wallets.slice(start, end);
+
+        const batchResults = await Promise.all(
+          currentBatch.map(async (wallet) => {
           try {
             const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
             let tokenBalance = BigInt(0);
@@ -783,7 +794,11 @@ export const useWalletStore = defineStore('wallet', {
             return { native: BigInt(0), token: BigInt(0), aster: BigInt(0), failed: true };
           }
         })
-      );
+        );
+
+        results.push(...batchResults);
+        console.log(`已完成 ${end}/${wallets.length} 个钱包`);
+      }
 
       // 汇总结果（排除失败的钱包）
       const failedCount = results.filter(r => r.failed).length;
