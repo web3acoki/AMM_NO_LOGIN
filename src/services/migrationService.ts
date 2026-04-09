@@ -329,15 +329,14 @@ export class MigrationService {
     const txHash = log.transactionHash as string;
     if (!txHash) return;
 
-    // 跳过已知的 TokenCreated 事件
+    // 跳过已知的 TokenCreated 事件（代币创建，不是迁移）
     const tokenCreatedTopic = '0x396d5e902b675b032348d3d2e9517ee8f0c4a926603fbc075d3d282ff00cad20';
     if (log.topics && log.topics[0] === tokenCreatedTopic) return;
 
-    // 记录未知的 FourMeme 事件（用于发现迁移事件签名）
+    // FourMeme 通道仅做信息记录，不触发自动卖出
+    // 只有 PancakeSwap PairCreated 才是代币真正迁移到外盘的确认信号
     if (log.topics && log.topics.length > 0) {
       const topic0 = log.topics[0];
-
-      // 尝试从事件数据中提取代币地址并匹配
       const dataHex = (log.data as string) || '0x';
 
       // 检查 topics 中是否有匹配的代币地址
@@ -346,13 +345,12 @@ export class MigrationService {
         if (this.monitoredTokens.has(addr.toLowerCase())) {
           if (this.processedTxHashes.has(txHash + '_fm')) return;
           this.processedTxHashes.add(txHash + '_fm');
-
-          this.log('info', `FourMeme 事件检测到代币 ${addr.slice(0, 10)}...，topic0: ${topic0?.slice(0, 18)}...`);
-          break;
+          this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录，不触发卖出）`);
+          return;
         }
       }
 
-      // 检查 data 字段中是否有匹配的代币地址（每 32 字节一个参数）
+      // 检查 data 字段中是否有匹配的代币地址
       if (dataHex.length >= 66) {
         for (let offset = 2; offset + 64 <= dataHex.length; offset += 64) {
           const paramHex = dataHex.slice(offset, offset + 64);
@@ -360,26 +358,8 @@ export class MigrationService {
           if (this.monitoredTokens.has(addr.toLowerCase())) {
             if (this.processedTxHashes.has(txHash + '_fm_data')) return;
             this.processedTxHashes.add(txHash + '_fm_data');
-
-            const blockNum = typeof log.blockNumber === 'string'
-              ? BigInt(log.blockNumber)
-              : (log.blockNumber || 0n);
-
-            const event: MigrationEvent = {
-              tokenAddress: addr,
-              pairAddress: '',
-              pairedWith: '',
-              blockNumber: blockNum,
-              transactionHash: txHash,
-              source: 'FourMeme'
-            };
-
-            this.log('success', `FourMeme 合约检测到代币 ${addr.slice(0, 10)}... 的迁移事件，topic0: ${topic0?.slice(0, 18)}...`);
-
-            if (this.onMigrationDetected) {
-              this.onMigrationDetected(event);
-            }
-            break;
+            this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录，不触发卖出）`);
+            return;
           }
         }
       }
