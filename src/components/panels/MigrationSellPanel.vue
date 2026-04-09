@@ -264,6 +264,10 @@
               <span class="spinner-border spinner-border-sm me-1"></span>
               卖出执行中
             </span>
+            <span v-if="migrationStore.isPreApproving" class="text-info ms-2">
+              <span class="spinner-border spinner-border-sm me-1"></span>
+              预授权中
+            </span>
           </div>
         </div>
       </div>

@@ -9,8 +9,9 @@
 
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { createPublicClient, http, formatUnits } from 'viem';
+import { createPublicClient, createWalletClient, http, formatUnits, maxUint256 } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
+import { privateKeyToAccount } from 'viem/accounts';
 import { erc20Abi } from '../viem/abis/erc20';
 import { useWalletStore } from './walletStore';
 import { useChainStore } from './chainStore';
@@ -18,6 +19,7 @@ import {
   createFourMemeService,
   getPremiumSellRpc,
   ANTI_SANDWICH_RPC,
+  FOURMEME_CONTRACT,
   type FourMemeTradeParams
 } from '../services/fourMemeService';
 import {
@@ -92,6 +94,10 @@ export const useMigrationStore = defineStore('migration', () => {
 
   // 正在卖出的代币（防止同一代币重复触发）
   const sellingTokens = new Set<string>();
+
+  // 预授权状态：tokenAddress -> Set<walletAddress>
+  const preApprovedWallets = ref<Map<string, Set<string>>>(new Map());
+  const isPreApproving = ref(false);
 
   // ==================== 钱包工具方法 ====================
 
@@ -335,6 +341,118 @@ export const useMigrationStore = defineStore('migration', () => {
     addLog('info', `已移除代币 ${tokenAddress.slice(0, 10)}...`);
   }
 
+  // ==================== 预授权 ====================
+
+  /**
+   * 预授权：提前 approve 所有代币给 FourMeme 合约
+   * 这样迁移触发时可以跳过 approve 步骤，直接发送 sell 交易
+   */
+  async function preApproveAll(): Promise<void> {
+    if (isPreApproving.value) {
+      addLog('warning', '预授权正在进行中');
+      return;
+    }
+
+    const walletAddresses = getWalletAddresses();
+    if (walletAddresses.length === 0) {
+      addLog('warning', '没有可用的钱包');
+      return;
+    }
+
+    if (monitoredTokens.value.size === 0) {
+      addLog('warning', '没有监控的代币');
+      return;
+    }
+
+    isPreApproving.value = true;
+    const chainStore = useChainStore();
+    const chain = chainStore.selectedChainId === 97 ? bscTestnet : bsc;
+    const rpcUrl = chainStore.effectiveRpcUrl;
+
+    const publicClient = createPublicClient({
+      chain,
+      transport: http(rpcUrl),
+      batch: { multicall: true }
+    });
+
+    let totalApproved = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    for (const [tokenAddr, tokenInfo] of monitoredTokens.value) {
+      addLog('info', `[预授权] ${tokenInfo.symbol} (${tokenAddr.slice(0, 10)}...) 开始...`);
+
+      if (!preApprovedWallets.value.has(tokenAddr)) {
+        preApprovedWallets.value.set(tokenAddr, new Set());
+      }
+      const approvedSet = preApprovedWallets.value.get(tokenAddr)!;
+
+      const batchSize = config.value.batchSize || 5;
+
+      for (let i = 0; i < walletAddresses.length; i += batchSize) {
+        const batch = walletAddresses.slice(i, i + batchSize);
+
+        const approvePromises = batch.map(async (walletAddress) => {
+          // 已经预授权过的跳过
+          if (approvedSet.has(walletAddress)) {
+            totalSkipped++;
+            return;
+          }
+
+          const privateKey = getWalletPrivateKey(walletAddress);
+          if (!privateKey) return;
+
+          try {
+            // 检查当前 allowance
+            const allowance = await publicClient.readContract({
+              address: tokenAddr as `0x${string}`,
+              abi: erc20Abi,
+              functionName: 'allowance',
+              args: [walletAddress as `0x${string}`, FOURMEME_CONTRACT as `0x${string}`]
+            });
+
+            // 已经有足够的 allowance
+            if ((allowance as bigint) > BigInt('1000000000000000000000000000')) {
+              approvedSet.add(walletAddress);
+              totalSkipped++;
+              return;
+            }
+
+            // 发送 approve 交易
+            const account = privateKeyToAccount(privateKey as `0x${string}`);
+            const walletClient = createWalletClient({
+              account,
+              chain,
+              transport: http(rpcUrl)
+            });
+
+            const txHash = await walletClient.writeContract({
+              address: tokenAddr as `0x${string}`,
+              abi: erc20Abi,
+              functionName: 'approve',
+              args: [FOURMEME_CONTRACT as `0x${string}`, maxUint256]
+            });
+
+            // 等待确认
+            await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+            approvedSet.add(walletAddress);
+            totalApproved++;
+            addLog('success', `[预授权] ${walletAddress.slice(0, 10)}... → ${tokenInfo.symbol} 完成`);
+          } catch (error: any) {
+            totalFailed++;
+            addLog('error', `[预授权] ${walletAddress.slice(0, 10)}... 失败: ${error.message}`);
+          }
+        });
+
+        await Promise.all(approvePromises);
+      }
+    }
+
+    addLog('info', `[预授权] 完成！新授权 ${totalApproved} 笔，已授权跳过 ${totalSkipped} 笔，失败 ${totalFailed} 笔`);
+    isPreApproving.value = false;
+  }
+
   // ==================== 监控生命周期 ====================
 
   async function startMonitoring(): Promise<void> {
@@ -378,6 +496,9 @@ export const useMigrationStore = defineStore('migration', () => {
     try {
       await migrationService.start();
       isMonitoring.value = true;
+
+      // 自动执行预授权（不阻塞监控，后台进行）
+      preApproveAll();
     } catch (error: any) {
       addLog('error', `启动监控失败: ${error.message}`);
       migrationService.destroy();
@@ -432,18 +553,17 @@ export const useMigrationStore = defineStore('migration', () => {
   }
 
   /**
-   * 执行批量卖出（复用 taskStore.batchSellForTask 的内盘模式）
+   * 执行批量卖出
+   * 如果已预授权，走快速路径：跳过 prepareSell，直接查余额 + executeSellDirect
    */
   async function executeBatchSell(tokenAddress: string): Promise<void> {
     const tokenAddr = tokenAddress.toLowerCase();
     const tokenInfo = monitoredTokens.value.get(tokenAddr);
 
-    // 获取所有持有该代币的钱包
     const walletAddresses = getWalletAddresses();
     const walletsWithBalance: string[] = [];
 
     if (tokenInfo && tokenInfo.walletBalances.size > 0) {
-      // 使用缓存的余额信息
       for (const addr of walletAddresses) {
         const balance = tokenInfo.walletBalances.get(addr);
         if (balance && balance > 0n) {
@@ -451,7 +571,6 @@ export const useMigrationStore = defineStore('migration', () => {
         }
       }
     } else {
-      // 没有缓存信息，使用所有钱包（prepareSell 会检查余额）
       walletsWithBalance.push(...walletAddresses);
     }
 
@@ -465,84 +584,66 @@ export const useMigrationStore = defineStore('migration', () => {
     const chainStore = useChainStore();
     const chainId = chainStore.selectedChainId;
     const sellRpc = getPremiumSellRpc();
-
-    // 创建 FourMemeService
     const fourMemeService = createFourMemeService(chainId, sellRpc, sellRpc);
-
     const batchSize = config.value.batchSize || 5;
 
-    // ========== 阶段1: 准备（检查余额 + 授权）==========
-    addLog('info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${walletsWithBalance.length}...`);
+    // 检查是否有预授权
+    const approvedSet = preApprovedWallets.value.get(tokenAddr);
+    const allPreApproved = approvedSet && walletsWithBalance.every(w => approvedSet.has(w));
 
-    const allPrepareResults: ({ walletAddress: string; privateKey: string; sellAmount: bigint } | null)[] = [];
+    if (allPreApproved) {
+      // ========== 快速路径：已预授权，跳过 prepareSell，直接查余额并卖出 ==========
+      addLog('info', `[快速模式] 所有钱包已预授权，直接查余额并发送卖出交易`);
 
-    for (let i = 0; i < walletsWithBalance.length; i += batchSize) {
-      const batch = walletsWithBalance.slice(i, i + batchSize);
+      const chain = chainId === 97 ? bscTestnet : bsc;
+      const readClient = createPublicClient({
+        chain,
+        transport: http('https://bsc-dataseed.binance.org'),
+        batch: { multicall: true }
+      });
 
-      const preparePromises = batch.map(async (walletAddress) => {
-        const privateKey = getWalletPrivateKey(walletAddress);
-        if (!privateKey) {
-          addLog('error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
-          return null;
-        }
-
+      // 并行查询所有钱包余额
+      const balancePromises = walletsWithBalance.map(async (walletAddress) => {
         try {
-          const prepareResult = await fourMemeService.prepareSell({
-            chainId,
-            rpcUrl: sellRpc,
-            privateKey,
-            walletAddress,
-            tokenAddress: tokenAddr,
-            amount: 0,
-            mode: 'sell',
-            gasPrice: config.value.gasPrice,
-            gasLimit: config.value.gasLimit,
-            sellPercent: config.value.sellPercent,
-            slippage: config.value.slippage,
-          });
+          const balance = await readClient.readContract({
+            address: tokenAddr as `0x${string}`,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [walletAddress as `0x${string}`]
+          }) as bigint;
 
-          if (prepareResult.success) {
-            if (prepareResult.needsApproval) {
-              addLog('info', `${walletAddress.slice(0, 10)}... 授权完成`);
-            } else {
-              addLog('info', `${walletAddress.slice(0, 10)}... 已授权，准备就绪`);
-            }
-            return { walletAddress, privateKey, sellAmount: prepareResult.sellAmount };
-          } else {
-            addLog('error', `${walletAddress.slice(0, 10)}... 准备失败: ${prepareResult.error}`);
-            return null;
-          }
-        } catch (error: any) {
-          addLog('error', `${walletAddress.slice(0, 10)}... 准备异常: ${error.message}`);
+          const sellAmount = config.value.sellPercent < 100
+            ? (balance * BigInt(config.value.sellPercent)) / 100n
+            : balance;
+
+          if (sellAmount <= 0n) return null;
+
+          const privateKey = getWalletPrivateKey(walletAddress);
+          if (!privateKey) return null;
+
+          return { walletAddress, privateKey, sellAmount };
+        } catch {
           return null;
         }
       });
 
-      const batchResults = await Promise.all(preparePromises);
-      allPrepareResults.push(...batchResults);
+      const balanceResults = await Promise.all(balancePromises);
+      const readyWallets = balanceResults.filter(
+        (r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null
+      );
 
-      addLog('info', `[阶段1] 已完成 ${Math.min(i + batchSize, walletsWithBalance.length)}/${walletsWithBalance.length} 个钱包`);
-    }
+      if (readyWallets.length === 0) {
+        addLog('warning', '没有钱包有余额，取消卖出');
+        return;
+      }
 
-    const readyWallets = allPrepareResults.filter(
-      (r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null
-    );
+      addLog('info', `[快速模式] ${readyWallets.length} 个钱包有余额，全部同时发送卖出交易...`);
 
-    if (readyWallets.length === 0) {
-      addLog('warning', '没有钱包准备成功，取消批量卖出');
-      return;
-    }
+      // 所有钱包同时发送（不分批，最大速度）
+      let successCount = 0;
+      let failCount = 0;
 
-    // ========== 阶段2: 发送卖出交易 ==========
-    addLog('info', `[阶段2] 准备完成，${readyWallets.length} 个钱包分批发送卖出交易（每批 ${batchSize} 个）...`);
-
-    let successCount = 0;
-    let failCount = 0;
-
-    for (let i = 0; i < readyWallets.length; i += batchSize) {
-      const batch = readyWallets.slice(i, i + batchSize);
-
-      const sellPromises = batch.map(async ({ walletAddress, privateKey, sellAmount }) => {
+      const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
         try {
           const result = await fourMemeService.executeSellDirect({
             chainId,
@@ -557,16 +658,14 @@ export const useMigrationStore = defineStore('migration', () => {
             slippage: config.value.slippage,
           }, sellAmount);
 
-          const sellResult: SellResult = {
+          sellResults.value.push({
             tokenAddress: tokenAddr,
             walletAddress,
             success: result.success,
             txHash: result.txHash,
             error: result.error,
             timestamp: Date.now()
-          };
-
-          sellResults.value.push(sellResult);
+          });
 
           if (result.success) {
             successCount++;
@@ -582,16 +681,110 @@ export const useMigrationStore = defineStore('migration', () => {
       });
 
       await Promise.allSettled(sellPromises);
+      addLog('info', `批量卖出完成，成功 ${successCount} 笔，失败 ${failCount} 笔`);
 
-      addLog('info', `[阶段2] 已完成 ${Math.min(i + batchSize, readyWallets.length)}/${readyWallets.length} 个钱包`);
+    } else {
+      // ========== 标准路径：两阶段（prepareSell + executeSellDirect）==========
+      addLog('info', `[阶段1] 准备卖出，检查余额和授权，钱包数: ${walletsWithBalance.length}...`);
 
-      // 批次间等待
-      if (i + batchSize < readyWallets.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+      const allPrepareResults: ({ walletAddress: string; privateKey: string; sellAmount: bigint } | null)[] = [];
+
+      for (let i = 0; i < walletsWithBalance.length; i += batchSize) {
+        const batch = walletsWithBalance.slice(i, i + batchSize);
+
+        const preparePromises = batch.map(async (walletAddress) => {
+          const privateKey = getWalletPrivateKey(walletAddress);
+          if (!privateKey) {
+            addLog('error', `钱包 ${walletAddress.slice(0, 10)}... 没有私钥，跳过`, walletAddress);
+            return null;
+          }
+
+          try {
+            const prepareResult = await fourMemeService.prepareSell({
+              chainId,
+              rpcUrl: sellRpc,
+              privateKey,
+              walletAddress,
+              tokenAddress: tokenAddr,
+              amount: 0,
+              mode: 'sell',
+              gasPrice: config.value.gasPrice,
+              gasLimit: config.value.gasLimit,
+              sellPercent: config.value.sellPercent,
+              slippage: config.value.slippage,
+            });
+
+            if (prepareResult.success) {
+              return { walletAddress, privateKey, sellAmount: prepareResult.sellAmount };
+            } else {
+              addLog('error', `${walletAddress.slice(0, 10)}... 准备失败: ${prepareResult.error}`);
+              return null;
+            }
+          } catch (error: any) {
+            addLog('error', `${walletAddress.slice(0, 10)}... 准备异常: ${error.message}`);
+            return null;
+          }
+        });
+
+        const batchResults = await Promise.all(preparePromises);
+        allPrepareResults.push(...batchResults);
       }
-    }
 
-    addLog('info', `批量卖出完成，成功 ${successCount} 笔，失败 ${failCount} 笔`);
+      const readyWallets = allPrepareResults.filter(
+        (r): r is { walletAddress: string; privateKey: string; sellAmount: bigint } => r !== null
+      );
+
+      if (readyWallets.length === 0) {
+        addLog('warning', '没有钱包准备成功，取消批量卖出');
+        return;
+      }
+
+      addLog('info', `[阶段2] ${readyWallets.length} 个钱包发送卖出交易...`);
+
+      let successCount = 0;
+      let failCount = 0;
+
+      // 所有钱包同时发送
+      const sellPromises = readyWallets.map(async ({ walletAddress, privateKey, sellAmount }) => {
+        try {
+          const result = await fourMemeService.executeSellDirect({
+            chainId,
+            rpcUrl: sellRpc,
+            privateKey,
+            walletAddress,
+            tokenAddress: tokenAddr,
+            amount: 0,
+            mode: 'sell',
+            gasPrice: config.value.gasPrice,
+            gasLimit: config.value.gasLimit,
+            slippage: config.value.slippage,
+          }, sellAmount);
+
+          sellResults.value.push({
+            tokenAddress: tokenAddr,
+            walletAddress,
+            success: result.success,
+            txHash: result.txHash,
+            error: result.error,
+            timestamp: Date.now()
+          });
+
+          if (result.success) {
+            successCount++;
+            addLog('success', `[卖出] ${walletAddress.slice(0, 10)}... 成功`, result.txHash);
+          } else {
+            failCount++;
+            addLog('error', `[卖出] ${walletAddress.slice(0, 10)}... 失败: ${result.error}`);
+          }
+        } catch (error: any) {
+          failCount++;
+          addLog('error', `[卖出] ${walletAddress.slice(0, 10)}... 异常: ${error.message}`);
+        }
+      });
+
+      await Promise.allSettled(sellPromises);
+      addLog('info', `批量卖出完成，成功 ${successCount} 笔，失败 ${failCount} 笔`);
+    }
   }
 
   /**
@@ -649,6 +842,7 @@ export const useMigrationStore = defineStore('migration', () => {
     sellResults,
     isScanning,
     isSelling,
+    isPreApproving,
     config,
     walletMode,
     selectedBatchId,
@@ -657,6 +851,9 @@ export const useMigrationStore = defineStore('migration', () => {
     addToken,
     removeToken,
     scanTokenHoldings,
+
+    // 预授权
+    preApproveAll,
 
     // 监控控制
     startMonitoring,

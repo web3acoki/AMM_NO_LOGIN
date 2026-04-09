@@ -2,8 +2,8 @@
  * 迁移检测服务
  *
  * 功能：
- * 1. 监控 PancakeSwap Factory 的 PairCreated 事件
- * 2. 监控 FourMeme 合约的迁移相关事件
+ * 1. WebSocket 实时订阅 PancakeSwap Factory 的 PairCreated 事件（主通道，毫秒级）
+ * 2. HTTP getLogs 轮询作为备用通道
  * 3. 当检测到目标代币迁移时触发回调
  */
 
@@ -18,26 +18,30 @@ import { FOURMEME_CONTRACT } from './fourMemeService';
 
 // ==================== 常量配置 ====================
 
-// PancakeSwap V2 Factory 地址
 export const PANCAKESWAP_V2_FACTORY = '0xcA143Ce0Fe65960E6Aa4D42C8D3cE161c2B6604f' as const;
 
-// PairCreated 事件 topic hash
-// event PairCreated(address indexed token0, address indexed token1, address pair, uint)
+// PairCreated(address indexed token0, address indexed token1, address pair, uint)
 export const PAIR_CREATED_TOPIC = '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9' as const;
 
-// 支持 eth_getLogs 的 RPC 节点（Binance 官方节点限制 getLogs，不适合事件查询）
+// WebSocket 节点（用于实时订阅）
+const WSS_RPC_NODES = [
+  'wss://bsc.publicnode.com',
+  'wss://bsc-rpc.publicnode.com',
+];
+
+// 支持 eth_getLogs 的 HTTP 节点（备用轮询）
 const LOGS_SUPPORTED_RPC_NODES = [
   'https://bsc.publicnode.com',
   'https://bsc-rpc.publicnode.com',
   'https://rpc.ankr.com/bsc',
-] as const;
+];
 
 // ==================== 类型定义 ====================
 
 export interface MigrationEvent {
-  tokenAddress: string;      // 迁移的代币地址
-  pairAddress: string;       // 新创建的交易对地址
-  pairedWith: string;        // 配对的代币（WBNB 等）
+  tokenAddress: string;
+  pairAddress: string;
+  pairedWith: string;
   blockNumber: bigint;
   transactionHash: string;
   source: 'PairCreated' | 'FourMeme';
@@ -56,24 +60,31 @@ export class MigrationService {
   private httpClient: PublicClient;
   private chainId: number;
   private isRunning: boolean = false;
-  private monitoredTokens: Set<string> = new Set(); // lowercase addresses
+  private monitoredTokens: Set<string> = new Set();
   private lastBlockNumber: bigint = 0n;
   private pollInterval: number;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
-  private processedTxHashes: Set<string> = new Set(); // 去重
+  private processedTxHashes: Set<string> = new Set();
   private consecutiveFailures: number = 0;
   private rpcNodeIndex: number = 0;
+
+  // WebSocket 相关
+  private ws: WebSocket | null = null;
+  private wsSubscriptionId: string | null = null;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsReconnectAttempts: number = 0;
+  private wsNodeIndex: number = 0;
+  private wsConnected: boolean = false;
 
   // 回调
   private onMigrationDetected: ((event: MigrationEvent) => void) | null = null;
   private onLog: ((log: MigrationLog) => void) | null = null;
 
-  constructor(chainId: number, httpRpcUrl?: string, pollInterval?: number) {
+  constructor(chainId: number, _httpRpcUrl?: string, pollInterval?: number) {
     this.chainId = chainId;
     this.pollInterval = pollInterval || 3000;
 
     const chain = chainId === 97 ? bscTestnet : bsc;
-    // 使用支持 getLogs 的节点（Binance 官方节点限制 eth_getLogs 会报 limit exceeded）
     const rpcUrl = LOGS_SUPPORTED_RPC_NODES[0];
 
     this.httpClient = createPublicClient({
@@ -121,14 +132,17 @@ export class MigrationService {
 
     this.isRunning = true;
     this.consecutiveFailures = 0;
+    this.wsReconnectAttempts = 0;
 
     try {
-      // 获取当前区块号作为起点
       this.lastBlockNumber = await this.httpClient.getBlockNumber();
-      this.log('info', `监控已启动，从区块 ${this.lastBlockNumber} 开始，轮询间隔 ${this.pollInterval}ms`);
-      this.log('info', `正在监控 ${this.monitoredTokens.size} 个代币的迁移事件`);
+      this.log('info', `监控已启动，从区块 ${this.lastBlockNumber} 开始`);
+      this.log('info', `正在监控 ${this.monitoredTokens.size} 个代币的 PairCreated 事件`);
 
-      // 开始轮询
+      // 主通道：WebSocket 实时订阅
+      this.connectWebSocket();
+
+      // 备用通道：HTTP 轮询（WebSocket 断开时补漏）
       this.schedulePoll();
     } catch (error: any) {
       this.isRunning = false;
@@ -139,6 +153,7 @@ export class MigrationService {
 
   stop(): void {
     this.isRunning = false;
+    this.disconnectWebSocket();
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
@@ -154,7 +169,114 @@ export class MigrationService {
     this.processedTxHashes.clear();
   }
 
-  // ==================== 轮询逻辑 ====================
+  // ==================== WebSocket 主通道 ====================
+
+  private connectWebSocket(): void {
+    if (!this.isRunning) return;
+
+    const wssUrl = WSS_RPC_NODES[this.wsNodeIndex % WSS_RPC_NODES.length];
+    this.log('info', `[WS] 连接 ${wssUrl} ...`);
+
+    try {
+      this.ws = new WebSocket(wssUrl);
+
+      this.ws.onopen = () => {
+        this.wsConnected = true;
+        this.wsReconnectAttempts = 0;
+        this.log('success', `[WS] 已连接，订阅 PairCreated 事件...`);
+
+        // 订阅 PancakeSwap Factory 的 PairCreated 日志
+        const subscribeMsg = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_subscribe',
+          params: [
+            'logs',
+            {
+              address: PANCAKESWAP_V2_FACTORY,
+              topics: [PAIR_CREATED_TOPIC]
+            }
+          ]
+        });
+        this.ws!.send(subscribeMsg);
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string);
+
+          // 订阅确认
+          if (data.id === 1 && data.result) {
+            this.wsSubscriptionId = data.result;
+            this.log('success', `[WS] 订阅成功 (ID: ${data.result.slice(0, 10)}...)，实时监听中`);
+            return;
+          }
+
+          // 实时日志推送
+          if (data.method === 'eth_subscription' && data.params?.result) {
+            const logEntry = data.params.result;
+            this.processPairCreatedLog(logEntry as Log);
+          }
+        } catch (e: any) {
+          // 解析失败，忽略
+        }
+      };
+
+      this.ws.onerror = (error) => {
+        this.log('warning', `[WS] 连接错误`);
+      };
+
+      this.ws.onclose = () => {
+        this.wsConnected = false;
+        this.wsSubscriptionId = null;
+
+        if (this.isRunning) {
+          this.wsReconnectAttempts++;
+          // 指数退避重连，最长 10 秒
+          const delay = Math.min(1000 * this.wsReconnectAttempts, 10000);
+
+          // 每 3 次切换节点
+          if (this.wsReconnectAttempts % 3 === 0) {
+            this.wsNodeIndex++;
+          }
+
+          this.log('info', `[WS] 连接断开，${delay}ms 后重连 (第${this.wsReconnectAttempts}次)...`);
+          this.wsReconnectTimer = setTimeout(() => this.connectWebSocket(), delay);
+        }
+      };
+    } catch (error: any) {
+      this.log('warning', `[WS] 创建连接失败: ${error.message}`);
+      // 回退到轮询
+    }
+  }
+
+  private disconnectWebSocket(): void {
+    if (this.wsReconnectTimer !== null) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        // 取消订阅
+        if (this.wsSubscriptionId) {
+          this.ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'eth_unsubscribe',
+            params: [this.wsSubscriptionId]
+          }));
+        }
+        this.ws.close();
+      } catch {
+        // ignore
+      }
+      this.ws = null;
+    }
+    this.wsConnected = false;
+    this.wsSubscriptionId = null;
+  }
+
+  // ==================== HTTP 轮询备用通道 ====================
 
   private schedulePoll(): void {
     if (!this.isRunning) return;
@@ -171,17 +293,16 @@ export class MigrationService {
         const fromBlock = this.lastBlockNumber + 1n;
         const toBlock = currentBlock;
 
-        // 防止区块范围过大（RPC 限制）
         const maxRange = 5000n;
         const effectiveFrom = toBlock - fromBlock > maxRange
           ? toBlock - maxRange
           : fromBlock;
 
-        // 并行查询两个通道
-        await Promise.all([
-          this.checkPairCreatedEvents(effectiveFrom, toBlock),
-          this.checkFourMemeEvents(effectiveFrom, toBlock)
-        ]);
+        // PairCreated 检测（HTTP 补漏，和 WebSocket 共用去重逻辑）
+        await this.checkPairCreatedEvents(effectiveFrom, toBlock);
+
+        // FourMeme 事件（仅日志记录）
+        await this.checkFourMemeEvents(effectiveFrom, toBlock);
 
         this.lastBlockNumber = toBlock;
         this.consecutiveFailures = 0;
@@ -189,16 +310,13 @@ export class MigrationService {
     } catch (error: any) {
       this.consecutiveFailures++;
       if (this.consecutiveFailures <= 3 || this.consecutiveFailures % 10 === 0) {
-        this.log('warning', `轮询失败 (${this.consecutiveFailures}次): ${error.message}`);
+        this.log('warning', `[HTTP] 轮询失败 (${this.consecutiveFailures}次): ${error.message}`);
       }
-
-      // 连续失败超过 10 次，尝试切换 RPC 节点
       if (this.consecutiveFailures > 10 && this.consecutiveFailures % 10 === 0) {
-        this.switchRpcNode();
+        this.switchHttpRpcNode();
       }
     }
 
-    // 继续轮询
     this.schedulePoll();
   }
 
@@ -206,7 +324,6 @@ export class MigrationService {
 
   private async checkPairCreatedEvents(fromBlock: bigint, toBlock: bigint): Promise<void> {
     try {
-      // 使用原始 topics 查询，避免 viem event 语法在某些 RPC 上的兼容问题
       const logs = await this.httpClient.request({
         method: 'eth_getLogs',
         params: [{
@@ -221,18 +338,16 @@ export class MigrationService {
         this.processPairCreatedLog(log as Log);
       }
     } catch (error: any) {
-      // PairCreated 查询失败不阻塞整体流程
       if (this.consecutiveFailures <= 1) {
-        this.log('warning', `PairCreated 查询失败: ${error.message}`);
+        this.log('warning', `[HTTP] PairCreated 查询失败: ${error.message}`);
       }
     }
   }
 
   private processPairCreatedLog(log: Log): void {
-    const txHash = log.transactionHash as string;
+    const txHash = (log.transactionHash as string) || '';
     if (!txHash || this.processedTxHashes.has(txHash)) return;
 
-    // 解析 PairCreated 事件
     const parsed = this.parsePairCreatedLog(log);
     if (!parsed) return;
 
@@ -240,7 +355,6 @@ export class MigrationService {
     const token0Lower = token0.toLowerCase();
     const token1Lower = token1.toLowerCase();
 
-    // 检查是否匹配监控的代币
     let matchedToken: string | null = null;
     let pairedWith: string | null = null;
 
@@ -255,7 +369,6 @@ export class MigrationService {
     if (matchedToken) {
       this.processedTxHashes.add(txHash);
 
-      // blockNumber 可能是 hex string（原始 RPC）或 bigint（viem 解析后）
       const blockNum = typeof log.blockNumber === 'string'
         ? BigInt(log.blockNumber)
         : (log.blockNumber || 0n);
@@ -279,7 +392,6 @@ export class MigrationService {
 
   private parsePairCreatedLog(log: Log): { token0: string; token1: string; pair: string } | null {
     try {
-      // 使用 viem 解析的 args（如果存在）
       const args = (log as any).args;
       if (args && args.token0 && args.token1 && args.pair) {
         return {
@@ -289,12 +401,13 @@ export class MigrationService {
         };
       }
 
-      // 回退：手动解析 topics 和 data
       if (!log.topics || log.topics.length < 3 || !log.data) return null;
 
       const token0 = '0x' + log.topics[1]!.slice(26);
       const token1 = '0x' + log.topics[2]!.slice(26);
-      const pair = '0x' + log.data.slice(26, 66);
+      // data: pair address (32 bytes) + uint256 (32 bytes)
+      const dataHex = (log.data as string).replace('0x', '');
+      const pair = '0x' + dataHex.slice(24, 64);
 
       return { token0, token1, pair };
     } catch {
@@ -302,11 +415,10 @@ export class MigrationService {
     }
   }
 
-  // ==================== FourMeme 事件检测 ====================
+  // ==================== FourMeme 事件检测（仅日志） ====================
 
   private async checkFourMemeEvents(fromBlock: bigint, toBlock: bigint): Promise<void> {
     try {
-      // 使用原始 RPC 请求，指定地址但不传 topics 参数（而非空数组）
       const logs = await this.httpClient.request({
         method: 'eth_getLogs',
         params: [{
@@ -319,9 +431,8 @@ export class MigrationService {
       for (const log of logs) {
         this.processFourMemeLog(log as Log);
       }
-    } catch (error: any) {
-      // FourMeme 查询失败不阻塞整体流程，静默处理
-      // publicnode 等节点可能不支持无 topics 的全量查询，这是预期内的
+    } catch {
+      // 静默处理 — FourMeme 全量查询部分节点不支持
     }
   }
 
@@ -329,28 +440,24 @@ export class MigrationService {
     const txHash = log.transactionHash as string;
     if (!txHash) return;
 
-    // 跳过已知的 TokenCreated 事件（代币创建，不是迁移）
     const tokenCreatedTopic = '0x396d5e902b675b032348d3d2e9517ee8f0c4a926603fbc075d3d282ff00cad20';
     if (log.topics && log.topics[0] === tokenCreatedTopic) return;
 
-    // FourMeme 通道仅做信息记录，不触发自动卖出
-    // 只有 PancakeSwap PairCreated 才是代币真正迁移到外盘的确认信号
+    // FourMeme 通道仅记录日志，不触发卖出
     if (log.topics && log.topics.length > 0) {
       const topic0 = log.topics[0];
       const dataHex = (log.data as string) || '0x';
 
-      // 检查 topics 中是否有匹配的代币地址
       for (let i = 1; i < log.topics.length; i++) {
         const addr = '0x' + log.topics[i]!.slice(26);
         if (this.monitoredTokens.has(addr.toLowerCase())) {
           if (this.processedTxHashes.has(txHash + '_fm')) return;
           this.processedTxHashes.add(txHash + '_fm');
-          this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录，不触发卖出）`);
+          this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录）`);
           return;
         }
       }
 
-      // 检查 data 字段中是否有匹配的代币地址
       if (dataHex.length >= 66) {
         for (let offset = 2; offset + 64 <= dataHex.length; offset += 64) {
           const paramHex = dataHex.slice(offset, offset + 64);
@@ -358,7 +465,7 @@ export class MigrationService {
           if (this.monitoredTokens.has(addr.toLowerCase())) {
             if (this.processedTxHashes.has(txHash + '_fm_data')) return;
             this.processedTxHashes.add(txHash + '_fm_data');
-            this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录，不触发卖出）`);
+            this.log('info', `[FourMeme] 代币 ${addr.slice(0, 10)}... 相关事件，topic0: ${topic0?.slice(0, 18)}...（仅记录）`);
             return;
           }
         }
@@ -368,14 +475,14 @@ export class MigrationService {
 
   // ==================== 辅助方法 ====================
 
-  private getNextRpcNode(): string {
+  private getNextHttpRpcNode(): string {
     const node = LOGS_SUPPORTED_RPC_NODES[this.rpcNodeIndex % LOGS_SUPPORTED_RPC_NODES.length];
     this.rpcNodeIndex++;
     return node;
   }
 
-  private switchRpcNode(): void {
-    const newUrl = this.getNextRpcNode();
+  private switchHttpRpcNode(): void {
+    const newUrl = this.getNextHttpRpcNode();
     const chain = this.chainId === 97 ? bscTestnet : bsc;
 
     this.httpClient = createPublicClient({
@@ -384,7 +491,7 @@ export class MigrationService {
       batch: { multicall: true }
     });
 
-    this.log('info', `已切换 RPC 节点: ${newUrl}`);
+    this.log('info', `[HTTP] 已切换节点: ${newUrl}`);
   }
 
   private log(type: MigrationLog['type'], message: string, data?: any): void {
@@ -399,7 +506,6 @@ export class MigrationService {
   }
 }
 
-// 工厂函数
 export function createMigrationService(
   chainId: number,
   httpRpcUrl?: string,
