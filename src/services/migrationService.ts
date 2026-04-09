@@ -206,24 +206,19 @@ export class MigrationService {
 
   private async checkPairCreatedEvents(fromBlock: bigint, toBlock: bigint): Promise<void> {
     try {
-      const logs = await this.httpClient.getLogs({
-        address: PANCAKESWAP_V2_FACTORY as `0x${string}`,
-        event: {
-          type: 'event',
-          name: 'PairCreated',
-          inputs: [
-            { type: 'address', name: 'token0', indexed: true },
-            { type: 'address', name: 'token1', indexed: true },
-            { type: 'address', name: 'pair', indexed: false },
-            { type: 'uint256', name: '', indexed: false }
-          ]
-        },
-        fromBlock,
-        toBlock
-      });
+      // 使用原始 topics 查询，避免 viem event 语法在某些 RPC 上的兼容问题
+      const logs = await this.httpClient.request({
+        method: 'eth_getLogs',
+        params: [{
+          address: PANCAKESWAP_V2_FACTORY,
+          topics: [PAIR_CREATED_TOPIC],
+          fromBlock: `0x${fromBlock.toString(16)}`,
+          toBlock: `0x${toBlock.toString(16)}`
+        }]
+      }) as any[];
 
       for (const log of logs) {
-        this.processPairCreatedLog(log);
+        this.processPairCreatedLog(log as Log);
       }
     } catch (error: any) {
       // PairCreated 查询失败不阻塞整体流程
@@ -234,7 +229,7 @@ export class MigrationService {
   }
 
   private processPairCreatedLog(log: Log): void {
-    const txHash = log.transactionHash;
+    const txHash = log.transactionHash as string;
     if (!txHash || this.processedTxHashes.has(txHash)) return;
 
     // 解析 PairCreated 事件
@@ -260,11 +255,16 @@ export class MigrationService {
     if (matchedToken) {
       this.processedTxHashes.add(txHash);
 
+      // blockNumber 可能是 hex string（原始 RPC）或 bigint（viem 解析后）
+      const blockNum = typeof log.blockNumber === 'string'
+        ? BigInt(log.blockNumber)
+        : (log.blockNumber || 0n);
+
       const event: MigrationEvent = {
         tokenAddress: matchedToken,
         pairAddress: pair,
         pairedWith: pairedWith!,
-        blockNumber: log.blockNumber || 0n,
+        blockNumber: blockNum,
         transactionHash: txHash,
         source: 'PairCreated'
       };
@@ -306,25 +306,27 @@ export class MigrationService {
 
   private async checkFourMemeEvents(fromBlock: bigint, toBlock: bigint): Promise<void> {
     try {
-      const logs = await this.httpClient.getLogs({
-        address: FOURMEME_CONTRACT as `0x${string}`,
-        fromBlock,
-        toBlock
-      });
+      // 使用原始 RPC 请求，指定地址但不传 topics 参数（而非空数组）
+      const logs = await this.httpClient.request({
+        method: 'eth_getLogs',
+        params: [{
+          address: FOURMEME_CONTRACT,
+          fromBlock: `0x${fromBlock.toString(16)}`,
+          toBlock: `0x${toBlock.toString(16)}`
+        }]
+      }) as any[];
 
       for (const log of logs) {
-        this.processFourMemeLog(log);
+        this.processFourMemeLog(log as Log);
       }
     } catch (error: any) {
-      // FourMeme 查询失败不阻塞整体流程
-      if (this.consecutiveFailures <= 1) {
-        this.log('warning', `FourMeme 事件查询失败: ${error.message}`);
-      }
+      // FourMeme 查询失败不阻塞整体流程，静默处理
+      // publicnode 等节点可能不支持无 topics 的全量查询，这是预期内的
     }
   }
 
   private processFourMemeLog(log: Log): void {
-    const txHash = log.transactionHash;
+    const txHash = log.transactionHash as string;
     if (!txHash) return;
 
     // 跳过已知的 TokenCreated 事件
@@ -336,8 +338,7 @@ export class MigrationService {
       const topic0 = log.topics[0];
 
       // 尝试从事件数据中提取代币地址并匹配
-      // FourMeme 的迁移事件可能在 data 或 topics 中包含代币地址
-      const dataHex = log.data || '0x';
+      const dataHex = (log.data as string) || '0x';
 
       // 检查 topics 中是否有匹配的代币地址
       for (let i = 1; i < log.topics.length; i++) {
@@ -347,27 +348,28 @@ export class MigrationService {
           this.processedTxHashes.add(txHash + '_fm');
 
           this.log('info', `FourMeme 事件检测到代币 ${addr.slice(0, 10)}...，topic0: ${topic0?.slice(0, 18)}...`);
-
-          // 注意：这里不直接触发卖出，仅作为辅助信息
-          // 只有 PairCreated 才是确认的迁移信号
           break;
         }
       }
 
       // 检查 data 字段中是否有匹配的代币地址（每 32 字节一个参数）
-      if (dataHex.length >= 66) { // 至少一个参数 (0x + 64 hex chars)
+      if (dataHex.length >= 66) {
         for (let offset = 2; offset + 64 <= dataHex.length; offset += 64) {
           const paramHex = dataHex.slice(offset, offset + 64);
-          const addr = '0x' + paramHex.slice(24); // 取后20字节作为地址
+          const addr = '0x' + paramHex.slice(24);
           if (this.monitoredTokens.has(addr.toLowerCase())) {
             if (this.processedTxHashes.has(txHash + '_fm_data')) return;
             this.processedTxHashes.add(txHash + '_fm_data');
+
+            const blockNum = typeof log.blockNumber === 'string'
+              ? BigInt(log.blockNumber)
+              : (log.blockNumber || 0n);
 
             const event: MigrationEvent = {
               tokenAddress: addr,
               pairAddress: '',
               pairedWith: '',
-              blockNumber: log.blockNumber || 0n,
+              blockNumber: blockNum,
               transactionHash: txHash,
               source: 'FourMeme'
             };
