@@ -15,7 +15,6 @@ import {
 } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
 import { FOURMEME_CONTRACT } from './fourMemeService';
-import { HTTP_RPC_NODES } from './snipeService';
 
 // ==================== 常量配置 ====================
 
@@ -25,6 +24,13 @@ export const PANCAKESWAP_V2_FACTORY = '0xcA143Ce0Fe65960E6Aa4D42C8D3cE161c2B6604
 // PairCreated 事件 topic hash
 // event PairCreated(address indexed token0, address indexed token1, address pair, uint)
 export const PAIR_CREATED_TOPIC = '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9' as const;
+
+// 支持 eth_getLogs 的 RPC 节点（Binance 官方节点限制 getLogs，不适合事件查询）
+const LOGS_SUPPORTED_RPC_NODES = [
+  'https://bsc.publicnode.com',
+  'https://bsc-rpc.publicnode.com',
+  'https://rpc.ankr.com/bsc',
+] as const;
 
 // ==================== 类型定义 ====================
 
@@ -67,7 +73,8 @@ export class MigrationService {
     this.pollInterval = pollInterval || 3000;
 
     const chain = chainId === 97 ? bscTestnet : bsc;
-    const rpcUrl = httpRpcUrl || this.getNextRpcNode();
+    // 使用支持 getLogs 的节点（Binance 官方节点限制 eth_getLogs 会报 limit exceeded）
+    const rpcUrl = LOGS_SUPPORTED_RPC_NODES[0];
 
     this.httpClient = createPublicClient({
       chain,
@@ -380,7 +387,7 @@ export class MigrationService {
   // ==================== 辅助方法 ====================
 
   private getNextRpcNode(): string {
-    const node = HTTP_RPC_NODES[this.rpcNodeIndex % HTTP_RPC_NODES.length];
+    const node = LOGS_SUPPORTED_RPC_NODES[this.rpcNodeIndex % LOGS_SUPPORTED_RPC_NODES.length];
     this.rpcNodeIndex++;
     return node;
   }
