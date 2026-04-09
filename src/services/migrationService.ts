@@ -142,8 +142,7 @@ export class MigrationService {
       // 主通道：WebSocket 实时订阅
       this.connectWebSocket();
 
-      // 备用通道：HTTP 轮询（WebSocket 断开时补漏）
-      this.schedulePoll();
+      // HTTP 轮询仅在 WebSocket 断连时自动启用，此处不启动
     } catch (error: any) {
       this.isRunning = false;
       this.log('error', `启动失败: ${error.message}`);
@@ -184,6 +183,12 @@ export class MigrationService {
         this.wsConnected = true;
         this.wsReconnectAttempts = 0;
         this.log('success', `[WS] 已连接，订阅 PairCreated 事件...`);
+
+        // WS 连上了，停止 HTTP 轮询
+        if (this.pollTimer !== null) {
+          clearTimeout(this.pollTimer);
+          this.pollTimer = null;
+        }
 
         // 订阅 PancakeSwap Factory 的 PairCreated 日志
         const subscribeMsg = JSON.stringify({
@@ -232,15 +237,19 @@ export class MigrationService {
 
         if (this.isRunning) {
           this.wsReconnectAttempts++;
-          // 指数退避重连，最长 10 秒
           const delay = Math.min(1000 * this.wsReconnectAttempts, 10000);
 
-          // 每 3 次切换节点
           if (this.wsReconnectAttempts % 3 === 0) {
             this.wsNodeIndex++;
           }
 
-          this.log('info', `[WS] 连接断开，${delay}ms 后重连 (第${this.wsReconnectAttempts}次)...`);
+          this.log('info', `[WS] 连接断开，启用 HTTP 轮询备用，${delay}ms 后重连 (第${this.wsReconnectAttempts}次)...`);
+
+          // WS 断了，启动 HTTP 轮询补漏
+          if (this.pollTimer === null) {
+            this.schedulePoll();
+          }
+
           this.wsReconnectTimer = setTimeout(() => this.connectWebSocket(), delay);
         }
       };
