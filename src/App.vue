@@ -18,7 +18,7 @@
       </header>
 
       <section class="content-area">
-        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel,CreateTokenPanel">
+        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel,CreateTokenPanel,MigrationSellPanel">
           <component :is="currentComponent" />
         </keep-alive>
       </section>
@@ -39,6 +39,7 @@ import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 import SnipePanel from './components/panels/SnipePanel.vue';
 import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
+import MigrationSellPanel from './components/panels/MigrationSellPanel.vue';
 import { useWalletStore } from './stores/walletStore';
 import { useTaskStore } from './stores/taskStore';
 import { getServerConfig } from './services/configApi';
@@ -60,7 +61,7 @@ async function loadServerConfig() {
   }
 }
 
-const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken'>('wallet');
+const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken' | 'migration'>('wallet');
 const sidebarCollapsed = ref(false);
 const currentUser = ref<any>(null);
 const isAuthenticated = ref(false);
@@ -76,6 +77,7 @@ const sidebarItems = [
   { key: 'transfer', label: '批量转账', icon: '💸' },
   { key: 'task', label: '任务管理', icon: '📋' },
   { key: 'snipe', label: '代币狙击', icon: '🎯' },
+  { key: 'migration', label: '迁移卖出', icon: '🔄' },
   { key: 'createToken', label: '创建代币1.0.4', icon: '📈' },
   { key: 'users', label: '用户管理', icon: '👥' },
   { key: 'analysis', label: '分析面板', icon: '📈' }
@@ -92,6 +94,7 @@ const currentComponent = computed(() => {
     case 'transfer': return BatchTransferPanel;
     case 'task': return TaskManagePanel;
     case 'snipe': return SnipePanel;
+    case 'migration': return MigrationSellPanel;
     case 'createToken': return CreateTokenPanel;
     case 'users': return UserManagement;
     case 'analysis': return AnalysisPanel;
@@ -100,7 +103,7 @@ const currentComponent = computed(() => {
 });
 
 const handleSelect = (key: string) => {
-  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken';
+  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken' | 'migration';
 };
 
 const loadSession = async () => {
