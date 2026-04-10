@@ -77,7 +77,7 @@ export const useMigrationStore = defineStore('migration', () => {
 
   // 选择使用的钱包模式
   const walletMode = ref<'selected' | 'batch' | 'all'>('all');
-  const selectedBatchId = ref('');
+  const selectedBatchIds = ref<string[]>([]);
 
   const config = ref<MigrationConfig>({
     sellPercent: 100,
@@ -114,12 +114,14 @@ export const useMigrationStore = defineStore('migration', () => {
         addresses.add(addr.toLowerCase());
       }
     } else if (walletMode.value === 'batch') {
-      // 使用指定批次
-      const batch = walletStore.walletBatches.find(b => b.id === selectedBatchId.value);
-      if (batch) {
-        for (const w of batch.wallets) {
-          if (w.privateKey) {
-            addresses.add(w.address.toLowerCase());
+      // 使用选中的批次（支持多选）
+      for (const batchId of selectedBatchIds.value) {
+        const batch = walletStore.walletBatches.find(b => b.id === batchId);
+        if (batch) {
+          for (const w of batch.wallets) {
+            if (w.privateKey) {
+              addresses.add(w.address.toLowerCase());
+            }
           }
         }
       }
@@ -845,7 +847,7 @@ export const useMigrationStore = defineStore('migration', () => {
     isPreApproving,
     config,
     walletMode,
-    selectedBatchId,
+    selectedBatchIds,
 
     // 代币管理
     addToken,

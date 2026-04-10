@@ -134,16 +134,19 @@
             </button>
           </div>
           <div v-if="migrationStore.walletMode === 'batch'">
-            <select class="form-select form-select-sm" v-model="migrationStore.selectedBatchId">
-              <option value="">选择批次...</option>
-              <option
+            <div class="batch-list">
+              <div
                 v-for="batch in walletStore.walletBatches"
                 :key="batch.id"
-                :value="batch.id"
+                class="batch-item"
+                :class="{ selected: migrationStore.selectedBatchIds.includes(batch.id) }"
+                @click="toggleBatch(batch.id, $event)"
               >
-                {{ batch.remark || batch.id }} ({{ batch.wallets.length }} 个钱包)
-              </option>
-            </select>
+                <span class="batch-name">{{ batch.remark || batch.id }}</span>
+                <span class="badge bg-secondary ms-1">{{ batch.wallets.length }}</span>
+              </div>
+            </div>
+            <small class="text-muted">Ctrl+点击 多选，已选 {{ migrationStore.selectedBatchIds.length }} 个批次</small>
           </div>
           <div v-else-if="migrationStore.walletMode === 'selected'" class="small text-muted">
             <span v-if="walletStore.selectedWalletAddresses.length === 0">请在钱包管理中勾选要使用的钱包</span>
@@ -370,6 +373,28 @@ function refreshHoldings() {
   migrationStore.scanTokenHoldings();
 }
 
+// 批次多选（Ctrl+点击多选，普通点击单选）
+function toggleBatch(batchId: string, event: MouseEvent) {
+  const ids = migrationStore.selectedBatchIds;
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl/Cmd + 点击：切换选中
+    const idx = ids.indexOf(batchId);
+    if (idx >= 0) {
+      ids.splice(idx, 1);
+    } else {
+      ids.push(batchId);
+    }
+  } else {
+    // 普通点击：单选
+    if (ids.length === 1 && ids[0] === batchId) {
+      // 点击已选中的唯一项，取消选择
+      ids.splice(0, ids.length);
+    } else {
+      ids.splice(0, ids.length, batchId);
+    }
+  }
+}
+
 // 启动监控
 async function startMonitoring() {
   await migrationStore.startMonitoring();
@@ -508,5 +533,37 @@ watch(() => migrationStore.logs.length, async () => {
 
 .log-message {
   color: #e0e0e0;
+}
+
+.batch-list {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.batch-item {
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  user-select: none;
+}
+
+.batch-item:last-child {
+  border-bottom: none;
+}
+
+.batch-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.batch-item.selected {
+  background: rgba(var(--bs-primary-rgb), 0.2);
+  border-left: 3px solid var(--bs-primary);
 }
 </style>
