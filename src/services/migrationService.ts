@@ -18,7 +18,7 @@ import { FOURMEME_CONTRACT } from './fourMemeService';
 
 // ==================== 常量配置 ====================
 
-export const PANCAKESWAP_V2_FACTORY = '0xcA143Ce0Fe65960E6Aa4D42C8D3cE161c2B6604f' as const;
+export const PANCAKESWAP_V2_FACTORY = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73' as const;
 
 // PairCreated(address indexed token0, address indexed token1, address pair, uint)
 export const PAIR_CREATED_TOPIC = '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9' as const;
@@ -198,7 +198,7 @@ export class MigrationService {
           params: [
             'logs',
             {
-              address: PANCAKESWAP_V2_FACTORY,
+              address: PANCAKESWAP_V2_FACTORY.toLowerCase(),
               topics: [PAIR_CREATED_TOPIC]
             }
           ]
@@ -336,7 +336,7 @@ export class MigrationService {
       const logs = await this.httpClient.request({
         method: 'eth_getLogs',
         params: [{
-          address: PANCAKESWAP_V2_FACTORY,
+          address: PANCAKESWAP_V2_FACTORY.toLowerCase(),
           topics: [PAIR_CREATED_TOPIC],
           fromBlock: `0x${fromBlock.toString(16)}`,
           toBlock: `0x${toBlock.toString(16)}`
