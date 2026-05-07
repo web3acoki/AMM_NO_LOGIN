@@ -2336,6 +2336,7 @@ export const useWalletStore = defineStore('wallet', {
           } else {
             // 原生代币转账（BNB）
             txHash = await walletClient.sendTransaction({
+              chain: chainConfig,
               to: targetAddr as `0x${string}`,
               value: parseEther(amountPerTarget.toString()),
               gas: BigInt(21000),
@@ -2625,13 +2626,14 @@ export const useWalletStore = defineStore('wallet', {
 
             // 发送交易
             txHash = await walletClient.sendTransaction({
+              chain: chainConfig,
               to: targetAddress as `0x${string}`,
               value: amountToSend,
               gas: gasLimit,
               gasPrice: gasPrice,
             });
           }
-          
+
           console.log(`归集成功: ${txHash}`);
           results.push({
             wallet: wallet.address,
@@ -2902,13 +2904,14 @@ export const useWalletStore = defineStore('wallet', {
 
             // 发送交易
             txHash = await walletClient.sendTransaction({
+              chain: chainConfig,
               to: task.target as `0x${string}`,
               value: task.amount,
               gas: gasLimit,
               gasPrice: gasPrice,
             });
           }
-          
+
           console.log(`转账成功: ${txHash}`);
           results.push({
             source: task.source.address,
@@ -3395,6 +3398,7 @@ export const useWalletStore = defineStore('wallet', {
 
               const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
+                chain: chainConfig,
                 to: targetAddr as `0x${string}`,
                 value: transferValue,
                 gas: gasLimit,
@@ -3429,6 +3433,7 @@ export const useWalletStore = defineStore('wallet', {
 
               const nonce = await getNextNonce(sourceAddr);
               txHash = await walletClient.sendTransaction({
+                chain: chainConfig,
                 to: targetAddr as `0x${string}`,
                 value: amountToSend,
                 gas: gasLimit,
