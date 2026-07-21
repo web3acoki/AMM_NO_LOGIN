@@ -74,14 +74,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { useTaskStore, type Task, type LogEntry } from '../../stores/taskStore';
-import { useChainStore } from '../../stores/chainStore';
 import { storeToRefs } from 'pinia';
 
 const taskStore = useTaskStore();
-const chainStore = useChainStore();
 
 const { tasks, activeLogTaskId, activeLogTask } = storeToRefs(taskStore);
-const { selectedChainId } = storeToRefs(chainStore);
 
 const logContainer = ref<HTMLElement | null>(null);
 
@@ -179,9 +176,11 @@ function getExplorerUrl(txHash: string): string {
   const explorers: Record<number, string> = {
     56: 'https://bscscan.com/tx/',
     97: 'https://testnet.bscscan.com/tx/',
-    66: 'https://www.oklink.com/okc/tx/'
+    66: 'https://www.oklink.com/okc/tx/',
+    4663: 'https://robinhoodchain.blockscout.com/tx/'
   };
-  return (explorers[selectedChainId.value] || 'https://bscscan.com/tx/') + txHash;
+  const explorer = explorers[activeLogTask.value?.config.chainId || 56];
+  return explorer ? explorer + txHash : '#';
 }
 </script>
 

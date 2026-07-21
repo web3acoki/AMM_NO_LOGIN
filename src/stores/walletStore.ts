@@ -10,8 +10,26 @@ import { parseBlockchainError } from '../utils/errorParser';
 import { useChainStore } from './chainStore';
 import * as walletApi from '../services/walletApi';
 import { ENABLE_LOGIN } from '../config';
+import { robinhood } from '../viem/chains/robinhood';
+import {
+  executeOneToManyTransfer,
+  type OneToManyTransferStatus,
+} from '../services/oneToManyTransferService';
+import { withTransferLease, type TransferLeaseGuard } from '../services/transferLeaseApi';
 
 type WalletType = 'main' | 'normal';
+
+type BatchTransferResult = {
+  source: string;
+  target: string;
+  hash?: string;
+  nonce?: number;
+  error?: string;
+  success: boolean;
+  status?: OneToManyTransferStatus;
+  retryable?: boolean;
+  amount?: string | number;
+};
 
 type LocalWallet = {
   _id?: string; // Server-side ID
@@ -747,6 +765,7 @@ export const useWalletStore = defineStore('wallet', {
       // 使用单一 RPC 客户端保证所有查询在同一区块高度，避免不同节点数据不一致
       const publicClient = this.getPublicClient();
       const tokenDecimals = this.targetToken?.decimals || 18;
+      const isBscChain = this.currentChainId === 56 || this.currentChainId === 97;
 
       const wallets = batch.wallets;
       const batchSize = 20; // 每批20个，避免RPC限流
@@ -778,6 +797,7 @@ export const useWalletStore = defineStore('wallet', {
             }
 
             try {
+              if (!isBscChain) throw new Error('ASTER is BSC-only');
               asterBalance = await publicClient.readContract({
                 address: ASTER_TOKEN_ADDRESS,
                 abi: erc20Abi,
@@ -785,6 +805,7 @@ export const useWalletStore = defineStore('wallet', {
                 args: [wallet.address as `0x${string}`]
               }) as bigint;
             } catch (e) {
+              if (!isBscChain) return { native: balance, token: tokenBalance, aster: 0n, failed: false };
               console.warn(`Failed to fetch ASTER balance for ${wallet.address}:`, e);
             }
 
@@ -808,13 +829,13 @@ export const useWalletStore = defineStore('wallet', {
 
       batch.totalNativeBalance = formatEther(totalNative);
       batch.totalTokenBalance = this.targetToken ? formatUnits(totalToken, tokenDecimals) : undefined;
-      batch.totalAsterBalance = formatUnits(totalAster, ASTER_DECIMALS);
+      batch.totalAsterBalance = isBscChain ? formatUnits(totalAster, ASTER_DECIMALS) : undefined;
       this.persistBatches();
 
       if (failedCount > 0) {
         console.warn(`批次余额查询完成，${failedCount}/${results.length} 个钱包查询失败`);
       }
-      console.log(`批次余额查询完成: ${batch.totalNativeBalance} BNB, ${batch.totalAsterBalance} ASTER`);
+      console.log(`批次余额查询完成: ${batch.totalNativeBalance} ${this.getChainConfig().nativeCurrency.symbol}`);
 
       return {
         totalNativeBalance: batch.totalNativeBalance,
@@ -1404,7 +1425,10 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     getClient(rpcUrl?: string) {
-      return createWalletClient({ chain: bscTestnet, transport: fallback([http(rpcUrl ?? 'https://bsc-testnet.publicnode.com')]) });
+      const chain = this.getChainConfig();
+      const chainStore = useChainStore();
+      const effectiveUrl = rpcUrl || chainStore.effectiveRpcUrl || chain.rpcUrls.default.http[0];
+      return createWalletClient({ chain, transport: fallback([http(effectiveUrl)]) });
     },
 
     getChainConfig() {
@@ -1418,8 +1442,10 @@ export const useWalletStore = defineStore('wallet', {
           return bscTestnet;
         case 66: // OKX Chain
           return okc;
+        case 4663: // Robinhood Chain Mainnet
+          return robinhood;
         default:
-          return bsc; // 默认BSC主网
+          throw new Error(`不支持的链 ID: ${chainId}`);
       }
     },
 
@@ -1433,15 +1459,37 @@ export const useWalletStore = defineStore('wallet', {
     },
 
     setCurrentChainId(chainId: number) {
+      if (![56, 97, 66, 4663].includes(chainId)) {
+        throw new Error(`不支持的链 ID: ${chainId}`);
+      }
+      if (this.currentChainId !== chainId) {
+        // 余额字段是当前链视图，不允许切链后继续展示旧链缓存。
+        for (const wallet of this.localWallets) {
+          wallet.nativeBalance = undefined;
+          wallet.tokenBalance = undefined;
+          wallet.asterBalance = undefined;
+        }
+        for (const batch of this.walletBatches) {
+          batch.totalNativeBalance = undefined;
+          batch.totalTokenBalance = undefined;
+          batch.totalAsterBalance = undefined;
+        }
+      }
       this.currentChainId = chainId;
       console.log('设置当前链ID:', chainId);
+    },
+
+    getEffectiveRpcUrl(rpcUrl?: string): string {
+      const chainStore = useChainStore();
+      const chain = this.getChainConfig();
+      return rpcUrl || chainStore.effectiveRpcUrl || chain.rpcUrls.default.http[0];
     },
 
     getPublicClient(rpcUrl?: string) {
       const chain = this.getChainConfig();
       // 优先使用传入的rpcUrl，其次使用chainStore的effectiveRpcUrl，最后使用默认
       const chainStore = useChainStore();
-      const effectiveUrl = rpcUrl || chainStore.effectiveRpcUrl || chain.rpcUrls.default.http[0];
+      const effectiveUrl = this.getEffectiveRpcUrl(rpcUrl);
       console.log('使用RPC节点:', effectiveUrl);
       return createPublicClient({
         chain,
@@ -1483,10 +1531,10 @@ export const useWalletStore = defineStore('wallet', {
       
       return createWalletClient({
         chain,
-        transport: fallback([http(chain.rpcUrls.default.http[0])]),
+        transport: fallback([http(this.getEffectiveRpcUrl())]),
         account: this.connectedAddress as `0x${string}`,
         // 添加钱包provider
-        ...(ethereum && { transport: fallback([http(chain.rpcUrls.default.http[0])]) })
+        ...(ethereum && { transport: fallback([http(this.getEffectiveRpcUrl())]) })
       });
     },
 
@@ -1494,6 +1542,9 @@ export const useWalletStore = defineStore('wallet', {
     async refreshAllBalances() {
       const clients = this.getPublicClients();
       const usdtAddress = getUsdtAddress(this.currentChainId);
+      const asterAddress = this.currentChainId === 56 || this.currentChainId === 97
+        ? ASTER_TOKEN_ADDRESS
+        : null;
       // 用第一个client获取精度（只需一次）
       const usdtDecimals = usdtAddress ? await fetchTokenDecimals(clients[0], usdtAddress) : 18;
 
@@ -1511,7 +1562,7 @@ export const useWalletStore = defineStore('wallet', {
         await Promise.all(
           batch.map((wallet, idx) => {
             const client = clients[(start + idx) % clients.length];
-            return refreshWalletBalancesForWallet(wallet, client, usdtAddress, usdtDecimals)
+            return refreshWalletBalancesForWallet(wallet, client, usdtAddress, usdtDecimals, asterAddress)
               .catch(err => console.error(`查询余额失败 ${wallet.address}:`, err));
           })
         );
@@ -1529,8 +1580,11 @@ export const useWalletStore = defineStore('wallet', {
       const publicClient = this.getPublicClient();
       const usdtAddress = getUsdtAddress(this.currentChainId);
       const usdtDecimals = usdtAddress ? await fetchTokenDecimals(publicClient, usdtAddress) : 18;
+      const asterAddress = this.currentChainId === 56 || this.currentChainId === 97
+        ? ASTER_TOKEN_ADDRESS
+        : null;
 
-      await refreshWalletBalancesForWallet(wallet, publicClient, usdtAddress, usdtDecimals);
+      await refreshWalletBalancesForWallet(wallet, publicClient, usdtAddress, usdtDecimals, asterAddress);
       this.persist();
     },
 
@@ -2171,7 +2225,7 @@ export const useWalletStore = defineStore('wallet', {
 
     // 获取当前网络的 USDT 合约地址
     getUsdtContractAddress(): string | null {
-      const address = USDT_CONTRACTS[this.currentChainId as keyof typeof USDT_CONTRACTS];
+      const address = USDT_ADDRESSES[this.currentChainId];
       return address || null;
     },
 
@@ -2276,7 +2330,7 @@ export const useWalletStore = defineStore('wallet', {
       const walletClient = createWalletClient({
         account,
         chain: chainConfig,
-        transport: http(chainConfig.rpcUrls.default.http[0])
+        transport: http(this.getEffectiveRpcUrl())
       });
       
       for (let i = 0; i < validTargets.length; i++) {
@@ -2549,7 +2603,7 @@ export const useWalletStore = defineStore('wallet', {
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
-            transport: http(chainConfig.rpcUrls.default.http[0])
+            transport: http(this.getEffectiveRpcUrl())
           });
 
           let txHash: string;
@@ -2831,7 +2885,7 @@ export const useWalletStore = defineStore('wallet', {
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
-            transport: http(chainConfig.rpcUrls.default.http[0])
+            transport: http(this.getEffectiveRpcUrl())
           });
           
           let txHash: string;
@@ -3050,7 +3104,7 @@ export const useWalletStore = defineStore('wallet', {
           const walletClient = createWalletClient({
             account,
             chain: chainConfig,
-            transport: http(chainConfig.rpcUrls.default.http[0])
+            transport: http(this.getEffectiveRpcUrl())
           });
           
           // 发送 ERC20 transfer 交易
@@ -3095,22 +3149,54 @@ export const useWalletStore = defineStore('wallet', {
     async batchTransferByAddresses(
       sourceAddresses: string[],
       targetAddresses: string[],
-      amount: number,
+      amount: string | number,
       tokenType: 'native' | 'token' | 'aster',
       mode: 'oneToMany' | 'manyToOne' | 'manyToMany',
       options?: {
         privateKeyMap?: Record<string, string>;
         transferAllBalance?: boolean;
         intervalMs?: number;
+        onProgress?: (results: BatchTransferResult[]) => void;
       }
-    ): Promise<{ source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[]> {
+    ): Promise<BatchTransferResult[]> {
       console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}，转全部余额: ${options?.transferAllBalance}`);
 
-      const results: { source: string; target: string; hash?: string; error?: string; success: boolean; amount?: number }[] = [];
-      const chainConfig = this.getChainConfig();
-      const publicClient = this.getPublicClient();
-      let gasPrice = await publicClient.getGasPrice();
+      // Freeze all chain-sensitive execution inputs before the first await. A global
+      // network switch clears targetToken and changes the effective RPC; neither is
+      // allowed to change an already-started ERC20 transfer into a native transfer
+      // or send it through a different chain's RPC.
+      const executionChainId = this.getCurrentChainId();
+      const executionChainConfig = this.getChainConfig();
+      const executionRpcUrl = this.getEffectiveRpcUrl();
+      const executionTargetToken = this.targetToken
+        ? {
+            address: this.targetToken.address,
+            symbol: this.targetToken.symbol,
+            name: this.targetToken.name,
+            decimals: this.targetToken.decimals,
+          }
+        : null;
+      const nativeSymbol = executionChainConfig.nativeCurrency.symbol;
 
+      if (tokenType === 'token') {
+        if (
+          !executionTargetToken ||
+          !/^0x[0-9a-fA-F]{40}$/.test(executionTargetToken.address) ||
+          !Number.isInteger(executionTargetToken.decimals) ||
+          executionTargetToken.decimals < 0 ||
+          executionTargetToken.decimals > 255
+        ) {
+          throw new Error('目标 ERC20 代币信息无效，请重新查询代币后再转账');
+        }
+      }
+
+      if (tokenType === 'aster' && executionChainId !== 56 && executionChainId !== 97) {
+        throw new Error(`ASTER 仅支持 BSC，${executionChainConfig.name} 上只能转账 ${nativeSymbol} 或目标 ERC20 代币`);
+      }
+      const publicClient = createPublicClient({
+        chain: executionChainConfig,
+        transport: http(executionRpcUrl),
+      });
       // 根据模式构建转账任务
       let tasks: { sourceAddr: string; targetAddr: string }[] = [];
 
@@ -3142,449 +3228,217 @@ export const useWalletStore = defineStore('wallet', {
         }
       }
 
-      // Nonce 管理：每个源地址维护本地递增 Nonce，避免并发冲突
-      const nonceMap = new Map<string, number>();
-
       // 获取私钥：优先使用传入的私钥映射，否则从本地缓存获取（登录时已从服务器加载）
       let batchKeyMap: Record<string, string> = {};
 
-      if (options?.privateKeyMap && Object.keys(options.privateKeyMap).length > 0) {
-        // 使用传入的私钥映射
-        batchKeyMap = options.privateKeyMap;
-      } else {
-        // 从本地钱包缓存获取（服务器模式下登录时已加载）
-        for (const w of this.localWallets) {
-          if (w.encrypted) {
-            batchKeyMap[w.address.toLowerCase()] = w.encrypted;
-          }
+      // 先汇总本地缓存，再用调用方显式传入的私钥覆盖。旧逻辑只要传入映射非空，
+      // 就完全忽略缓存里其他源钱包，导致合法地址被误报为“未找到私钥”。
+      for (const w of this.localWallets) {
+        if (w.encrypted) {
+          batchKeyMap[w.address.toLowerCase()] = w.encrypted;
         }
-        // 从批次钱包缓存获取
-        for (const batch of this.walletBatches) {
-          for (const w of batch.wallets) {
-            if (w.privateKey) {
-              batchKeyMap[w.address.toLowerCase()] = w.privateKey;
-            }
+      }
+      for (const batch of this.walletBatches) {
+        for (const w of batch.wallets) {
+          if (w.privateKey) {
+            batchKeyMap[w.address.toLowerCase()] = w.privateKey;
           }
         }
       }
-
-      async function getNextNonce(address: string): Promise<number> {
-        const key = address.toLowerCase();
-        if (!nonceMap.has(key)) {
-          // 首次使用该地址，从链上获取 pending nonce
-          const chainNonce = await publicClient.getTransactionCount({
-            address: key as `0x${string}`,
-            blockTag: 'pending'
-          });
-          nonceMap.set(key, chainNonce);
+      if (options?.privateKeyMap) {
+        for (const [address, privateKey] of Object.entries(options.privateKeyMap)) {
+          batchKeyMap[address.toLowerCase()] = privateKey;
         }
-        const nonce = nonceMap.get(key)!;
-        nonceMap.set(key, nonce + 1);
-        return nonce;
       }
 
-      // 执行单个转账任务
-      const executeTask = async (taskItem: { sourceAddr: string; targetAddr: string }, index: number) => {
-        const { sourceAddr, targetAddr } = taskItem;
-
-        try {
-          // 验证地址格式
-          if (!sourceAddr || !/^0x[0-9a-fA-F]{40}$/.test(sourceAddr)) {
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              error: `源地址格式无效: ${sourceAddr?.slice(0, 15) || '空'}...`,
-              success: false
-            };
+      const transferAsset = tokenType === 'native'
+        ? {
+            kind: 'native' as const,
+            symbol: nativeSymbol,
           }
-          if (!targetAddr || !/^0x[0-9a-fA-F]{40}$/.test(targetAddr)) {
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              error: `目标地址格式无效: ${targetAddr?.slice(0, 15) || '空'}...`,
-              success: false
-            };
-          }
-
-          // 从预获取的私钥映射获取
-          let privateKey = batchKeyMap[sourceAddr.toLowerCase()];
-
-          if (!privateKey) {
-            console.warn(`地址 ${sourceAddr} 没有私钥，batchKeyMap keys:`, Object.keys(batchKeyMap));
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              error: `地址 ${sourceAddr.slice(0, 10)}... 未找到私钥`,
-              success: false
-            };
-          }
-
-          // 确保私钥格式正确（添加 0x 前缀）
-          if (!privateKey.startsWith('0x')) {
-            privateKey = `0x${privateKey}`;
-          }
-
-          // 验证私钥格式
-          if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              error: `私钥格式无效，长度: ${privateKey.length}`,
-              success: false
-            };
-          }
-
-          console.log(`转账 ${index + 1}/${tasks.length}: ${sourceAddr} -> ${targetAddr}`);
-
-          // 创建钱包客户端
-          const account = privateKeyToAccount(privateKey as `0x${string}`);
-          const walletClient = createWalletClient({
-            account,
-            chain: chainConfig,
-            transport: http(chainConfig.rpcUrls.default.http[0])
-          });
-
-          let txHash: string;
-          let actualAmount = amount;
-
-          if (tokenType === 'token' && this.targetToken) {
-            // 目标代币转账
-            const tokenAddress = this.targetToken.address as `0x${string}`;
-            const decimals = this.targetToken.decimals;
-
-            if (options?.transferAllBalance) {
-              // 获取代币余额并转出全部
-              const balance = await publicClient.readContract({
-                address: tokenAddress,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [sourceAddr as `0x${string}`]
-              });
-              actualAmount = Number(formatUnits(balance as bigint, decimals));
-
-              if (actualAmount <= 0) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: '代币余额为0',
-                  success: false
-                };
-              }
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.writeContract({
-                address: tokenAddress,
-                abi: erc20Abi,
-                functionName: 'transfer',
-                args: [targetAddr as `0x${string}`, balance as bigint],
-                gas: BigInt(65000),
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
-            } else {
-              // 先检查代币余额是否足够
-              const balance = await publicClient.readContract({
-                address: tokenAddress,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [sourceAddr as `0x${string}`]
-              }) as bigint;
-
-              const amountToSend = parseUnits(amount.toString(), decimals);
-
-              if (balance < amountToSend) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: `代币余额不足，当前: ${formatUnits(balance, decimals)}, 需要: ${amount}`,
-                  success: false
-                };
-              }
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.writeContract({
-                address: tokenAddress,
-                abi: erc20Abi,
-                functionName: 'transfer',
-                args: [targetAddr as `0x${string}`, amountToSend],
-                gas: BigInt(65000),
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
+        : tokenType === 'aster'
+          ? {
+              kind: 'erc20' as const,
+              address: ASTER_TOKEN_ADDRESS as `0x${string}`,
+              symbol: 'ASTER',
+              decimals: ASTER_DECIMALS,
             }
-          } else if (tokenType === 'aster') {
-            // ASTER 代币转账
-            const asterAddr = ASTER_TOKEN_ADDRESS;
-            const asterDec = ASTER_DECIMALS;
-
-            if (options?.transferAllBalance) {
-              const balance = await publicClient.readContract({
-                address: asterAddr,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [sourceAddr as `0x${string}`]
-              });
-              actualAmount = Number(formatUnits(balance as bigint, asterDec));
-
-              if (actualAmount <= 0) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: 'ASTER 余额为0',
-                  success: false
-                };
-              }
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.writeContract({
-                address: asterAddr,
-                abi: erc20Abi,
-                functionName: 'transfer',
-                args: [targetAddr as `0x${string}`, balance as bigint],
-                gas: BigInt(65000),
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
-            } else {
-              const balance = await publicClient.readContract({
-                address: asterAddr,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [sourceAddr as `0x${string}`]
-              }) as bigint;
-
-              const amountToSend = parseUnits(amount.toString(), asterDec);
-
-              if (balance < amountToSend) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: `ASTER 余额不足，当前: ${formatUnits(balance, asterDec)}, 需要: ${amount}`,
-                  success: false
-                };
-              }
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.writeContract({
-                address: asterAddr,
-                abi: erc20Abi,
-                functionName: 'transfer',
-                args: [targetAddr as `0x${string}`, amountToSend],
-                gas: BigInt(65000),
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
-            }
-          } else {
-            // 原生代币转账
-            if (options?.transferAllBalance) {
-              // 获取余额，扣除gas费后全部转出
-              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
-              const gasLimit = BigInt(21000);
-              const gasCost = gasPrice * gasLimit;
-              const transferValue = balance - gasCost;
-
-              if (transferValue <= BigInt(0)) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: `余额不足以支付 gas 费用，当前余额: ${formatEther(balance)} BNB，预估Gas费: ${formatEther(gasCost)} BNB`,
-                  success: false
-                };
-              }
-
-              actualAmount = Number(formatEther(transferValue));
-              console.log(`转全部余额: ${formatEther(balance)} BNB, Gas费: ${formatEther(gasCost)} BNB, 实际转账: ${actualAmount} BNB`);
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.sendTransaction({
-                chain: chainConfig,
-                to: targetAddr as `0x${string}`,
-                value: transferValue,
-                gas: gasLimit,
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
-            } else {
-              // 转固定金额，先检查金额有效性
-              if (amount === undefined || amount === null || isNaN(amount) || amount <= 0) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: `转账金额无效: ${amount}`,
-                  success: false
-                };
-              }
-
-              // 检查余额是否足够
-              const balance = await publicClient.getBalance({ address: sourceAddr as `0x${string}` });
-              const gasLimit = BigInt(21000);
-              const gasCost = gasPrice * gasLimit;
-              const amountToSend = parseEther(amount.toString());
-
-              if (balance < amountToSend + gasCost) {
-                return {
-                  source: sourceAddr,
-                  target: targetAddr,
-                  error: `余额不足，当前: ${formatEther(balance)} BNB，需要: ${formatEther(amountToSend + gasCost)} BNB`,
-                  success: false
-                };
-              }
-
-              const nonce = await getNextNonce(sourceAddr);
-              txHash = await walletClient.sendTransaction({
-                chain: chainConfig,
-                to: targetAddr as `0x${string}`,
-                value: amountToSend,
-                gas: gasLimit,
-                gasPrice: gasPrice,
-                nonce: nonce,
-              });
-            }
-          }
-
-          // 等待交易确认
-          console.log(`等待交易确认: ${txHash}`);
-          const receipt = await publicClient.waitForTransactionReceipt({
-            hash: txHash as `0x${string}`,
-            timeout: 120000 // 120秒超时
-          });
-
-          if (receipt.status === 'success') {
-            console.log(`转账成功: ${txHash}, 金额: ${actualAmount}`);
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              hash: txHash,
-              success: true,
-              amount: actualAmount
+          : {
+              kind: 'erc20' as const,
+              address: executionTargetToken!.address as `0x${string}`,
+              symbol: executionTargetToken!.symbol,
+              decimals: executionTargetToken!.decimals,
             };
-          } else {
-            console.error(`转账失败(交易回滚): ${txHash}`);
-            return {
-              source: sourceAddr,
-              target: targetAddr,
-              hash: txHash,
-              error: '交易已发送但执行失败（可能是余额不足或合约拒绝）',
-              success: false
-            };
-          }
 
-        } catch (error: any) {
-          console.error(`转账失败: ${sourceAddr} -> ${targetAddr}`, error);
-          return {
-            source: sourceAddr,
-            target: targetAddr,
-            error: parseBlockchainError(error),
-            success: false
-          };
-        }
-      };
-
-      // 根据模式选择执行策略
-      const CONCURRENT_BATCH_SIZE = 5;
-      const intervalMs = options?.intervalMs ?? 0;
-
+      // 一对多走独立的单源交易流水线：整批预检、一次性分配连续 nonce、
+      // 本地签名后按 nonce 顺序快速广播，最后并行确认。这里提前 return，
+      // 因而不会进入下面旧的逐笔等待和自动重试路径。
       if (mode === 'oneToMany') {
-        // 一对多：同一源钱包，nonce 需要串行递增
-        for (let i = 0; i < tasks.length; i++) {
-          const result = await executeTask(tasks[i], i);
-          results.push(result);
-          // 启用间隔时，每笔之间等待指定毫秒数
-          if (intervalMs > 0 && i < tasks.length - 1) {
-            console.log(`转账间隔等待 ${intervalMs}ms...`);
-            await new Promise(resolve => setTimeout(resolve, intervalMs));
-          }
+        const sourceAddress = sourceAddresses[0];
+        const privateKey = batchKeyMap[sourceAddress.toLowerCase()];
+        if (!privateKey) {
+          throw new Error(`地址 ${sourceAddress.slice(0, 10)}... 未找到私钥`);
         }
-      } else if (intervalMs > 0) {
-        // 启用间隔：改为顺序执行，每笔之间等待
-        for (let i = 0; i < tasks.length; i++) {
-          gasPrice = await publicClient.getGasPrice();
-          console.log(`顺序执行第 ${i + 1}/${tasks.length} 笔（间隔 ${intervalMs / 1000}s）`);
-          const result = await executeTask(tasks[i], i);
-          results.push(result);
-          if (i < tasks.length - 1) {
-            console.log(`转账间隔等待 ${intervalMs}ms...`);
-            await new Promise(resolve => setTimeout(resolve, intervalMs));
-          }
+
+        const runTransfer = (leaseGuard?: TransferLeaseGuard) => executeOneToManyTransfer({
+          chain: executionChainConfig,
+          rpcUrl: executionRpcUrl,
+          sourceAddress,
+          targetAddresses,
+          privateKey,
+          amount,
+          asset: transferAsset,
+          transferAllBalance: options?.transferAllBalance,
+          intervalMs: options?.intervalMs,
+          leaseGuard,
+          onProgress: options?.onProgress,
+        });
+
+        if (ENABLE_LOGIN && !walletApi.isLoggedIn()) {
+          throw new Error('登录状态已失效，已停止一对多转账；请重新登录后再执行');
         }
-      } else {
-        // 多对多 / 多对一：不同源钱包，nonce 互不冲突，分批并发，RPC 节点轮询分散压力
-        for (let i = 0; i < tasks.length; i += CONCURRENT_BATCH_SIZE) {
-          // 每批刷新一次 Gas Price，避免长时间任务中 Gas Price 过期
-          gasPrice = await publicClient.getGasPrice();
-          const batch = tasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length));
-          console.log(`并发执行第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
-          const batchResults = await Promise.all(
-            batch.map((task, batchIdx) => executeTask(task, i + batchIdx))
+        if (shouldUseServerMode()) {
+          return withTransferLease(
+            executionChainId,
+            sourceAddress,
+            (leaseGuard) => runTransfer(leaseGuard),
           );
-          results.push(...batchResults);
-          console.log(`已完成 ${Math.min(i + CONCURRENT_BATCH_SIZE, tasks.length)}/${tasks.length} 笔`);
-          // 批次间延迟 500ms，降低 RPC 节点压力
-          if (i + CONCURRENT_BATCH_SIZE < tasks.length) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
         }
+        return runTransfer();
       }
 
-      // ===== 自动重试失败的任务 =====
-      // 排除明确不可重试的错误（余额不足、私钥缺失、链上回滚等），只重试 RPC/网络类失败
-      const NON_RETRYABLE_KEYWORDS = ['未找到私钥', '余额为0', '余额不足', '交易已发送但执行失败'];
-      const MAX_RETRIES = 2;
+      // 多转多/多转一过去仍走旧的“每 5 笔广播后等待整批回执”路径，
+      // Robinhood 还错误地发送 legacy gasPrice 交易，也没有源钱包全局锁。
+      // 现在按源钱包分组：同一源的连续 nonce 交给已验证的一对多流水线，
+      // 不同源钱包有界并发；每个源都在完整预检、签名、广播和确认期间持锁。
+      if (mode === 'manyToMany' || mode === 'manyToOne') {
+        type IndexedTask = { sourceAddr: string; targetAddr: string; index: number };
+        const groupedTasks = new Map<string, IndexedTask[]>();
+        tasks.forEach((taskItem, index) => {
+          const key = taskItem.sourceAddr.toLowerCase();
+          const group = groupedTasks.get(key) ?? [];
+          group.push({ ...taskItem, index });
+          groupedTasks.set(key, group);
+        });
 
-      let failedTasks = results
-        .filter(r => !r.success && !NON_RETRYABLE_KEYWORDS.some(kw => r.error?.includes(kw)))
-        .map(r => ({ sourceAddr: r.source, targetAddr: r.target }));
+        const orderedResults = new Array<BatchTransferResult>(tasks.length);
+        const groups = [...groupedTasks.values()];
+        const intervalMs = Math.max(0, options?.intervalMs ?? 0);
 
-      for (let retry = 1; retry <= MAX_RETRIES && failedTasks.length > 0; retry++) {
-        console.log(`第 ${retry} 次重试，共 ${failedTasks.length} 笔失败任务需要重试`);
-
-        // 重试前等待 2 秒，让 RPC 节点恢复
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // 清除失败地址的 nonce 缓存，重试时从链上重新获取
-        for (const task of failedTasks) {
-          nonceMap.delete(task.sourceAddr.toLowerCase());
-        }
-
-        // 刷新 gas price
-        gasPrice = await publicClient.getGasPrice();
-
-        const retryResults: typeof results = [];
-        for (let i = 0; i < failedTasks.length; i += CONCURRENT_BATCH_SIZE) {
-          const batch = failedTasks.slice(i, Math.min(i + CONCURRENT_BATCH_SIZE, failedTasks.length));
-          console.log(`重试第 ${retry} 轮，第 ${Math.floor(i / CONCURRENT_BATCH_SIZE) + 1} 批, ${batch.length} 笔`);
-          const batchResults = await Promise.all(
-            batch.map((task, batchIdx) => executeTask(task, i + batchIdx))
-          );
-          retryResults.push(...batchResults);
-          if (i + CONCURRENT_BATCH_SIZE < failedTasks.length) {
-            await new Promise(resolve => setTimeout(resolve, 500));
+        const publishProgress = () => {
+          if (!options?.onProgress) return;
+          try {
+            options.onProgress(orderedResults.filter(Boolean).map(result => ({ ...result })));
+          } catch (error) {
+            console.warn('Failed to publish multi-source transfer progress:', error);
           }
-        }
+        };
 
-        // 用重试结果替换原来的失败结果
-        for (const retryResult of retryResults) {
-          const idx = results.findIndex(
-            r => r.source === retryResult.source && r.target === retryResult.target && !r.success
-          );
-          if (idx !== -1) {
-            results[idx] = retryResult;
+        const executeSourceGroup = async (group: IndexedTask[]) => {
+          const sourceAddress = group[0].sourceAddr;
+          const privateKey = batchKeyMap[sourceAddress.toLowerCase()];
+          if (!privateKey) {
+            for (const item of group) {
+              orderedResults[item.index] = {
+                source: item.sourceAddr,
+                target: item.targetAddr,
+                success: false,
+                status: 'not_sent',
+                retryable: false,
+                error: `地址 ${sourceAddress.slice(0, 10)}... 未找到私钥`,
+              };
+            }
+            publishProgress();
+            return;
           }
+
+          if (options?.transferAllBalance && group.length !== 1) {
+            for (const item of group) {
+              orderedResults[item.index] = {
+                source: item.sourceAddr,
+                target: item.targetAddr,
+                success: false,
+                status: 'not_sent',
+                retryable: false,
+                error: '同一源钱包重复出现时不能向多个目标重复转出全部余额',
+              };
+            }
+            publishProgress();
+            return;
+          }
+
+          const onGroupProgress = (groupResults: BatchTransferResult[]) => {
+            groupResults.forEach((result, resultIndex) => {
+              const original = group[resultIndex];
+              if (original) orderedResults[original.index] = result;
+            });
+            publishProgress();
+          };
+          const runTransfer = (leaseGuard?: TransferLeaseGuard) => executeOneToManyTransfer({
+            chain: executionChainConfig,
+            rpcUrl: executionRpcUrl,
+            sourceAddress,
+            targetAddresses: group.map(item => item.targetAddr),
+            privateKey,
+            amount,
+            asset: transferAsset,
+            transferAllBalance: options?.transferAllBalance,
+            intervalMs: 0,
+            leaseGuard,
+            onProgress: onGroupProgress,
+            dependencies: { publicClient },
+          });
+
+          try {
+            if (ENABLE_LOGIN && !walletApi.isLoggedIn()) {
+              throw new Error('登录状态已失效，已停止多源转账；请重新登录后再执行');
+            }
+            const groupResults = shouldUseServerMode()
+              ? await withTransferLease(
+                  executionChainId,
+                  sourceAddress,
+                  leaseGuard => runTransfer(leaseGuard),
+                )
+              : await runTransfer();
+            onGroupProgress(groupResults);
+          } catch (error: any) {
+            for (const item of group) {
+              orderedResults[item.index] = {
+                source: item.sourceAddr,
+                target: item.targetAddr,
+                success: false,
+                status: 'not_sent',
+                retryable: false,
+                error: error?.message || parseBlockchainError(error),
+              };
+            }
+            publishProgress();
+          }
+        };
+
+        if (intervalMs > 0) {
+          for (let index = 0; index < groups.length; index++) {
+            await executeSourceGroup(groups[index]);
+            if (index < groups.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, intervalMs));
+            }
+          }
+        } else {
+          let cursor = 0;
+          const workerCount = Math.min(8, groups.length);
+          const workers = Array.from({ length: workerCount }, async () => {
+            while (cursor < groups.length) {
+              const groupIndex = cursor++;
+              await executeSourceGroup(groups[groupIndex]);
+            }
+          });
+          await Promise.all(workers);
         }
 
-        // 更新还需要重试的任务列表
-        failedTasks = retryResults
-          .filter(r => !r.success && !NON_RETRYABLE_KEYWORDS.some(kw => r.error?.includes(kw)))
-          .map(r => ({ sourceAddr: r.source, targetAddr: r.target }));
-
-        if (failedTasks.length === 0) {
-          console.log(`第 ${retry} 次重试后全部成功`);
-        }
+        return orderedResults;
       }
 
-      console.log('批量转账完成:', results);
-      return results;
+      throw new Error(`不支持的批量转账模式: ${String(mode)}`);
     },
 
     // 测试合约连接

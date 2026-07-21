@@ -1,8 +1,16 @@
 import { defineStore } from 'pinia';
+import {
+  ROBINHOOD_ARROW_RPC_URL,
+  ROBINHOOD_ARROW_WS_URL,
+  ROBINHOOD_CHAIN_ID,
+  ROBINHOOD_EXPLORER_URL,
+  ROBINHOOD_OFFICIAL_RPC_URL,
+} from '../constants';
 
 export type RpcOption = {
   name: string;
   url: string;
+  webSocketUrl?: string;
 };
 
 export type ChainItem = {
@@ -11,7 +19,10 @@ export type ChainItem = {
   rpc: string;
   governanceToken: string;
   rpcOptions: RpcOption[];
+  explorerUrl?: string;
 };
+
+export type SupportedDexProtocol = 'pancake-v2' | 'uniswap-v3' | 'okx-swap';
 
 export const useChainStore = defineStore('chain', {
   state: () => ({
@@ -51,9 +62,24 @@ export const useChainStore = defineStore('chain', {
           { name: '普通节点', url: 'https://exchainrpc.okex.org' }
         ]
       },
+      {
+        id: ROBINHOOD_CHAIN_ID,
+        name: 'Robinhood Chain',
+        rpc: ROBINHOOD_OFFICIAL_RPC_URL,
+        governanceToken: 'ETH',
+        explorerUrl: ROBINHOOD_EXPLORER_URL,
+        rpcOptions: [
+          { name: 'Robinhood 官方节点', url: ROBINHOOD_OFFICIAL_RPC_URL },
+          {
+            name: 'ArrowRPC 免费节点',
+            url: ROBINHOOD_ARROW_RPC_URL,
+            webSocketUrl: ROBINHOOD_ARROW_WS_URL,
+          },
+        ],
+      },
     ] as ChainItem[],
     selectedChainId: 56 as number, // 默认选择 BSC 主网
-    selectedDex: 'pancake-v2' as 'pancake-v2',
+    selectedDex: 'pancake-v2' as SupportedDexProtocol,
     rpcUrl: 'https://bsc-dataseed.binance.org' as string,
     customRpcUrl: '' as string, // 自定义RPC节点
   }),
@@ -61,14 +87,27 @@ export const useChainStore = defineStore('chain', {
     selectedChain: (state) => state.chains.find(c => c.id === state.selectedChainId),
     currentGovernanceToken: (state) => {
       const chain = state.chains.find(c => c.id === state.selectedChainId);
-      return chain?.governanceToken || 'BNB';
+      return chain?.governanceToken || '';
     },
     // 实际使用的RPC URL（优先使用自定义节点）
     effectiveRpcUrl: (state) => {
-      return state.customRpcUrl || state.rpcUrl;
+      const isSupported = state.chains.some(c => c.id === state.selectedChainId);
+      return isSupported ? (state.customRpcUrl || state.rpcUrl) : '';
+    },
+    isSupportedChain: (state) => (chainId: number) => {
+      return state.chains.some(chain => chain.id === chainId);
     },
   },
   actions: {
+    setSelectedChain(chainId: number) {
+      const chain = this.chains.find(item => item.id === chainId);
+      if (!chain) {
+        throw new Error(`Unsupported chain ID: ${chainId}`);
+      }
+      this.selectedChainId = chain.id;
+      this.rpcUrl = chain.rpc;
+      this.customRpcUrl = '';
+    },
     setCustomRpc(url: string) {
       this.customRpcUrl = url;
       console.log('自定义RPC已设置:', url || '(已清除，使用默认节点)');
@@ -79,5 +118,4 @@ export const useChainStore = defineStore('chain', {
     },
   },
 });
-
 

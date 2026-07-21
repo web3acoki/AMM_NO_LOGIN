@@ -128,7 +128,7 @@
               <span v-if="batch.totalNativeBalance" class="badge bg-warning text-dark me-1">
                 {{ formatBalance(batch.totalNativeBalance) }} {{ currentGovernanceToken }}
               </span>
-              <span v-if="batch.totalAsterBalance" class="badge bg-info me-1">
+              <span v-if="isBscChain && batch.totalAsterBalance" class="badge bg-info me-1">
                 {{ formatBalance(batch.totalAsterBalance) }} ASTER
               </span>
               <span v-if="batch.totalTokenBalance && targetToken" class="badge bg-success">
@@ -349,7 +349,8 @@ import { useChainStore } from '../../stores/chainStore';
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
 const { walletBatches, targetToken } = storeToRefs(walletStore);
-const { currentGovernanceToken } = storeToRefs(chainStore);
+const { currentGovernanceToken, selectedChainId } = storeToRefs(chainStore);
+const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
 
 const generateCount = ref<number | undefined>(undefined);
 const generateRemark = ref('');
@@ -465,7 +466,7 @@ async function queryBalances(batch: any) {
       const nativeBalance = formatBalance(result.totalNativeBalance);
       const tokenBalance = result.totalTokenBalance ? formatBalance(result.totalTokenBalance) : null;
       const asterBalance = result.totalAsterBalance ? formatBalance(result.totalAsterBalance) : null;
-      alert(`余额查询完成\n\n${currentGovernanceToken.value} 总计: ${nativeBalance}${asterBalance ? `\nASTER 总计: ${asterBalance}` : ''}${tokenBalance ? `\n${targetToken.value?.symbol || '代币'} 总计: ${tokenBalance}` : ''}\n\n钱包数量: ${batch.wallets.length} 个`);
+      alert(`余额查询完成\n\n${currentGovernanceToken.value} 总计: ${nativeBalance}${isBscChain.value && asterBalance ? `\nASTER 总计: ${asterBalance}` : ''}${tokenBalance ? `\n${targetToken.value?.symbol || '代币'} 总计: ${tokenBalance}` : ''}\n\n钱包数量: ${batch.wallets.length} 个`);
     }
   } catch (error: any) {
     alert(error.message || '查询失败');

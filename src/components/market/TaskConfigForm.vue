@@ -29,12 +29,12 @@
             :class="marketType === 'inner' ? 'btn-primary' : 'btn-outline-primary'"
             @click="marketType = 'inner'"
           >
-            内盘 (FourMeme)
+            {{ isRobinhood ? '发射台 (Pons)' : '内盘 (FourMeme)' }}
           </button>
         </div>
         <div class="form-text small">
           <i class="bi bi-info-circle me-1"></i>
-          {{ marketType === 'outer' ? '外盘通过 PancakeSwap DEX 进行交易' : '内盘通过 FourMeme 主合约直接交易' }}
+          {{ marketDescription }}
         </div>
       </div>
 
@@ -65,9 +65,10 @@
             :class="poolType === 'BNB' ? 'btn-primary' : 'btn-outline-primary'"
             @click="poolType = 'BNB'"
           >
-            BNB底池
+            {{ currentGovernanceToken }}底池
           </button>
           <button
+            v-if="isBscChain"
             type="button"
             class="btn"
             :class="poolType === 'ASTER' ? 'btn-primary' : 'btn-outline-primary'"
@@ -79,8 +80,8 @@
         <div class="form-text small text-muted">
           <i class="bi bi-info-circle me-1"></i>
           {{ marketType === 'inner'
-            ? (poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买')
-            : (poolType === 'BNB' ? 'BNB底池：用 BNB 买卖代币' : 'ASTER底池：用 ASTER 买卖代币')
+            ? (poolType === 'BNB' ? `${currentGovernanceToken}底池：用 ${currentGovernanceToken} 购买代币` : 'ASTER底池：用 ASTER 代币购买')
+            : (poolType === 'BNB' ? `${currentGovernanceToken}底池：用 ${currentGovernanceToken} 买卖代币` : 'ASTER底池：用 ASTER 买卖代币')
           }}
         </div>
       </div>
@@ -237,11 +238,11 @@
         </label>
         <select class="form-select form-select-sm" v-model="antiSandwichRpcType">
           <option value="network">跟随网络设置</option>
-          <option value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
-          <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
-          <option value="binance">https://bsc-dataseed.binance.org</option>
-          <option value="blocksec">https://bsc.rpc.blocksec.com</option>
-          <option value="48club">https://rpc-bsc.48.club</option>
+          <option v-if="!isRobinhood" value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
+          <option v-if="!isRobinhood" value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
+          <option v-if="!isRobinhood" value="binance">https://bsc-dataseed.binance.org</option>
+          <option v-if="!isRobinhood" value="blocksec">https://bsc.rpc.blocksec.com</option>
+          <option v-if="!isRobinhood" value="48club">https://rpc-bsc.48.club</option>
           <option value="custom">自定义节点</option>
         </select>
         <div v-if="antiSandwichRpcType === 'custom'" class="mt-2">
@@ -253,7 +254,10 @@
           >
         </div>
         <div class="form-text small text-muted">
-          <i class="bi bi-info-circle me-1"></i>卖出交易始终使用高速付费节点；此处仅控制买入节点
+          <i class="bi bi-info-circle me-1"></i>{{ isRobinhood
+            ? 'Robinhood 交易使用当前网络节点；排序由 FCFS Sequencer 决定，提高 Gas 不保证插队'
+            : '卖出交易始终使用高速付费节点；此处仅控制买入节点'
+          }}
         </div>
       </div>
 
@@ -332,17 +336,19 @@ import { ref, computed, watch } from 'vue';
 import { useTaskStore } from '../../stores/taskStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { useChainStore } from '../../stores/chainStore';
+import { useDexStore } from '../../stores/dexStore';
 import { useSnipeStore } from '../../stores/snipeStore';
 import { storeToRefs } from 'pinia';
 
 const taskStore = useTaskStore();
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
+const dexStore = useDexStore();
 const snipeStore = useSnipeStore();
 
-const { currentGovernanceToken } = storeToRefs(chainStore);
+const { currentGovernanceToken, selectedChainId, effectiveRpcUrl } = storeToRefs(chainStore);
 const { selectedWalletAddresses, selectedCount, targetToken, walletBatches } = storeToRefs(walletStore);
-const { detectedInnerToken } = storeToRefs(snipeStore);
+const { detectedInnerToken, detectedInnerTokenChainId } = storeToRefs(snipeStore);
 
 // 表单数据
 const taskName = ref('');
@@ -361,6 +367,18 @@ const gasLimit = ref<number | undefined>(undefined);
 const sellAll = ref<boolean>(true); // 卖出全部（默认开启）
 const innerSlippage = ref<number | undefined>(undefined); // 内盘滑点百分比
 const poolType = ref<'BNB' | 'ASTER'>('BNB'); // 底池类型（仅内盘模式）
+const isRobinhood = computed(() => selectedChainId.value === 4663);
+const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
+const marketDescription = computed(() => {
+  if (isRobinhood.value) {
+    return marketType.value === 'inner'
+      ? 'Pons 发射台代币交易（底层统一走 Uniswap V3 1% 池）'
+      : '外盘通过 Robinhood Chain 的 Uniswap V3 进行交易';
+  }
+  return marketType.value === 'outer'
+    ? '外盘通过 PancakeSwap DEX 进行交易'
+    : '内盘通过 FourMeme 主合约直接交易';
+});
 
 // ASTER 代币地址常量
 const ASTER_TOKEN_ADDRESS = '0x000ae314e2a2172a039b26378814c252734f556a';
@@ -411,8 +429,8 @@ watch(targetToken, (token) => {
 }, { immediate: true });
 
 // 监听狙击检测到的内盘代币，自动填入内盘代币地址
-watch(detectedInnerToken, (token) => {
-  if (token) {
+watch([detectedInnerToken, detectedInnerTokenChainId, selectedChainId], ([token, tokenChainId, chainId]) => {
+  if (token && tokenChainId === chainId) {
     innerTokenAddress.value = token;
     // 自动切换到内盘模式
     marketType.value = 'inner';
@@ -422,12 +440,25 @@ watch(detectedInnerToken, (token) => {
 // 监听盘口类型变化，自动切换默认节点
 // 内盘默认使用防夹节点，外盘默认使用付费节点
 watch(marketType, (type) => {
+  if (isRobinhood.value) {
+    antiSandwichRpcType.value = 'network';
+    return;
+  }
   if (type === 'inner') {
     antiSandwichRpcType.value = 'blxrbdn';
   } else {
     antiSandwichRpcType.value = 'premium';
   }
 }, { immediate: true });
+
+watch(selectedChainId, () => {
+  innerTokenAddress.value = '';
+  tokenContract.value = '';
+  poolType.value = 'BNB';
+  antiSandwichRpcType.value = isRobinhood.value
+    ? 'network'
+    : (marketType.value === 'inner' ? 'blxrbdn' : 'premium');
+});
 
 // 自动生成任务名称
 watch(() => taskStore.taskCount, (count) => {
@@ -559,6 +590,11 @@ async function handleCreateTask() {
   if (!canCreate.value) return;
 
   const config = {
+    chainId: selectedChainId.value,
+    dexId: dexStore.currentDexId,
+    rpcUrl: effectiveRpcUrl.value,
+    launchpadId: isRobinhood.value ? 'pons' as const : 'fourmeme' as const,
+    v3FeeTier: isRobinhood.value ? 10000 : undefined,
     tokenContract: marketType.value === 'inner' ? innerTokenAddress.value : tokenContract.value,
     targetPrice: stopType.value === 'price' ? stopValue.value : 0, // 只有停止条件是价格时才使用
     targetMarketCap: stopType.value === 'marketcap' ? stopValue.value : undefined,
@@ -576,8 +612,8 @@ async function handleCreateTask() {
     innerTokenAddress: marketType.value === 'inner' ? innerTokenAddress.value : undefined, // 内盘代币地址
     innerSlippage: (marketType.value === 'inner' && buyThreadCount.value > 0) ? innerSlippage.value : undefined, // 内盘买入滑点
     antiSandwichRpc: antiSandwichRpcUrl.value, // 买入防夹节点（内盘和外盘都使用）
-    poolBaseToken: poolType.value === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined, // ASTER底池代币地址
-    buyUsePremiumRpc: antiSandwichRpcType.value === 'premium', // 买入是否使用高速付费节点
+    poolBaseToken: isBscChain.value && poolType.value === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined, // ASTER底池代币地址
+    buyUsePremiumRpc: !isRobinhood.value && antiSandwichRpcType.value === 'premium', // 买入是否使用高速付费节点
   };
 
   // 使用合并后的钱包地址列表（包含本地钱包和批次钱包）

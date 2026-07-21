@@ -2,6 +2,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5177';
 
 export interface ApiResponse<T = any> {
   status?: string;
+  code?: string;
   message?: string;
   data?: T;
   error?: string;
@@ -27,7 +28,10 @@ export async function apiRequest<T = any>(path: string, options: RequestInit = {
 
   if (!response.ok) {
     const message = payload.message || payload.error || '请求失败';
-    throw new Error(message);
+    const error = new Error(message) as Error & { code?: string; status?: number };
+    error.code = payload.code;
+    error.status = response.status;
+    throw error;
   }
 
   return payload;

@@ -7,6 +7,7 @@ import { apiRequest } from '../api';
 
 export interface ServerConfig {
   premiumRpcUrl: string;
+  premiumRpcUrlsByChain?: Partial<Record<number, string>>;
 }
 
 // 获取服务端配置

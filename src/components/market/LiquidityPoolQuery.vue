@@ -17,7 +17,7 @@
           <span>RPC节点</span>
           <button
             class="btn btn-link btn-sm p-0 text-decoration-none"
-            @click="useCustomRpc = !useCustomRpc"
+            @click="toggleCustomRpcMode"
           >
             {{ useCustomRpc ? '选择预设' : '自定义' }}
           </button>
@@ -158,11 +158,14 @@ import { useChainStore } from '../../stores/chainStore';
 import { useDexStore } from '../../stores/dexStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { PriceCalculator, type TokenPair } from '../../utils/priceCalculator';
-import { createPublicClient, http, keccak256, encodePacked, getAddress } from 'viem';
+import { createPublicClient, http, keccak256, encodePacked, getAddress, formatUnits } from 'viem';
 import { erc20Abi } from '../../viem/abis/erc20';
 import { factoryAbi } from '../../viem/abis/factory';
 import { pairAbi } from '../../viem/abis/pair';
 import { bscTestnet, bsc, okc } from 'viem/chains';
+import { robinhood } from '../../viem/chains/robinhood';
+import { PONS_V3_POOL_FEE } from '../../constants';
+import { UniswapV3Service, formatV3PriceFraction, getV3SpotPriceFraction } from '../../services/uniswapV3Service';
 
 const chainStore = useChainStore();
 const dexStore = useDexStore();
@@ -473,7 +476,8 @@ function getChainConfig() {
   if (selectedChainId.value === 97) return bscTestnet;
   if (selectedChainId.value === 56) return bsc;
   if (selectedChainId.value === 66) return okc;
-  return bsc;
+  if (selectedChainId.value === 4663) return robinhood;
+  throw new Error(`不支持的链 ID: ${selectedChainId.value}`);
 }
 
 function formatAddress(address: string): string {
@@ -529,20 +533,14 @@ async function loadBaseTokenInfos() {
 
 async function onChainChange() {
   stopUpdate();
-  chainStore.selectedChainId = selectedChainId.value;
+  // 通过 store action 切链，确保旧链的自定义 RPC 不会泄漏到新链。
+  chainStore.setSelectedChain(selectedChainId.value);
   // 同步更新 walletStore 的链ID
   walletStore.setCurrentChainId(selectedChainId.value);
-  const chain = chains.value.find(c => c.id === selectedChainId.value);
-  if (chain) {
-    // 设置第一个RPC选项
-    if (chain.rpcOptions && chain.rpcOptions.length > 0) {
-      selectedRpcUrl.value = chain.rpcOptions[0].url;
-      chainStore.rpcUrl = chain.rpcOptions[0].url;
-    } else {
-      selectedRpcUrl.value = chain.rpc;
-      chainStore.rpcUrl = chain.rpc;
-    }
-  }
+  selectedRpcUrl.value = chainStore.rpcUrl;
+  useCustomRpc.value = false;
+  customRpcUrl.value = '';
+  rpcTestResult.value = null;
   dexStore.setDexByChainId(selectedChainId.value);
   selectedDexIdLocal.value = selectedDexId.value;
   tokenAddress.value = '';
@@ -561,18 +559,31 @@ async function onChainChange() {
 }
 
 function onRpcChange() {
+  chainStore.clearCustomRpc();
   chainStore.rpcUrl = selectedRpcUrl.value;
   rpcTestResult.value = null;
   console.log('RPC切换到:', selectedRpcUrl.value);
 }
 
+function toggleCustomRpcMode() {
+  useCustomRpc.value = !useCustomRpc.value;
+  if (!useCustomRpc.value) {
+    chainStore.clearCustomRpc();
+    selectedRpcUrl.value = chainStore.rpcUrl;
+    customRpcUrl.value = '';
+    rpcTestResult.value = null;
+  }
+}
+
 // 自定义RPC变更
 function onCustomRpcChange() {
   if (customRpcUrl.value) {
-    chainStore.rpcUrl = customRpcUrl.value;
-    selectedRpcUrl.value = customRpcUrl.value;
+    chainStore.setCustomRpc(customRpcUrl.value.trim());
+    selectedRpcUrl.value = customRpcUrl.value.trim();
     rpcTestResult.value = null;
     console.log('使用自定义RPC:', customRpcUrl.value);
+  } else {
+    chainStore.clearCustomRpc();
   }
 }
 
@@ -594,8 +605,8 @@ async function testRpcConnection() {
       message: `连接成功，区块高度: ${blockNumber}`
     };
     // 测试成功后应用这个RPC
-    chainStore.rpcUrl = customRpcUrl.value;
-    selectedRpcUrl.value = customRpcUrl.value;
+    chainStore.setCustomRpc(customRpcUrl.value.trim());
+    selectedRpcUrl.value = customRpcUrl.value.trim();
   } catch (error: any) {
     rpcTestResult.value = {
       success: false,
@@ -635,6 +646,62 @@ function onTokenAddressChange() {
   errorMessage.value = '';
 }
 
+async function readRobinhoodV3Price(tokenAddr: string) {
+  const chain = chains.value.find(c => c.id === 4663);
+  if (!chain) throw new Error('Robinhood Chain 配置不存在');
+  const client = createPublicClient({
+    chain: robinhood,
+    transport: http(selectedRpcUrl.value || chain.rpc),
+  });
+  const v3 = new UniswapV3Service(client, { defaultFee: PONS_V3_POOL_FEE });
+  const quoteToken = selectedQuoteToken.value as `0x${string}`;
+  const targetToken = tokenAddr as `0x${string}`;
+  const pool = await v3.getPool(targetToken, quoteToken, PONS_V3_POOL_FEE);
+  if (!pool) throw new Error('未找到 Pons / Uniswap V3 1% 交易池');
+  if (pool.liquidity <= 0n || pool.sqrtPriceX96 <= 0n) {
+    throw new Error('Uniswap V3 池尚未初始化或当前没有可用流动性');
+  }
+
+  const targetMetadata = pool.token0.toLowerCase() === targetToken.toLowerCase()
+    ? pool.token0Metadata
+    : pool.token1Metadata;
+  const priceFraction = getV3SpotPriceFraction(pool, targetToken, quoteToken);
+  const price = Number(formatV3PriceFraction(priceFraction, 30));
+  const supply = Number(formatUnits(targetMetadata.totalSupply, targetMetadata.decimals));
+
+  return {
+    pool,
+    price,
+    marketCap: price * supply,
+    targetMetadata,
+  };
+}
+
+async function updateRobinhoodV3Price(tokenAddr: string) {
+  try {
+    const snapshot = await readRobinhoodV3Price(tokenAddr);
+    tokenName.value = snapshot.targetMetadata.name;
+    tokenSymbol.value = snapshot.targetMetadata.symbol;
+    tokenDecimals.value = snapshot.targetMetadata.decimals;
+    quoteTokenSymbol.value = 'ETH';
+    marketCap.value = snapshot.marketCap;
+    isRoutedPrice.value = false;
+    routePathDisplay.value = [];
+    updatePriceDisplay(snapshot.price);
+    errorMessage.value = '';
+  } catch (error: any) {
+    errorMessage.value = `Uniswap V3 更新失败: ${error.message || '未知错误'}`;
+  }
+}
+
+function startRobinhoodV3RealTimeUpdate(tokenAddr: string) {
+  stopUpdate();
+  isUpdating.value = true;
+  updateInterval.value = window.setInterval(() => {
+    void updateRobinhoodV3Price(tokenAddr);
+  }, 3000);
+}
+
 async function queryPool() {
   if (!canQuery.value) return;
   stopUpdate();
@@ -643,6 +710,14 @@ async function queryPool() {
   try {
     const chain = chains.value.find(c => c.id === selectedChainId.value);
     if (!chain) throw new Error('未找到选中的公链');
+
+    if (selectedChainId.value === 4663) {
+      await updateRobinhoodV3Price(tokenAddress.value);
+      if (errorMessage.value) throw new Error(errorMessage.value);
+      startRobinhoodV3RealTimeUpdate(tokenAddress.value);
+      return;
+    }
+
     const publicClient = createPublicClient({ chain: getChainConfig(), transport: http(selectedRpcUrl.value || chain.rpc) });
     const tokenInfo = await getTokenInfo(tokenAddress.value, publicClient);
     const quoteTokenInfo = await getTokenInfo(selectedQuoteToken.value, publicClient);
@@ -872,6 +947,24 @@ watch([selectedChainId, selectedDexIdLocal, selectedQuoteToken, () => tokenAddre
   stopUpdate();
 });
 
+watch(() => chainStore.selectedChainId, async (newChainId) => {
+  if (newChainId === selectedChainId.value) return;
+  stopUpdate();
+  selectedChainId.value = newChainId;
+  selectedRpcUrl.value = chainStore.rpcUrl;
+  customRpcUrl.value = chainStore.customRpcUrl;
+  useCustomRpc.value = Boolean(chainStore.customRpcUrl);
+  selectedDexIdLocal.value = dexStore.selectedDexId;
+  walletStore.setCurrentChainId(newChainId);
+  tokenAddress.value = '';
+  currentPrice.value = null;
+  marketCap.value = null;
+  errorMessage.value = '';
+  tokenInfoCache.clear();
+  await loadBaseTokenInfos();
+  selectedQuoteToken.value = currentBaseTokens.value?.[0] || '';
+});
+
 onUnmounted(() => {
   stopUpdate();
 });
@@ -879,6 +972,8 @@ onUnmounted(() => {
 onMounted(async () => {
   selectedChainId.value = chainStore.selectedChainId;
   selectedRpcUrl.value = rpcUrl.value;
+  customRpcUrl.value = chainStore.customRpcUrl;
+  useCustomRpc.value = Boolean(chainStore.customRpcUrl);
   selectedDexIdLocal.value = selectedDexId.value;
   // 同步 walletStore 的链ID
   walletStore.setCurrentChainId(chainStore.selectedChainId);
@@ -895,14 +990,18 @@ onMounted(async () => {
   if (currentPrice.value !== null && tokenAddress.value && !isUpdating.value) {
     const chain = chains.value.find(c => c.id === selectedChainId.value);
     if (chain) {
-      const calculator = new PriceCalculator(
-        selectedRpcUrl.value || chain.rpc,
-        currentFactoryAddress.value,
-        currentBaseTokens.value,
-        currentRouterAddress.value,
-        selectedChainId.value
-      );
-      startRealTimeUpdate(calculator, tokenAddress.value);
+      if (selectedChainId.value === 4663) {
+        startRobinhoodV3RealTimeUpdate(tokenAddress.value);
+      } else {
+        const calculator = new PriceCalculator(
+          selectedRpcUrl.value || chain.rpc,
+          currentFactoryAddress.value,
+          currentBaseTokens.value,
+          currentRouterAddress.value,
+          selectedChainId.value
+        );
+        startRealTimeUpdate(calculator, tokenAddress.value);
+      }
     }
   }
 });
@@ -913,14 +1012,18 @@ onActivated(async () => {
   if (currentPrice.value !== null && tokenAddress.value && !isUpdating.value) {
     const chain = chains.value.find(c => c.id === selectedChainId.value);
     if (chain) {
-      const calculator = new PriceCalculator(
-        selectedRpcUrl.value || chain.rpc,
-        currentFactoryAddress.value,
-        currentBaseTokens.value,
-        currentRouterAddress.value,
-        selectedChainId.value
-      );
-      startRealTimeUpdate(calculator, tokenAddress.value);
+      if (selectedChainId.value === 4663) {
+        startRobinhoodV3RealTimeUpdate(tokenAddress.value);
+      } else {
+        const calculator = new PriceCalculator(
+          selectedRpcUrl.value || chain.rpc,
+          currentFactoryAddress.value,
+          currentBaseTokens.value,
+          currentRouterAddress.value,
+          selectedChainId.value
+        );
+        startRealTimeUpdate(calculator, tokenAddress.value);
+      }
     }
   }
 });

@@ -134,7 +134,7 @@
           class="btn btn-sm"
           :class="showSecondTransfer ? 'btn-outline-danger' : 'btn-outline-success'"
           @click="toggleSecondTransfer"
-          :title="showSecondTransfer ? '移除第二组转账' : '添加第二组转账（同时转 BNB + ASTER）'"
+          :title="showSecondTransfer ? '移除第二组转账' : '添加第二组转账'"
         >
           <i class="bi" :class="showSecondTransfer ? 'bi-dash-lg' : 'bi-plus-lg'"></i>
           {{ showSecondTransfer ? '移除' : '添加第二组' }}
@@ -148,12 +148,12 @@
             <label class="form-label">转账金额</label>
             <div class="input-group">
               <input
-                type="number"
+                type="text"
+                inputmode="decimal"
+                pattern="[0-9]+([.][0-9]+)?"
                 class="form-control"
-                v-model.number="transferAmount"
+                v-model="transferAmount"
                 placeholder="0.01"
-                step="0.001"
-                min="0"
                 :disabled="transferAllBalance"
               >
               <span class="input-group-text">{{ transferTokenType === 'aster' ? 'ASTER' : (transferTokenType === 'token' && targetToken ? targetToken.symbol : currentGovernanceToken) }}</span>
@@ -163,7 +163,7 @@
             <label class="form-label">代币类型</label>
             <select class="form-select" v-model="transferTokenType">
               <option value="native">{{ currentGovernanceToken }}</option>
-              <option value="aster">ASTER</option>
+              <option v-if="isBscChain" value="aster">ASTER</option>
               <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
             </select>
           </div>
@@ -192,23 +192,24 @@
               <label class="form-label">转账金额</label>
               <div class="input-group">
                 <input
-                  type="number"
+                  type="text"
+                  inputmode="decimal"
+                  pattern="[0-9]+([.][0-9]+)?"
                   class="form-control"
-                  v-model.number="transferAmount2"
+                  v-model="transferAmount2"
                   placeholder="0.01"
-                  step="0.001"
-                  min="0"
                   :disabled="transferAllBalance2"
                 >
-                <span class="input-group-text">{{ transferTokenType2 === 'aster' ? 'ASTER' : currentGovernanceToken }}</span>
+                <span class="input-group-text">{{ tokenLabel(transferTokenType2) }}</span>
               </div>
             </div>
             <div class="col-12 col-md-3">
               <label class="form-label">代币类型</label>
-              <select class="form-select" v-model="transferTokenType2">
-                <option value="native">{{ currentGovernanceToken }}</option>
-                <option value="aster">ASTER</option>
-              </select>
+            <select class="form-select" v-model="transferTokenType2">
+              <option value="native">{{ currentGovernanceToken }}</option>
+              <option v-if="isBscChain" value="aster">ASTER</option>
+              <option value="token" :disabled="!targetToken">{{ targetToken ? targetToken.symbol : '目标代币' }}</option>
+            </select>
             </div>
             <div v-if="transferMode === 'manyToMany' || transferMode === 'manyToOne'" class="col-12 col-md-3">
               <div class="form-check mt-4">
@@ -228,7 +229,7 @@
         </div>
 
         <!-- 转账间隔设置 -->
-        <div class="row g-3 mt-2 align-items-center">
+        <div v-if="transferMode !== 'oneToMany'" class="row g-3 mt-2 align-items-center">
           <div class="col-auto">
             <div class="form-check">
               <input
@@ -259,6 +260,10 @@
             </div>
           </div>
         </div>
+        <div v-else class="alert alert-info py-2 mt-3 mb-0 small">
+          <i class="bi bi-lightning-charge-fill me-1"></i>
+          一对多使用连续 nonce 快速广播，不逐笔等待回执，也不启用人为转账间隔。
+        </div>
 
         <!-- 执行按钮 -->
         <div class="mt-3">
@@ -285,19 +290,25 @@
         <span class="fw-bold">
           <i class="bi bi-list-check me-2"></i>转账结果
           <span class="badge bg-secondary ms-2">{{ transferResults.length }}</span>
-          <span class="badge bg-success ms-1">{{ transferResults.filter(r => r.success).length }} 成功</span>
-          <span v-if="transferResults.filter(r => !r.success).length > 0" class="badge bg-danger ms-1">
-            {{ transferResults.filter(r => !r.success).length }} 失败
+          <span class="badge bg-success ms-1">{{ confirmedResultCount }} 已确认</span>
+          <span v-if="pendingResultCount > 0" class="badge bg-warning text-dark ms-1">
+            {{ pendingResultCount }} 确认中
+          </span>
+          <span v-if="unknownResultCount > 0" class="badge bg-warning text-dark ms-1">
+            {{ unknownResultCount }} 待核对
+          </span>
+          <span v-if="failedResultCount > 0" class="badge bg-danger ms-1">
+            {{ failedResultCount }} 未完成
           </span>
         </span>
         <div>
           <button
-            v-if="transferResults.filter(r => !r.success).length > 0"
+            v-if="retryableResults.length > 0"
             class="btn btn-outline-danger btn-sm me-2"
             :disabled="isTransferring"
             @click="retryFailedTransfers"
           >
-            <i class="bi bi-arrow-repeat me-1"></i>重试失败 ({{ transferResults.filter(r => !r.success).length }})
+            <i class="bi bi-arrow-repeat me-1"></i>重试未发送 ({{ retryableResults.length }})
           </button>
           <button class="btn btn-outline-secondary btn-sm" @click="transferResults = []">
             <i class="bi bi-x-lg me-1"></i>清除
@@ -310,7 +321,7 @@
             <thead class="table-light sticky-top">
               <tr>
                 <th style="width: 50px;">#</th>
-                <th style="width: 60px;">状态</th>
+                <th style="width: 100px;">状态</th>
                 <th>From</th>
                 <th style="width: 40px;"></th>
                 <th>To</th>
@@ -319,10 +330,11 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(result, idx) in transferResults" :key="idx" :class="result.success ? '' : 'table-danger'">
+              <tr v-for="(result, idx) in transferResults" :key="idx" :class="resultRowClass(result)">
                 <td class="text-muted">{{ idx + 1 }}</td>
                 <td>
-                  <i class="bi" :class="result.success ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'"></i>
+                  <i class="bi me-1" :class="resultStatusIcon(result)"></i>
+                  <small>{{ resultStatusLabel(result) }}</small>
                 </td>
                 <td>
                   <code class="text-primary">{{ formatAddress(result.source || '-') }}</code>
@@ -340,9 +352,14 @@
                   <span v-else class="text-muted">-</span>
                 </td>
                 <td>
-                  <a v-if="result.hash" :href="getExplorerTxUrl(result.hash)" target="_blank" class="text-decoration-none">
-                    <i class="bi bi-box-arrow-up-right me-1"></i>{{ formatAddress(result.hash) }}
-                  </a>
+                  <div v-if="result.hash">
+                    <a :href="getExplorerTxUrl(result.hash)" target="_blank" class="text-decoration-none">
+                      <i class="bi bi-box-arrow-up-right me-1"></i>{{ formatAddress(result.hash) }}
+                    </a>
+                    <small v-if="result.error" class="d-block" :class="resultDetailClass(result)" :title="result.error">
+                      {{ truncateError(result.error) }}
+                    </small>
+                  </div>
                   <span v-else-if="result.error" class="text-danger" :title="result.error">
                     <i class="bi bi-exclamation-triangle me-1"></i>{{ truncateError(result.error) }}
                   </span>
@@ -370,22 +387,80 @@ const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
 const { targetToken, walletBatches } = storeToRefs(walletStore);
-const { currentGovernanceToken } = storeToRefs(chainStore);
+const { currentGovernanceToken, selectedChainId } = storeToRefs(chainStore);
+const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
 
 const isTransferring = ref(false);
 const transferResults = ref<any[]>([]);
+
+type TransferResultStatus = 'confirmed' | 'pending' | 'failed' | 'not_sent' | 'unknown';
+
+function resultStatus(result: any): TransferResultStatus {
+  if (result.status) return result.status;
+  return result.success ? 'confirmed' : 'failed';
+}
+
+const confirmedResultCount = computed(() => (
+  transferResults.value.filter(result => resultStatus(result) === 'confirmed').length
+));
+const pendingResultCount = computed(() => (
+  transferResults.value.filter(result => resultStatus(result) === 'pending').length
+));
+const unknownResultCount = computed(() => (
+  transferResults.value.filter(result => resultStatus(result) === 'unknown').length
+));
+const failedResultCount = computed(() => (
+  transferResults.value.filter(result => ['failed', 'not_sent'].includes(resultStatus(result))).length
+));
+const retryableResults = computed(() => transferResults.value.filter((result) => {
+  if (result.retryable !== undefined) return result.retryable === true && !result.hash;
+  // 兼容旧的多对一/多对多结果；任何已有 hash 的交易都不能重新付款。
+  return !result.success && !result.hash;
+}));
+
+function resultStatusLabel(result: any): string {
+  switch (resultStatus(result)) {
+    case 'confirmed': return '已确认';
+    case 'pending': return '确认中';
+    case 'unknown': return '待核对';
+    case 'not_sent': return '未发送';
+    default: return '失败';
+  }
+}
+
+function resultStatusIcon(result: any): string {
+  switch (resultStatus(result)) {
+    case 'confirmed': return 'bi-check-circle-fill text-success';
+    case 'pending': return 'bi-hourglass-split text-warning';
+    case 'unknown': return 'bi-question-circle-fill text-warning';
+    case 'not_sent': return 'bi-slash-circle text-danger';
+    default: return 'bi-x-circle-fill text-danger';
+  }
+}
+
+function resultRowClass(result: any): string {
+  const status = resultStatus(result);
+  if (status === 'pending' || status === 'unknown') return 'table-warning';
+  if (status === 'failed' || status === 'not_sent') return 'table-danger';
+  return '';
+}
+
+function resultDetailClass(result: any): string {
+  const status = resultStatus(result);
+  return status === 'pending' || status === 'unknown' ? 'text-warning' : 'text-danger';
+}
 
 // 批量转账参数
 const transferMode = ref<'oneToMany' | 'manyToOne' | 'manyToMany'>('oneToMany');
 const sourceAddressesText = ref('');
 const targetAddressesText = ref('');
-const transferAmount = ref<number>(0.01);
+const transferAmount = ref('0.01');
 const transferTokenType = ref<'native' | 'token' | 'aster'>('native');
 const transferAllBalance = ref(false);
 
 // 第二组转账参数
 const showSecondTransfer = ref(false);
-const transferAmount2 = ref<number>(0.01);
+const transferAmount2 = ref('0.01');
 const transferTokenType2 = ref<'native' | 'token' | 'aster'>('aster');
 const transferAllBalance2 = ref(false);
 
@@ -405,6 +480,16 @@ watch(transferMode, (newMode) => {
   } else {
     transferAllBalance.value = false;
     transferAllBalance2.value = false;
+    intervalEnabled.value = false;
+  }
+});
+
+watch(selectedChainId, () => {
+  if (!isBscChain.value) {
+    if (transferTokenType.value === 'aster') transferTokenType.value = 'native';
+    if (transferTokenType2.value === 'aster') {
+      transferTokenType2.value = targetToken.value ? 'token' : 'native';
+    }
   }
 });
 
@@ -432,7 +517,13 @@ function toggleSecondTransfer() {
   showSecondTransfer.value = !showSecondTransfer.value;
   if (showSecondTransfer.value) {
     // 自动选择与第一组不同的代币类型
-    transferTokenType2.value = transferTokenType.value === 'native' ? 'aster' : 'native';
+    if (transferTokenType.value === 'native') {
+      transferTokenType2.value = isBscChain.value
+        ? 'aster'
+        : (targetToken.value ? 'token' : 'native');
+    } else {
+      transferTokenType2.value = 'native';
+    }
     transferAllBalance.value = false;
   }
 }
@@ -442,6 +533,107 @@ function tokenLabel(type: string): string {
   if (type === 'aster') return 'ASTER';
   if (type === 'token' && targetToken.value) return targetToken.value.symbol;
   return currentGovernanceToken.value;
+}
+
+const BATCH_REPLAY_GUARD_KEY = 'amm-batch-transfer-replay-guard-v1';
+const BATCH_REPLAY_GUARD_TTL_MS = 24 * 60 * 60 * 1000;
+const BATCH_REPLAY_GUARD_MAX_ENTRIES = 20;
+
+type ReplayGuardEntry = {
+  fingerprint: string;
+  broadcastCount: number;
+  createdAt: number;
+  hashes?: string[];
+};
+
+function canonicalDecimalText(value: string): string {
+  const [wholePart, fractionPart = ''] = value.trim().split('.');
+  const whole = wholePart.replace(/^0+(?=\d)/, '') || '0';
+  const fraction = fractionPart.replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function buildBatchFingerprint(): string {
+  const normalizedSources = sourceAddresses.value.map(address => address.toLowerCase());
+  const normalizedTargets = targetAddresses.value.map(address => address.toLowerCase());
+  const paymentShape = transferMode.value === 'oneToMany'
+    ? {
+        source: normalizedSources[0],
+        targets: [...normalizedTargets].sort(),
+      }
+    : transferMode.value === 'manyToOne'
+      ? {
+          sources: [...normalizedSources].sort(),
+          target: normalizedTargets[0],
+        }
+      : {
+          pairs: normalizedSources
+            .map((source, index) => `${source}:${normalizedTargets[index]}`)
+            .sort(),
+        };
+
+  const fingerprintRounds = [
+    {
+      tokenType: transferTokenType.value,
+      amount: transferAllBalance.value ? 'ALL' : canonicalDecimalText(transferAmount.value),
+    },
+    ...(showSecondTransfer.value ? [{
+      tokenType: transferTokenType2.value,
+      amount: transferAllBalance2.value ? 'ALL' : canonicalDecimalText(transferAmount2.value),
+    }] : []),
+  ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const usesTargetToken = fingerprintRounds.some(round => round.tokenType === 'token');
+
+  return JSON.stringify({
+    chainId: selectedChainId.value,
+    mode: transferMode.value,
+    paymentShape,
+    targetToken: usesTargetToken ? (targetToken.value?.address?.toLowerCase() || null) : null,
+    rounds: fingerprintRounds,
+  });
+}
+
+function loadReplayGuards(): ReplayGuardEntry[] {
+  try {
+    const raw = localStorage.getItem(BATCH_REPLAY_GUARD_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    // Accept the earlier single-entry shape and migrate it on the next write.
+    const candidates = Array.isArray(parsed?.entries) ? parsed.entries : [parsed];
+    const guards = candidates.filter((guard: any): guard is ReplayGuardEntry => (
+      typeof guard?.fingerprint === 'string' &&
+      typeof guard?.broadcastCount === 'number' &&
+      typeof guard?.createdAt === 'number' &&
+      Date.now() - guard.createdAt <= BATCH_REPLAY_GUARD_TTL_MS
+    ));
+    if (guards.length === 0) {
+      localStorage.removeItem(BATCH_REPLAY_GUARD_KEY);
+      return [];
+    }
+    return guards.slice(0, BATCH_REPLAY_GUARD_MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function rememberBroadcastedBatch(fingerprint: string, results: any[]) {
+  const broadcastResults = results.filter(result => Boolean(result.hash));
+  const broadcastCount = broadcastResults.length;
+  if (broadcastCount === 0) return;
+  try {
+    const priorEntries = loadReplayGuards().filter(entry => entry.fingerprint !== fingerprint);
+    const entry: ReplayGuardEntry = {
+      fingerprint,
+      broadcastCount,
+      createdAt: Date.now(),
+      hashes: [...new Set(broadcastResults.map(result => String(result.hash).toLowerCase()))],
+    };
+    localStorage.setItem(BATCH_REPLAY_GUARD_KEY, JSON.stringify({
+      entries: [entry, ...priorEntries].slice(0, BATCH_REPLAY_GUARD_MAX_ENTRIES),
+    }));
+  } catch {
+    // localStorage 不可用时，链上 nonce/哈希保护仍然生效。
+  }
 }
 
 // 获取批次的私钥映射
@@ -619,17 +811,25 @@ const targetAddressError = computed(() => {
 });
 
 // 是否可以执行转账
+function isPositiveDecimalAmount(value: string): boolean {
+  const trimmed = value.trim();
+  return /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(trimmed) && /[1-9]/.test(trimmed);
+}
+
 const canExecuteTransfer = computed(() => {
   if (sourceAddressCount.value === 0) return false;
   if (targetAddressCount.value === 0) return false;
-  if (!transferAllBalance.value && (!transferAmount.value || transferAmount.value <= 0)) return false;
+  if (!transferAllBalance.value && !isPositiveDecimalAmount(transferAmount.value)) return false;
   if (sourceAddressError.value) return false;
   if (targetAddressError.value) return false;
   if (transferTokenType.value === 'token' && !targetToken.value) return false;
+  if (!isBscChain.value && transferTokenType.value === 'aster') return false;
   // 第二组验证
   if (showSecondTransfer.value) {
-    if (!transferAllBalance2.value && (!transferAmount2.value || transferAmount2.value <= 0)) return false;
+    if (!transferAllBalance2.value && !isPositiveDecimalAmount(transferAmount2.value)) return false;
     if (transferTokenType2.value === transferTokenType.value) return false;
+    if (transferTokenType2.value === 'token' && !targetToken.value) return false;
+    if (!isBscChain.value && transferTokenType2.value === 'aster') return false;
   }
   return true;
 });
@@ -644,6 +844,38 @@ async function executeTransfer() {
     return;
   }
 
+  const batchFingerprint = buildBatchFingerprint();
+  const previousBroadcast = loadReplayGuards().find(entry => entry.fingerprint === batchFingerprint);
+  if (
+    previousBroadcast?.fingerprint === batchFingerprint &&
+    !window.confirm(
+      `检测到完全相同的批次在最近 24 小时内已经广播过 ${previousBroadcast.broadcastCount} 笔。\n\n` +
+      '再次执行会向相同地址重新付款。只有在你明确要重复付款时才点击“确定”。',
+    )
+  ) {
+    return;
+  }
+
+  // Freeze every input that affects signed transactions. The chain/target-token
+  // watcher records even a brief switch while round one is confirming, so round
+  // two can never silently run on a different network or token under the old
+  // replay fingerprint.
+  const executionMode = transferMode.value;
+  const executionSourceAddresses = [...sourceAddresses.value];
+  const executionTargetAddresses = [...targetAddresses.value];
+  const executionChainId = selectedChainId.value;
+  const executionTargetTokenAddress = targetToken.value?.address?.toLowerCase() || null;
+  const executionIntervalMs = executionMode === 'oneToMany'
+    ? 0
+    : (intervalEnabled.value ? intervalSeconds.value * 1000 : 0);
+  let executionContextChanged = false;
+  const stopExecutionContextWatch = watch(
+    [selectedChainId, () => targetToken.value?.address?.toLowerCase() || null],
+    () => {
+      executionContextChanged = true;
+    },
+  );
+
   isTransferring.value = true;
   transferResults.value = [];
 
@@ -654,11 +886,11 @@ async function executeTransfer() {
     };
 
     // 构建转账轮次
-    const rounds: { amount: number; tokenType: 'native' | 'token' | 'aster'; label: string; allBalance: boolean }[] = [
-      { amount: transferAllBalance.value ? 0 : transferAmount.value, tokenType: transferTokenType.value, label: tokenLabel(transferTokenType.value), allBalance: transferAllBalance.value }
+    const rounds: { amount: string; tokenType: 'native' | 'token' | 'aster'; label: string; allBalance: boolean }[] = [
+      { amount: transferAllBalance.value ? '0' : transferAmount.value.trim(), tokenType: transferTokenType.value, label: tokenLabel(transferTokenType.value), allBalance: transferAllBalance.value }
     ];
     if (showSecondTransfer.value) {
-      rounds.push({ amount: transferAllBalance2.value ? 0 : transferAmount2.value, tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value), allBalance: transferAllBalance2.value });
+      rounds.push({ amount: transferAllBalance2.value ? '0' : transferAmount2.value.trim(), tokenType: transferTokenType2.value, label: tokenLabel(transferTokenType2.value), allBalance: transferAllBalance2.value });
       // native 转全部余额放最后，避免 gas 不足导致第二组失败
       if (rounds[0].tokenType === 'native' && rounds[0].allBalance) {
         rounds.reverse();
@@ -668,51 +900,89 @@ async function executeTransfer() {
     let allResults: any[] = [];
 
     for (const round of rounds) {
+      if (executionContextChanged || selectedChainId.value !== executionChainId) {
+        throw new Error('执行期间网络或目标代币发生过切换。已广播结果保留，后续轮次未发送');
+      }
+      if (
+        round.tokenType === 'token' &&
+        (targetToken.value?.address?.toLowerCase() || null) !== executionTargetTokenAddress
+      ) {
+        throw new Error('执行期间目标代币发生变化。已广播结果保留，后续轮次未发送');
+      }
+
+      const decorateRoundResults = (results: any[]) => results.map(result => ({
+        ...result,
+        _tokenLabel: round.label,
+        _tokenType: round.tokenType,
+        _amount: round.amount,
+      }));
+
       const results = await walletStore.batchTransferByAddresses(
-        sourceAddresses.value,
-        targetAddresses.value,
+        executionSourceAddresses,
+        executionTargetAddresses,
         round.amount,
         round.tokenType,
-        transferMode.value,
+        executionMode,
         {
           privateKeyMap: mergedPrivateKeyMap,
           transferAllBalance: round.allBalance,
-          intervalMs: intervalEnabled.value ? intervalSeconds.value * 1000 : 0
+          intervalMs: executionIntervalMs,
+          onProgress: (progressResults) => {
+            const currentResults = [...allResults, ...decorateRoundResults(progressResults)];
+            transferResults.value = currentResults;
+            rememberBroadcastedBatch(batchFingerprint, currentResults);
+          },
         }
       );
-      // 标记每笔结果的代币类型和金额
-      for (const r of results) {
-        r._tokenLabel = round.label;
-        r._tokenType = round.tokenType;
-        r._amount = round.amount;
+      // 标记每笔结果的代币类型和金额。
+      allResults.push(...decorateRoundResults(results));
+      rememberBroadcastedBatch(batchFingerprint, allResults);
+      // 每组完成后立即保留结果。若第二组预检被 pending nonce 阻止，第一组的
+      // 已广播 hash 仍会显示，避免交易员误以为未发送而重复付款。
+      transferResults.value = [...allResults];
+
+      if (
+        executionMode === 'oneToMany' &&
+        results.some(result => resultStatus(result) !== 'confirmed')
+      ) {
+        break;
       }
-      allResults.push(...results);
     }
 
     transferResults.value = allResults;
 
-    const successCount = allResults.filter(r => r.success).length;
-    const failCount = allResults.filter(r => !r.success).length;
+    const confirmedCount = allResults.filter(r => resultStatus(r) === 'confirmed').length;
+    const pendingCount = allResults.filter(r => resultStatus(r) === 'pending').length;
+    const unknownCount = allResults.filter(r => resultStatus(r) === 'unknown').length;
+    const failCount = allResults.filter(r => ['failed', 'not_sent'].includes(resultStatus(r))).length;
 
-    if (failCount === 0) {
-      alert(`转账完成！成功 ${successCount} 笔`);
-    } else if (successCount === 0) {
+    if (confirmedCount === allResults.length) {
+      alert(`转账完成！已确认 ${confirmedCount} 笔`);
+    } else if (pendingCount + unknownCount > 0) {
+      alert(
+        `批量广播已结束\n\n已确认: ${confirmedCount} 笔\n确认中: ${pendingCount} 笔\n待节点核对: ${unknownCount} 笔\n未完成: ${failCount} 笔` +
+        '\n\n确认中或待核对的交易均已保留哈希，请勿重复转账。',
+      );
+    } else if (confirmedCount === 0) {
       const firstError = allResults.find(r => r.error)?.error || '未知错误';
-      alert(`转账全部失败！共 ${failCount} 笔\n\n失败原因: ${firstError}`);
+      alert(`转账未完成！共 ${failCount} 笔\n\n原因: ${firstError}`);
     } else {
       const firstError = allResults.find(r => r.error)?.error || '未知错误';
-      alert(`转账部分完成\n\n成功: ${successCount} 笔\n失败: ${failCount} 笔\n\n失败原因: ${firstError}\n\n可点击"重试失败"按钮重新执行失败的转账`);
+      alert(`转账部分完成\n\n已确认: ${confirmedCount} 笔\n未完成: ${failCount} 笔\n\n原因: ${firstError}`);
     }
   } catch (error: any) {
     alert(error.message || '转账失败');
   } finally {
+    stopExecutionContextWatch();
     isTransferring.value = false;
   }
 }
 
 // 重试失败的转账
 async function retryFailedTransfers() {
-  const failedResults = transferResults.value.filter(r => !r.success);
+  // 只允许旧流程中“明确没有 hash 且标记可重试”的任务进入这里。
+  // 新的一对多流水线全部禁止盲目重试，pending/unknown 永远不会进入。
+  const failedResults = [...retryableResults.value];
   if (failedResults.length === 0) return;
 
   isTransferring.value = true;
@@ -755,7 +1025,7 @@ async function retryFailedTransfers() {
         retryMode,
         {
           privateKeyMap: mergedPrivateKeyMap,
-          transferAllBalance: amount === 0,
+          transferAllBalance: String(amount) === '0',
           intervalMs: intervalEnabled.value ? intervalSeconds.value * 1000 : 0
         }
       );
@@ -768,9 +1038,10 @@ async function retryFailedTransfers() {
       allRetryResults.push(...retryResults);
     }
 
-    // 合并结果：保留成功的，替换失败的
-    const successResults = transferResults.value.filter(r => r.success);
-    transferResults.value = [...successResults, ...allRetryResults];
+    // 合并结果：只替换本次确实选择重试的行，保留 pending/hash 等安全状态。
+    const retrySet = new Set(failedResults);
+    const retainedResults = transferResults.value.filter(result => !retrySet.has(result));
+    transferResults.value = [...retainedResults, ...allRetryResults];
 
     const retrySuccess = allRetryResults.filter(r => r.success).length;
     const retryFail = allRetryResults.filter(r => !r.success).length;
@@ -829,9 +1100,11 @@ function getExplorerTxUrl(hash: string): string {
   const explorers: Record<number, string> = {
     56: 'https://bscscan.com/tx/',
     97: 'https://testnet.bscscan.com/tx/',
-    66: 'https://www.oklink.com/okc/tx/'
+    66: 'https://www.oklink.com/okc/tx/',
+    4663: 'https://robinhoodchain.blockscout.com/tx/'
   };
-  return (explorers[chainId] || 'https://bscscan.com/tx/') + hash;
+  const explorer = explorers[chainId];
+  return explorer ? explorer + hash : '#';
 }
 
 // 截断错误信息

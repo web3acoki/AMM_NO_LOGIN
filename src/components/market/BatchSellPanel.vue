@@ -90,49 +90,35 @@
         <label class="form-label">底池类型</label>
         <div class="btn-group w-100" role="group">
           <input type="radio" class="btn-check" name="batchSellPoolType" id="batchSellPoolBNB" value="BNB" v-model="poolType">
-          <label class="btn btn-outline-primary" for="batchSellPoolBNB">BNB底池</label>
-          <input type="radio" class="btn-check" name="batchSellPoolType" id="batchSellPoolASTER" value="ASTER" v-model="poolType">
-          <label class="btn btn-outline-primary" for="batchSellPoolASTER">ASTER底池</label>
+          <label class="btn btn-outline-primary" for="batchSellPoolBNB">{{ currentGovernanceToken }}底池</label>
+          <template v-if="isBscChain">
+            <input type="radio" class="btn-check" name="batchSellPoolType" id="batchSellPoolASTER" value="ASTER" v-model="poolType">
+            <label class="btn btn-outline-primary" for="batchSellPoolASTER">ASTER底池</label>
+          </template>
         </div>
-        <div class="form-text">{{ poolType === 'BNB' ? '直接路径 Token→WBNB' : 'ASTER底池：多跳路由 Token→ASTER→WBNB' }}</div>
+        <div class="form-text">{{ poolType === 'BNB' ? `直接路径 Token→W${currentGovernanceToken}` : 'ASTER底池：多跳路由 Token→ASTER→WBNB' }}</div>
       </div>
 
-      <!-- 并发控制 -->
+      <!-- 安全执行控制 -->
       <div class="mb-3">
-        <label class="form-label">并发控制</label>
-        <div class="row g-2">
-          <div class="col">
-            <div class="input-group input-group-sm">
-              <span class="input-group-text">线程数</span>
-              <input
-                type="number"
-                class="form-control"
-                v-model.number="concurrency"
-                min="1"
-                max="50"
-                placeholder="5"
-              >
-            </div>
-          </div>
-          <div class="col">
-            <div class="input-group input-group-sm">
-              <span class="input-group-text">间隔</span>
-              <input
-                type="number"
-                class="form-control"
-                v-model.number="batchInterval"
-                min="0"
-                max="10000"
-                step="100"
-                placeholder="500"
-              >
-              <span class="input-group-text">ms</span>
-            </div>
-          </div>
+        <label class="form-label">钱包间隔</label>
+        <div class="input-group input-group-sm">
+          <input
+            type="number"
+            class="form-control"
+            v-model.number="walletInterval"
+            min="0"
+            max="10000"
+            step="100"
+            placeholder="0"
+          >
+          <span class="input-group-text">ms</span>
         </div>
         <div class="form-text">
-          每批 {{ concurrency }} 个钱包并发执行，批次间隔 {{ batchInterval }}ms
-          <br>
+          卖出按钱包逐笔动态报价；上一笔确认后立即处理下一笔。默认不额外等待。
+        </div>
+        <div class="alert alert-light border small mt-2 mb-0 py-2">
+          点击后会立即显示安全预检进度；系统不会再等待全部钱包授权完成后才发送第一笔，也不会并发使用同一份旧池价。
         </div>
       </div>
 
@@ -178,9 +164,12 @@
           <h6 class="small mb-0">
             <i class="bi bi-list-check me-1"></i>卖出结果
             <span class="badge bg-secondary ms-1">{{ sellResults.length }}</span>
-            <span class="badge bg-success ms-1">{{ sellResults.filter(r => r.success).length }} 成功</span>
-            <span v-if="sellResults.filter(r => !r.success).length > 0" class="badge bg-danger ms-1">
-              {{ sellResults.filter(r => !r.success).length }} 失败
+            <span class="badge bg-success ms-1">{{ sellResults.filter(r => r.status === 'confirmed').length }} 已确认</span>
+            <span v-if="sellResults.filter(r => ['preflight', 'processing', 'broadcast', 'pending', 'unknown'].includes(r.status)).length > 0" class="badge bg-warning text-dark ms-1">
+              {{ sellResults.filter(r => ['preflight', 'processing', 'broadcast', 'pending', 'unknown'].includes(r.status)).length }} 处理中
+            </span>
+            <span v-if="sellResults.filter(r => ['failed', 'not_sent'].includes(r.status)).length > 0" class="badge bg-danger ms-1">
+              {{ sellResults.filter(r => ['failed', 'not_sent'].includes(r.status)).length }} 未完成
             </span>
           </h6>
           <button class="btn btn-outline-secondary btn-sm" @click="sellResults = []">
@@ -199,10 +188,10 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(result, idx) in sellResults" :key="idx" :class="result.success ? '' : 'table-danger'">
+              <tr v-for="(result, idx) in sellResults" :key="result.wallet" :class="rowClass(result.status)">
                 <td class="small text-muted">{{ idx + 1 }}</td>
                 <td>
-                  <i class="bi" :class="result.success ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'"></i>
+                  <i class="bi" :class="statusIcon(result.status)" :title="statusLabel(result.status)"></i>
                 </td>
                 <td class="small">
                   <code class="text-primary">{{ formatAddress(result.wallet) }}</code>
@@ -214,8 +203,12 @@
                   <a v-if="result.hash" :href="getExplorerTxUrl(result.hash)" target="_blank" class="text-decoration-none">
                     <i class="bi bi-box-arrow-up-right me-1"></i>{{ formatAddress(result.hash) }}
                   </a>
-                  <span v-else-if="result.error" class="text-danger" :title="result.error">
-                    <i class="bi bi-exclamation-triangle me-1"></i>{{ truncateError(result.error) }}
+                  <span
+                    v-else-if="result.error"
+                    :class="['failed', 'not_sent'].includes(result.status) ? 'text-danger' : 'text-muted'"
+                    :title="result.error"
+                  >
+                    <i class="bi me-1" :class="['failed', 'not_sent'].includes(result.status) ? 'bi-exclamation-triangle' : 'bi-hourglass-split'"></i>{{ truncateError(result.error) }}
                   </span>
                   <span v-else class="text-muted">-</span>
                 </td>
@@ -229,11 +222,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useWalletStore } from '../../stores/walletStore';
 import { useDexStore } from '../../stores/dexStore';
 import { useChainStore } from '../../stores/chainStore';
+import {
+  executeManualBatchSell,
+  type ManualBatchSellStatus,
+} from '../../services/manualBatchSellService';
+import { ASTER_TOKEN_ADDRESS } from '../../constants';
 
 const emit = defineEmits(['close']);
 
@@ -242,6 +240,8 @@ const dexStore = useDexStore();
 const chainStore = useChainStore();
 
 const { selectedCount, selectedWalletAddresses } = storeToRefs(walletStore);
+const { selectedChainId, currentGovernanceToken } = storeToRefs(chainStore);
+const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
 
 // 状态
 const tokenAddress = ref('');
@@ -252,26 +252,19 @@ const maxPercent = ref(100);
 const isSelling = ref(false);
 const isRefreshing = ref(false);
 const sellResults = ref<any[]>([]);
-// 并发控制参数
-const concurrency = ref(10);
-const batchInterval = ref(500);
+const walletInterval = ref(0);
 const poolType = ref<'BNB' | 'ASTER'>('BNB');
 
-// 预估完成时间
-const estimatedTime = computed(() => {
-  if (selectedCount.value === 0) return '0秒';
-  const batches = Math.ceil(selectedCount.value / concurrency.value);
-  const totalMs = (batches - 1) * batchInterval.value; // 最后一批不需要等待
-  const totalSeconds = Math.ceil(totalMs / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}秒`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}分${seconds}秒`;
+watch(selectedChainId, () => {
+  // 组件由 keep-alive 保留，切链时必须清掉旧链地址和结果。
+  tokenAddress.value = '';
+  sellResults.value = [];
+  poolType.value = 'BNB';
 });
 
 // 是否可以执行
 const canExecute = computed(() => {
-  if (!tokenAddress.value || !tokenAddress.value.startsWith('0x')) return false;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress.value)) return false;
   if (selectedCount.value === 0) return false;
 
   if (sellMode.value === 'fixed') {
@@ -286,7 +279,7 @@ const canExecute = computed(() => {
 
 // 刷新代币余额
 async function refreshTokenBalances() {
-  if (!tokenAddress.value || !tokenAddress.value.startsWith('0x')) return;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress.value)) return;
 
   isRefreshing.value = true;
   try {
@@ -304,7 +297,36 @@ function getWalletPrivateKey(walletAddress: string): string | null {
   return wallet?.encrypted || null;
 }
 
-// 执行批量卖出（两阶段执行：先授权，再同时发送卖出）
+function statusLabel(status: ManualBatchSellStatus): string {
+  const labels: Record<ManualBatchSellStatus, string> = {
+    preflight: '安全预检中',
+    processing: '正在准备当前钱包',
+    broadcast: '交易已广播',
+    confirmed: '链上已确认',
+    pending: '等待链上确认',
+    unknown: '等待节点核对',
+    failed: '执行失败',
+    not_sent: '未发送',
+  };
+  return labels[status] || status;
+}
+
+function statusIcon(status: ManualBatchSellStatus): string {
+  if (status === 'confirmed') return 'bi-check-circle-fill text-success';
+  if (status === 'failed' || status === 'not_sent') return 'bi-x-circle-fill text-danger';
+  if (status === 'pending' || status === 'unknown') return 'bi-clock-history text-warning';
+  if (status === 'broadcast') return 'bi-broadcast text-primary';
+  return 'bi-arrow-repeat text-info';
+}
+
+function rowClass(status: ManualBatchSellStatus): string {
+  if (status === 'failed' || status === 'not_sent') return 'table-danger';
+  if (status === 'pending' || status === 'unknown') return 'table-warning';
+  return '';
+}
+
+// 安全批量卖出：整批 pending nonce 预检后，逐钱包读取最新池价并等待
+// 最终回执。进度会在点击后立即呈现，第一笔不再等待所有钱包预授权。
 async function executeBatchSell() {
   if (!canExecute.value) return;
 
@@ -318,234 +340,45 @@ async function executeBatchSell() {
   sellResults.value = [];
 
   try {
-    const walletAddresses = selectedWalletAddresses.value;
-    const sellTokenAddress = tokenAddress.value;
     const chainId = chainStore.selectedChainId;
-    const rpcUrl = chainStore.effectiveRpcUrl;
+    const isRobinhood = chainId === 4663;
+    const useAsterPool = !isRobinhood && poolType.value === 'ASTER';
+    const walletAddresses = [...selectedWalletAddresses.value];
+    const wallets = walletAddresses.map(walletAddress => ({
+      address: walletAddress,
+      privateKey: getWalletPrivateKey(walletAddress) || '',
+      percent: sellMode.value === 'fixed'
+        ? fixedPercent.value
+        : Math.random() * (maxPercent.value - minPercent.value) + minPercent.value,
+    }));
 
-    console.log(`批量卖出：共 ${walletAddresses.length} 个钱包，采用两阶段执行`);
-
-    // ========== 第一阶段：分批检查余额和授权 ==========
-    console.log(`[阶段1] 检查余额和处理授权...`);
-
-    interface PreparedWallet {
-      walletAddr: string;
-      privateKey: string;
-      percent: number;
-      sellAmount: bigint;
-    }
-
-    const allPrepareResults: any[] = [];
-    const prepareBatchSize = concurrency.value;
-    const prepareBatchCount = Math.ceil(walletAddresses.length / prepareBatchSize);
-
-    for (let batchIdx = 0; batchIdx < prepareBatchCount; batchIdx++) {
-      const batchStart = batchIdx * prepareBatchSize;
-      const batchEnd = Math.min(batchStart + prepareBatchSize, walletAddresses.length);
-      const currentBatch = walletAddresses.slice(batchStart, batchEnd);
-
-      const preparePromises = currentBatch.map(async (walletAddr) => {
-      // 计算卖出百分比
-      let percent: number;
-      if (sellMode.value === 'fixed') {
-        percent = fixedPercent.value;
-      } else {
-        percent = Math.random() * (maxPercent.value - minPercent.value) + minPercent.value;
-      }
-
-      // 获取私钥
-      const privateKey = getWalletPrivateKey(walletAddr);
-      if (!privateKey) {
-        return { walletAddr, percent, success: false, error: '钱包没有私钥' };
-      }
-
-      try {
-        // 创建临时客户端检查余额和授权
-        const { createPublicClient, createWalletClient, http } = await import('viem');
-        const { privateKeyToAccount } = await import('viem/accounts');
-        const { bsc, bscTestnet } = await import('viem/chains');
-        const { erc20Abi } = await import('../../viem/abis/erc20');
-
-        const chain = chainId === 97 ? bscTestnet : bsc;
-        const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
-        const account = privateKeyToAccount(privateKey as `0x${string}`);
-        const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
-
-        // 获取代币余额
-        const tokenBalance = await publicClient.readContract({
-          address: sellTokenAddress as `0x${string}`,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [walletAddr as `0x${string}`]
-        }) as bigint;
-
-        if (tokenBalance <= 0n) {
-          return { walletAddr, percent, success: false, error: '代币余额为零' };
-        }
-
-        // 计算卖出数量
-        const sellAmount = (tokenBalance * BigInt(Math.floor(percent))) / 100n;
-        if (sellAmount <= 0n) {
-          return { walletAddr, percent, success: false, error: '卖出数量为零' };
-        }
-
-        // 检查授权
-        const allowance = await publicClient.readContract({
-          address: sellTokenAddress as `0x${string}`,
-          abi: erc20Abi,
-          functionName: 'allowance',
-          args: [walletAddr as `0x${string}`, routerAddress as `0x${string}`]
-        }) as bigint;
-
-        // 如果授权不足，进行授权并等待确认
-        if (allowance < sellAmount) {
-          console.log(`${walletAddr.slice(0, 10)}... 需要授权`);
-          const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
-          const approveTxHash = await walletClient.writeContract({
-            address: sellTokenAddress as `0x${string}`,
-            abi: erc20Abi,
-            functionName: 'approve',
-            args: [routerAddress as `0x${string}`, maxApproval]
-          });
-          // 等待授权确认
-          await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
-          console.log(`${walletAddr.slice(0, 10)}... 授权完成`);
-        }
-
-        return { walletAddr, privateKey, percent, sellAmount, success: true };
-      } catch (error: any) {
-        return { walletAddr, percent, success: false, error: error.message || '准备失败' };
-      }
+    sellResults.value = await executeManualBatchSell({
+      chainId,
+      rpcUrl: chainStore.effectiveRpcUrl,
+      routerAddress,
+      tokenAddress: tokenAddress.value,
+      spendToken: isRobinhood ? 'ETH' : (chainId === 97 ? 'tBNB' : 'BNB'),
+      intermediateToken: useAsterPool ? ASTER_TOKEN_ADDRESS : undefined,
+      v3FeeTier: isRobinhood ? 10000 : undefined,
+      slippage: 30,
+      wallets,
+      intervalMs: walletInterval.value,
+      onProgress(results) {
+        sellResults.value = results;
+      },
     });
 
-      const batchPrepareResults = await Promise.all(preparePromises);
-      allPrepareResults.push(...batchPrepareResults);
-
-      // 非最后一批时等待间隔
-      if (batchIdx < prepareBatchCount - 1 && batchInterval.value > 0) {
-        await new Promise(resolve => setTimeout(resolve, Math.min(batchInterval.value, 300)));
-      }
-    }
-
-    const readyWallets: PreparedWallet[] = allPrepareResults
-      .filter((r): r is PreparedWallet & { success: true } => r.success === true && 'privateKey' in r)
-      .map(r => ({ walletAddr: r.walletAddr, privateKey: r.privateKey, percent: r.percent, sellAmount: r.sellAmount }));
-
-    // 添加失败的钱包到结果
-    allPrepareResults.filter(r => !r.success).forEach(r => {
-      sellResults.value.push({
-        wallet: r.walletAddr,
-        percent: r.percent,
-        success: false,
-        error: r.error
-      });
-    });
-
-    if (readyWallets.length === 0) {
-      alert('没有钱包准备成功，取消批量卖出');
-      return;
-    }
-
-    console.log(`[阶段2] ${readyWallets.length} 个钱包准备就绪，同时发送卖出交易...`);
-
-    // ========== 第二阶段：分批发送卖出交易 ==========
-    const { createPublicClient, createWalletClient, http, parseUnits, formatUnits } = await import('viem');
-    const { privateKeyToAccount } = await import('viem/accounts');
-    const { bsc, bscTestnet } = await import('viem/chains');
-    const { pancakeV2RouterAbi } = await import('../../viem/abis/pancakeV2');
-    const { WBNB_ADDRESSES, ASTER_TOKEN_ADDRESS } = await import('../../constants');
-
-    const chain = chainId === 97 ? bscTestnet : bsc;
-    const wbnbAddress = WBNB_ADDRESSES[chainId] || WBNB_ADDRESSES[56];
-    const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + 1200);
-
-    // 分批执行卖出，每批 concurrency 个钱包
-    const batchCount = Math.ceil(readyWallets.length / concurrency.value);
-    console.log(`[阶段2] ${readyWallets.length} 个钱包准备就绪，分 ${batchCount} 批执行，每批 ${concurrency.value} 个，间隔 ${batchInterval.value}ms`);
-
-    for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
-      const batchStart = batchIdx * concurrency.value;
-      const batchEnd = Math.min(batchStart + concurrency.value, readyWallets.length);
-      const currentBatch = readyWallets.slice(batchStart, batchEnd);
-
-      console.log(`[阶段2] 执行第 ${batchIdx + 1}/${batchCount} 批，${currentBatch.length} 个钱包`);
-
-      const sellPromises = currentBatch.map(async ({ walletAddr, privateKey, percent, sellAmount }) => {
-      try {
-        const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
-        const account = privateKeyToAccount(privateKey as `0x${string}`);
-        const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
-
-        const path: `0x${string}`[] = poolType.value === 'ASTER'
-          ? [sellTokenAddress as `0x${string}`, ASTER_TOKEN_ADDRESS, wbnbAddress]
-          : [sellTokenAddress as `0x${string}`, wbnbAddress];
-
-        // 获取预期输出（用于计算滑点）
-        const amountsOut = await publicClient.readContract({
-          address: routerAddress as `0x${string}`,
-          abi: pancakeV2RouterAbi,
-          functionName: 'getAmountsOut',
-          args: [sellAmount, path]
-        }) as bigint[];
-
-        const expectedOut = amountsOut[amountsOut.length - 1];
-        const minAmountOut = (expectedOut * 70n) / 100n; // 30% 滑点保护
-
-        // 获取 nonce
-        const nonce = await publicClient.getTransactionCount({
-          address: walletAddr as `0x${string}`,
-          blockTag: 'pending'
-        });
-
-        // 发送卖出交易
-        const txHash = await walletClient.writeContract({
-          address: routerAddress as `0x${string}`,
-          abi: pancakeV2RouterAbi,
-          functionName: 'swapExactTokensForETHSupportingFeeOnTransferTokens',
-          args: [sellAmount, minAmountOut, path, walletAddr as `0x${string}`, deadlineTimestamp],
-          nonce
-        });
-
-        console.log(`${walletAddr.slice(0, 10)}... 卖出交易已发送: ${txHash}`);
-
-        return {
-          wallet: walletAddr,
-          percent,
-          success: true,
-          hash: txHash,
-          amountIn: formatUnits(sellAmount, 18),
-          error: null
-        };
-      } catch (error: any) {
-        console.error(`${walletAddr.slice(0, 10)}... 卖出失败:`, error);
-        return {
-          wallet: walletAddr,
-          percent,
-          success: false,
-          error: error.message || '卖出失败'
-        };
-      }
-    });
-
-      const batchResults = await Promise.all(sellPromises);
-      sellResults.value.push(...batchResults);
-
-      // 非最后一批时等待间隔
-      if (batchIdx < batchCount - 1 && batchInterval.value > 0) {
-        await new Promise(resolve => setTimeout(resolve, batchInterval.value));
-      }
-    }
-
-    // 统计结果
-    const successCount = sellResults.value.filter(r => r.success).length;
-    const failCount = sellResults.value.filter(r => !r.success).length;
-
-    if (failCount === 0) {
-      alert(`卖出完成！成功发送 ${successCount} 笔交易`);
+    const confirmed = sellResults.value.filter(result => result.status === 'confirmed').length;
+    const pending = sellResults.value.filter(result => result.status === 'pending' || result.status === 'unknown').length;
+    const notCompleted = sellResults.value.filter(result => result.status === 'failed' || result.status === 'not_sent').length;
+    if (confirmed === sellResults.value.length) {
+      alert(`批量卖出完成！已确认 ${confirmed} 笔`);
+    } else if (pending > 0) {
+      alert(`批量卖出已停止\n\n已确认: ${confirmed} 笔\n待确认/待核对: ${pending} 笔\n未完成: ${notCompleted} 笔\n\n已有哈希的交易不会自动重发。`);
     } else {
-      alert(`卖出完成！成功 ${successCount} 笔，失败 ${failCount} 笔`);
+      const firstError = sellResults.value.find(result => result.error)?.error || '未知错误';
+      alert(`批量卖出结束\n\n已确认: ${confirmed} 笔\n未完成: ${notCompleted} 笔\n\n原因: ${firstError}`);
     }
-
   } catch (error: any) {
     console.error('批量卖出失败:', error);
     alert(`批量卖出失败: ${error.message || '未知错误'}`);
@@ -566,9 +399,11 @@ function getExplorerTxUrl(hash: string): string {
   const explorers: Record<number, string> = {
     56: 'https://bscscan.com/tx/',
     97: 'https://testnet.bscscan.com/tx/',
-    66: 'https://www.oklink.com/okc/tx/'
+    66: 'https://www.oklink.com/okc/tx/',
+    4663: 'https://robinhoodchain.blockscout.com/tx/'
   };
-  return (explorers[chainId] || 'https://bscscan.com/tx/') + hash;
+  const explorer = explorers[chainId];
+  return explorer ? explorer + hash : '#';
 }
 
 // 截断错误信息

@@ -11,7 +11,7 @@
         <span v-if="selectedCount > 0" class="badge bg-warning text-dark">
           {{ selectedBalanceStats.totalNative }} {{ currentGovernanceToken }}
         </span>
-        <span v-if="selectedCount > 0" class="badge bg-info">
+        <span v-if="selectedCount > 0 && isBscChain" class="badge bg-info">
           {{ selectedBalanceStats.totalAster }} ASTER
         </span>
         <span v-if="selectedCount > 0 && targetToken" class="badge bg-success">
@@ -140,7 +140,7 @@
             <th>地址</th>
             <th>私钥</th>
             <th>{{ currentGovernanceToken }} 余额</th>
-            <th>ASTER 余额</th>
+            <th v-if="isBscChain">ASTER 余额</th>
             <th>{{ targetToken ? targetToken.symbol : '目标代币' }} 余额</th>
           </tr>
         </thead>
@@ -150,7 +150,7 @@
             :key="w.address"
             :class="{ 'table-primary': isSelected(w.address) }"
           >
-            <td>
+            <td v-if="isBscChain">
               <input
                 type="checkbox"
                 class="form-check-input"
@@ -213,7 +213,8 @@ import { useChainStore } from '../../stores/chainStore';
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
 const { localWallets: wallets, selectedWalletAddresses, selectedCount, isAllSelected, targetToken, walletBatches } = storeToRefs(walletStore);
-const { currentGovernanceToken } = storeToRefs(chainStore);
+const { currentGovernanceToken, selectedChainId } = storeToRefs(chainStore);
+const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
 
 const isRefreshing = ref(false);
 const rangeInput = ref('');

@@ -4,9 +4,9 @@
     <div class="panel-header">
       <h5 class="mb-0">
         <i class="bi bi-arrow-repeat me-2"></i>
-        迁移自动卖出
+        {{ isRobinhood ? 'Pons 毕业自动卖出' : '迁移自动卖出' }}
       </h5>
-      <span class="badge bg-warning">FourMeme 内盘</span>
+      <span class="badge bg-warning">{{ isRobinhood ? 'Pons / Uniswap V3' : 'FourMeme 内盘' }}</span>
     </div>
 
     <div class="panel-body">
@@ -76,6 +76,7 @@
                 v-model.number="migrationStore.config.slippage"
                 min="0" max="100"
               />
+              <small v-if="isRobinhood" class="text-muted">Pons 多钱包并发建议 30%；0 会在启动时自动改为 30%</small>
             </div>
             <div class="col-6">
               <label class="form-label small">轮询间隔 (ms)</label>
@@ -95,7 +96,7 @@
               v-model="migrationStore.config.autoSellEnabled"
             />
             <label class="form-check-label" for="autoSellEnabled">
-              检测到迁移时自动卖出
+              {{ isRobinhood ? '首次达到 Pons 毕业阈值时自动卖出' : '检测到迁移时自动卖出' }}
             </label>
           </div>
         </div>
@@ -280,7 +281,7 @@
         <div class="card-header">
           <h6 class="mb-0">
             <i class="bi bi-bell me-1"></i>
-            迁移事件 ({{ migrationStore.migrationEvents.length }})
+            {{ isRobinhood ? '毕业事件' : '迁移事件' }} ({{ migrationStore.migrationEvents.length }})
           </h6>
         </div>
         <div class="card-body p-0">
@@ -340,13 +341,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue';
+import { ref, watch, nextTick, computed } from 'vue';
 import { useMigrationStore, type TokenHolding } from '../../stores/migrationStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { formatUnits } from 'viem';
+import { useChainStore } from '../../stores/chainStore';
 
 const migrationStore = useMigrationStore();
 const walletStore = useWalletStore();
+const chainStore = useChainStore();
+const isRobinhood = computed(() => (
+  migrationStore.monitoringChainId ?? chainStore.selectedChainId
+) === 4663);
 
 // 配置展开状态
 const showConfig = ref(false);

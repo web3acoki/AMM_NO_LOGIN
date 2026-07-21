@@ -12,7 +12,8 @@
         <span class="badge" :class="threadBadgeClass">
           买{{ task.config.buyThreadCount || 0 }}/卖{{ task.config.sellThreadCount || 0 }}
         </span>
-        <span v-if="task.config.marketType === 'inner'" class="badge bg-info">内盘</span>
+        <span class="badge bg-dark">{{ chainLabel }}</span>
+        <span v-if="task.config.marketType === 'inner'" class="badge bg-info">{{ task.config.chainId === 4663 ? 'Pons' : '内盘' }}</span>
         <span v-if="task.config.poolBaseToken" class="badge bg-warning text-dark">ASTER底池</span>
         <strong class="small">{{ task.name }}</strong>
       </div>
@@ -46,7 +47,7 @@
         </span>
         <span>买:{{ task.stats.buyCount }}次</span>
         <span>卖:{{ task.stats.sellCount }}次</span>
-        <span>花费:{{ task.stats.spentAmount.toFixed(4) }} {{ task.config.poolBaseToken ? 'ASTER' : 'BNB' }}</span>
+        <span>花费:{{ task.stats.spentAmount.toFixed(4) }} {{ task.config.poolBaseToken ? 'ASTER' : nativeSymbol }}</span>
         <span>{{ formatTime(task.stats.elapsedTime) }}</span>
       </div>
     </div>
@@ -67,6 +68,7 @@
         v-if="task.status === 'stopped' || task.status === 'paused'"
         class="btn btn-success btn-sm"
         @click="handleStart"
+        :disabled="isBatchSelling"
       >
         <i class="bi bi-play-fill me-1"></i>{{ task.status === 'paused' ? '继续' : '开始' }}
       </button>
@@ -104,7 +106,7 @@
         class="btn btn-outline-danger btn-sm"
         @click="handleBatchSell"
         :disabled="isBatchSelling"
-        title="批量卖出所有钱包的代币"
+        title="批量卖出所有钱包的代币；共用钱包或同链同代币的冲突任务会先暂停"
       >
         <i class="bi bi-cash-stack me-1"></i>{{ isBatchSelling ? '卖出中' : '批量卖' }}
       </button>
@@ -163,6 +165,8 @@ const showFullAddress = ref(false);
 
 // 计算属性
 const isActiveLog = computed(() => activeLogTaskId.value === props.task.id);
+const nativeSymbol = computed(() => props.task.config.chainId === 4663 ? 'ETH' : props.task.config.chainId === 66 ? 'OKB' : 'BNB');
+const chainLabel = computed(() => props.task.config.chainId === 4663 ? 'Robinhood 4663' : props.task.config.chainId === 97 ? 'BSC Testnet' : props.task.config.chainId === 66 ? 'OKX 66' : 'BSC 56');
 
 // 获取代币地址（内盘优先用 innerTokenAddress，外盘用 tokenContract）
 const tokenAddress = computed(() => {
@@ -323,7 +327,13 @@ async function handleQueryBalances() {
 }
 
 async function handleBatchSell() {
-  if (!confirm(`确定要批量卖出任务 "${props.task.name}" 所有钱包的代币吗？\n\n将使用最大线程并行卖出所有钱包的全部代币。`)) return;
+  const runningNotice = props.task.status === 'running'
+    ? '\n\n当前任务以及共用钱包或同链同代币市场的其他运行中任务会先暂停，等待已发起的轮次收尾；卖出完成后仍保持暂停，不会自动恢复。'
+    : '\n\n如果其他运行中任务共用这些钱包，它们也会先暂停并保持暂停。';
+  if (!confirm(
+    `确定要批量卖出任务 "${props.task.name}" 所有钱包的全部代币吗？`
+    + `${runningNotice}\n\n系统会同时获取钱包锁和代币市场锁，逐笔使用最新链上状态报价并等待最终确认；待确认/未知时持续只读对账，不会盲目重发。`,
+  )) return;
   isBatchSelling.value = true;
   taskStore.setActiveLogTask(props.task.id);
   try {

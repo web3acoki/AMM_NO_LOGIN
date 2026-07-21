@@ -26,8 +26,8 @@
               <!-- 代币合约地址 -->
               <div class="col-12 mb-3">
                 <label class="form-label">
-                  {{ props.task.config.marketType === 'inner' ? '内盘目标代币地址' : '代币合约地址' }}
-                  <span class="badge bg-secondary ms-1">{{ props.task.config.marketType === 'inner' ? '内盘' : '外盘' }}</span>
+                  {{ props.task.config.marketType === 'inner' ? (isRobinhood ? 'Pons 代币地址' : '内盘目标代币地址') : '代币合约地址' }}
+                  <span class="badge bg-secondary ms-1">{{ props.task.config.marketType === 'inner' ? (isRobinhood ? 'Pons' : '内盘') : '外盘' }}</span>
                 </label>
                 <input
                   type="text"
@@ -50,9 +50,10 @@
                     :class="formData.poolType === 'BNB' ? 'btn-primary' : 'btn-outline-primary'"
                     @click="formData.poolType = 'BNB'"
                   >
-                    BNB底池
+                    {{ nativeSymbol }}底池
                   </button>
                   <button
+                    v-if="isBscChain"
                     type="button"
                     class="btn"
                     :class="formData.poolType === 'ASTER' ? 'btn-primary' : 'btn-outline-primary'"
@@ -64,8 +65,8 @@
                 <div class="form-text text-muted">
                   <i class="bi bi-info-circle me-1"></i>
                   {{ props.task.config.marketType === 'inner'
-                    ? (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 购买代币' : 'ASTER底池：用 ASTER 代币购买')
-                    : (formData.poolType === 'BNB' ? 'BNB底池：用 BNB 买卖代币' : 'ASTER底池：用 ASTER 买卖代币')
+                    ? (formData.poolType === 'BNB' ? `${nativeSymbol}底池：用 ${nativeSymbol} 购买代币` : 'ASTER底池：用 ASTER 代币购买')
+                    : (formData.poolType === 'BNB' ? `${nativeSymbol}底池：用 ${nativeSymbol} 买卖代币` : 'ASTER底池：用 ASTER 买卖代币')
                   }}
                 </div>
               </div>
@@ -107,7 +108,7 @@
                   <option value="amount">花费金额</option>
                   <option value="time">运行时间(秒)</option>
                   <option value="price">目标价格</option>
-                  <option value="marketcap">目标市值(BNB)</option>
+                  <option value="marketcap">目标市值({{ nativeSymbol }})</option>
                 </select>
               </div>
 
@@ -224,11 +225,11 @@
               </label>
               <select class="form-select" v-model="formData.antiSandwichRpcType">
                 <option value="network">跟随网络设置</option>
-                <option value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
-                <option value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
-                <option value="binance">https://bsc-dataseed.binance.org</option>
-                <option value="blocksec">https://bsc.rpc.blocksec.com</option>
-                <option value="48club">https://rpc-bsc.48.club</option>
+                <option v-if="!isRobinhood" value="premium">高速付费节点 (QuickNode + MEV 保护)</option>
+                <option v-if="!isRobinhood" value="blxrbdn">https://bsc.rpc.blxrbdn.com (防夹)</option>
+                <option v-if="!isRobinhood" value="binance">https://bsc-dataseed.binance.org</option>
+                <option v-if="!isRobinhood" value="blocksec">https://bsc.rpc.blocksec.com</option>
+                <option v-if="!isRobinhood" value="48club">https://rpc-bsc.48.club</option>
                 <option value="custom">自定义节点</option>
               </select>
               <div v-if="formData.antiSandwichRpcType === 'custom'" class="mt-2">
@@ -297,6 +298,9 @@ const emit = defineEmits<{
 }>();
 
 const taskStore = useTaskStore();
+const isRobinhood = computed(() => props.task.config.chainId === 4663);
+const isBscChain = computed(() => props.task.config.chainId === 56 || props.task.config.chainId === 97);
+const nativeSymbol = computed(() => isRobinhood.value ? 'ETH' : props.task.config.chainId === 66 ? 'OKB' : 'BNB');
 
 // ASTER 代币地址常量
 const ASTER_TOKEN_ADDRESS = '0x000ae314e2a2172a039b26378814c252734f556a';
@@ -356,7 +360,7 @@ const amountUnitLabel = computed(() => {
   if (formData.value.poolType === 'ASTER') {
     return 'ASTER';
   }
-  return 'BNB';
+  return nativeSymbol.value;
 });
 
 // 初始化表单数据
@@ -370,7 +374,7 @@ onMounted(() => {
     : task.config.tokenContract;
 
   // 解析防夹节点配置（包含 premium 检测）
-  const rpcType = getRpcTypeFromConfig(task.config);
+  const rpcType = isRobinhood.value ? 'network' : getRpcTypeFromConfig(task.config);
   const customRpc = rpcType === 'custom' ? (task.config.antiSandwichRpc || '') : '';
 
   formData.value = {
@@ -439,9 +443,9 @@ async function handleSave() {
       gasLimit: formData.value.gasLimit || undefined,
       innerSlippage: isInner ? formData.value.innerSlippage : undefined,
       antiSandwichRpc: antiSandwichRpc, // 内盘和外盘都使用
-      buyUsePremiumRpc: formData.value.antiSandwichRpcType === 'premium', // 买入是否使用高速付费节点
+      buyUsePremiumRpc: !isRobinhood.value && formData.value.antiSandwichRpcType === 'premium', // 买入是否使用高速付费节点
       sellAll: formData.value.sellAll,
-      poolBaseToken: formData.value.poolType === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined,
+      poolBaseToken: isBscChain.value && formData.value.poolType === 'ASTER' ? ASTER_TOKEN_ADDRESS : undefined,
     } as Partial<TaskConfig>,
     walletAddresses
   };

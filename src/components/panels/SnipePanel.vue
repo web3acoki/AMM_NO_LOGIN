@@ -6,7 +6,7 @@
         <i class="bi bi-crosshair me-2"></i>
         代币狙击
       </h5>
-      <span class="badge bg-secondary">FourMeme 内盘</span>
+      <span class="badge bg-secondary">{{ isRobinhood ? 'Pons 发射台 / Uniswap V3' : 'FourMeme 内盘' }}</span>
     </div>
 
     <div class="panel-body">
@@ -30,7 +30,7 @@
 
           <!-- 买入金额 -->
           <div class="mb-3">
-            <label class="form-label">买入金额 (BNB)</label>
+            <label class="form-label">买入金额 ({{ nativeSymbol }})</label>
             <input
               type="number"
               class="form-control form-control-sm"
@@ -67,6 +67,19 @@
               />
               <small class="text-muted">0 = 自动</small>
             </div>
+          </div>
+
+          <div v-if="isRobinhood" class="mb-3">
+            <label class="form-label">Uniswap V3 滑点 (%)</label>
+            <input
+              type="number"
+              class="form-control form-control-sm"
+              v-model.number="formData.slippage"
+              step="0.1"
+              min="0"
+              max="100"
+            />
+            <small class="text-muted">Pons 限制期波动较大，默认 30%</small>
           </div>
 
           <!-- 自定义节点 -->
@@ -194,7 +207,7 @@
                     <span v-else class="text-warning">监听所有</span>
                   </div>
                   <div class="task-meta small text-muted">
-                    {{ task.buyAmount }} BNB · {{ task.wallets.length }} 钱包
+                    {{ task.buyAmount }} {{ task.chainId === 4663 ? 'ETH' : 'BNB' }} · {{ task.wallets.length }} 钱包
                   </div>
                 </div>
                 <div class="task-actions d-flex align-items-center gap-2">
@@ -308,13 +321,19 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { useSnipeStore } from '../../stores/snipeStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { HTTP_RPC_NODES, WSS_RPC_NODES } from '../../services/snipeService';
+import { ROBINHOOD_HTTP_RPCS, ROBINHOOD_WSS_RPCS } from '../../services/ponsService';
+import { useChainStore } from '../../stores/chainStore';
 
 const snipeStore = useSnipeStore();
 const walletStore = useWalletStore();
+const chainStore = useChainStore();
+
+const isRobinhood = computed(() => chainStore.selectedChainId === 4663);
+const nativeSymbol = computed(() => isRobinhood.value ? 'ETH' : 'BNB');
 
 // 默认节点
-const defaultHttpRpc = HTTP_RPC_NODES[0];
-const defaultWssRpc = WSS_RPC_NODES[0];
+const defaultHttpRpc = computed(() => isRobinhood.value ? ROBINHOOD_HTTP_RPCS[0] : HTTP_RPC_NODES[0]);
+const defaultWssRpc = computed(() => isRobinhood.value ? ROBINHOOD_WSS_RPCS[0] : WSS_RPC_NODES[0]);
 
 // 节点设置显示
 const showNodeSettings = ref(false);
@@ -325,9 +344,16 @@ const formData = ref({
   buyAmount: 0.1,
   gasPrice: 0,
   gasLimit: 0,
+  slippage: 30,
   batchId: '',
   customHttpRpc: '',
   customWssRpc: ''
+});
+
+// 自定义节点只属于创建时所选链；keep-alive 页面切链后不得沿用旧链 RPC。
+watch(() => chainStore.selectedChainId, () => {
+  formData.value.customHttpRpc = '';
+  formData.value.customWssRpc = '';
 });
 
 // 钱包选择模式
@@ -366,7 +392,10 @@ const lastDetectedToken = computed(() => {
 // 设置为内盘目标代币
 function setAsInnerTarget() {
   if (lastDetectedToken.value) {
-    snipeStore.setInnerToken(lastDetectedToken.value);
+    snipeStore.setInnerToken(
+      lastDetectedToken.value,
+      snipeStore.currentTask?.chainId ?? chainStore.selectedChainId,
+    );
     alert(`已设置内盘目标代币: ${lastDetectedToken.value}\n\n请在任务管理中选择"内盘"模式来使用此代币。`);
   }
 }
@@ -379,6 +408,9 @@ const canCreateTask = computed(() => {
     return false;
   }
   if (formData.value.buyAmount <= 0) {
+    return false;
+  }
+  if (isRobinhood.value && (formData.value.slippage < 0 || formData.value.slippage > 100)) {
     return false;
   }
   if (walletSelectMode.value === 'selected' && walletStore.selectedWalletAddresses.length === 0) {
@@ -399,6 +431,7 @@ function createTask() {
     buyAmount: formData.value.buyAmount,
     gasPrice: formData.value.gasPrice,
     gasLimit: formData.value.gasLimit,
+    slippage: formData.value.slippage,
     batchId: walletSelectMode.value === 'batch' ? formData.value.batchId : undefined,
     customHttpRpc: formData.value.customHttpRpc || undefined,
     customWssRpc: formData.value.customWssRpc || undefined

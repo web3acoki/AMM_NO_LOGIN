@@ -1,9 +1,46 @@
 // ============ 链配置 ============
 
+export const ROBINHOOD_CHAIN_ID = 4663 as const;
+
+export const ROBINHOOD_OFFICIAL_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com/';
+export const ROBINHOOD_ARROW_RPC_URL = 'https://rpc.arrowrpc.com';
+export const ROBINHOOD_ARROW_WS_URL = 'wss://ws.arrowrpc.com';
+export const ROBINHOOD_EXPLORER_URL = 'https://robinhoodchain.blockscout.com';
+
+export const ROBINHOOD_WETH_ADDRESS: `0x${string}` =
+  '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73';
+
+export const UNISWAP_V3_ROBINHOOD_ADDRESSES = {
+  factory: '0x1f7d7550b1b028f7571e69a784071f0205fd2efa',
+  quoterV2: '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7',
+  swapRouter02: '0xcaf681a66d020601342297493863e78c959e5cb2',
+  positionManager: '0x73991a25c818bf1f1128deaab1492d45638de0d3',
+  multicall: '0x282a3c4d320cc7f0d5eaf56b8029e4b88338f0a3',
+  permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+  universalRouter: '0x8876789976decbfcbbbe364623c63652db8c0904',
+  weth: ROBINHOOD_WETH_ADDRESS,
+} as const satisfies Record<string, `0x${string}`>;
+
+// Pons launches currently use the Uniswap V3 1% tier. Keep the value explicit
+// at call sites because a V3 pool is identified by tokenA/tokenB/fee.
+export const PONS_V3_POOL_FEE = 10_000 as const;
+
+export const WRAPPED_NATIVE_ADDRESSES: Readonly<Record<number, `0x${string}`>> = {
+  56: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
+  97: '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd',
+  [ROBINHOOD_CHAIN_ID]: ROBINHOOD_WETH_ADDRESS,
+};
+
 // WBNB 地址映射
 export const WBNB_ADDRESSES: Record<number, `0x${string}`> = {
   56: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',   // BSC Mainnet
   97: '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd',   // BSC Testnet
+};
+
+// Do not put Robinhood WETH in WBNB_ADDRESSES: legacy callers use that map to
+// select PancakeSwap paths. New multi-chain code should use this map/helper.
+export const WETH_ADDRESSES: Readonly<Record<number, `0x${string}`>> = {
+  [ROBINHOOD_CHAIN_ID]: ROBINHOOD_WETH_ADDRESS,
 };
 
 // USDT 地址映射
@@ -39,6 +76,10 @@ export function getWbnbAddress(chainId: number): `0x${string}` | null {
   return WBNB_ADDRESSES[chainId] || null;
 }
 
+export function getWrappedNativeAddress(chainId: number): `0x${string}` | null {
+  return WRAPPED_NATIVE_ADDRESSES[chainId] || null;
+}
+
 export function getUsdtAddress(chainId: number): `0x${string}` | null {
   return USDT_ADDRESSES[chainId] || null;
 }
@@ -47,8 +88,8 @@ export function getUsdcAddress(chainId: number): `0x${string}` | null {
   return USDC_ADDRESSES[chainId] || null;
 }
 
-export function getUsdtDecimals(chainId: number): number {
-  return USDT_DECIMALS[chainId] || 18;
+export function getUsdtDecimals(chainId: number): number | null {
+  return USDT_DECIMALS[chainId] ?? null;
 }
 
 export function getBatchTransferContract(chainId: number): `0x${string}` | null {
@@ -64,12 +105,12 @@ export function getBatchTransferContract(chainId: number): `0x${string}` | null 
 export const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
 export const ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
-// ASTER 代币地址（全链通用）
+// ASTER 代币地址（仅 BSC 主网功能使用）
 export const ASTER_TOKEN_ADDRESS: `0x${string}` = '0x000ae314e2a2172a039b26378814c252734f556a';
 export const ASTER_DECIMALS = 18;
 
 // ============ 默认值 ============
 
 export const DEFAULT_DECIMALS = 18;
-export const DEFAULT_GAS_RESERVE = '0.005'; // BNB
+export const DEFAULT_GAS_RESERVE = '0.005'; // 当前链原生币（BNB / ETH）
 export const DEFAULT_DEADLINE = 1200; // 20分钟

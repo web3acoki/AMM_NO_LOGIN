@@ -59,6 +59,9 @@
       <i class="bi bi-broadcast me-1"></i>
       当前RPC: <code class="text-primary">{{ effectiveRpcUrl }}</code>
       <span v-if="customRpcUrl" class="badge bg-warning text-dark ms-1">自定义</span>
+      <button class="btn btn-link btn-sm py-0 ms-2" type="button" @click="switchBrowserWalletNetwork">
+        添加/切换浏览器钱包网络
+      </button>
     </div>
   </div>
 </template>
@@ -165,6 +168,45 @@ function onDexChange() {
   console.log('DEX切换到:', selectedDexId.value);
 }
 
+async function switchBrowserWalletNetwork() {
+  const ethereum = (window as any).ethereum;
+  if (!ethereum) {
+    alert('未检测到浏览器钱包；本地私钥钱包仍可直接执行任务。');
+    return;
+  }
+  const chain = chains.value.find(c => c.id === selectedChainId.value);
+  if (!chain) return;
+  const chainIdHex = `0x${chain.id.toString(16)}`;
+  try {
+    await ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] });
+  } catch (error: any) {
+    if (error?.code !== 4902) {
+      alert(`切换网络失败: ${error?.message || '未知错误'}`);
+      return;
+    }
+    const explorerFallbacks: Record<number, string> = {
+      56: 'https://bscscan.com',
+      97: 'https://testnet.bscscan.com',
+      66: 'https://www.oklink.com/okc',
+      4663: 'https://robinhoodchain.blockscout.com',
+    };
+    await ethereum.request({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: chainIdHex,
+        chainName: chain.name,
+        nativeCurrency: {
+          name: chain.governanceToken === 'ETH' ? 'Ether' : chain.governanceToken,
+          symbol: chain.governanceToken,
+          decimals: 18,
+        },
+        rpcUrls: chain.rpcOptions.map(option => option.url),
+        blockExplorerUrls: [chain.explorerUrl || explorerFallbacks[chain.id]].filter(Boolean),
+      }],
+    });
+  }
+}
+
 // 组件挂载时初始化DEX
 onMounted(() => {
   dexStore.setDexByChainId(selectedChainId.value);
@@ -174,5 +216,4 @@ onMounted(() => {
   }
 });
 </script>
-
 

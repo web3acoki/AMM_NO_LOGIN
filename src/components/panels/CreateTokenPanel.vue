@@ -12,12 +12,12 @@
           :class="currentNetwork === 'bscTestnet' ? 'border-warning text-warning' : 'border-success text-success'"
           style="width: 140px; font-weight: bold;"
           v-model="currentNetwork"
-          @change="onNetworkChange"
         >
           <option value="bscTestnet">BSC 测试网</option>
           <option value="bscMainnet">BSC 主网</option>
+          <option value="robinhood">Robinhood Chain</option>
         </select>
-        <span class="badge bg-warning text-dark">FourMeme</span>
+        <span class="badge bg-warning text-dark">{{ usePons ? 'Pons / Uniswap V3' : 'FourMeme' }}</span>
       </div>
     </div>
 
@@ -43,7 +43,7 @@
 
     <div class="panel-body">
       <!-- 模式选择 -->
-      <div class="card mb-3">
+      <div v-if="!usePons" class="card mb-3">
         <div class="card-header">
           <h6 class="mb-0">
             <i class="bi bi-toggles me-1"></i>
@@ -118,7 +118,7 @@
       </div>
 
       <!-- Agent NFT 注册 (仅 Agent 模式) -->
-      <div v-if="createMode === 'agent'" class="card mb-3">
+      <div v-if="!usePons && createMode === 'agent'" class="card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h6 class="mb-0">
             <i class="bi bi-person-badge me-1"></i>
@@ -235,7 +235,7 @@
           </div>
 
           <div class="row mb-3">
-            <div class="col-6">
+            <div v-if="!usePons" class="col-6">
               <label class="form-label">代币分类 *</label>
               <select class="form-select form-select-sm" v-model="tokenInfo.label">
                 <option value="Meme">Meme</option>
@@ -250,9 +250,18 @@
                 <option value="Others">Others</option>
               </select>
             </div>
-            <div class="col-6">
-              <label class="form-label">创建者预购 ({{ createMode === 'agent' ? selectedRaisedToken : 'BNB' }})</label>
+            <div :class="usePons ? 'col-12' : 'col-6'">
+              <label class="form-label">创建者预购 ({{ usePons ? 'ETH' : (createMode === 'agent' ? selectedRaisedToken : 'BNB') }})</label>
               <input
+                v-if="usePons"
+                type="text"
+                inputmode="decimal"
+                class="form-control form-control-sm"
+                v-model="ponsDeveloperBuy"
+                placeholder="0"
+              />
+              <input
+                v-else
                 type="number"
                 class="form-control form-control-sm"
                 v-model.number="tokenInfo.presaleBNB"
@@ -260,6 +269,7 @@
                 step="0.01"
                 min="0"
               />
+              <small v-if="usePons" class="text-muted">不设置 Dev 买入上限；发送前按实际金额执行链上模拟并检查余额。</small>
             </div>
           </div>
 
@@ -322,7 +332,11 @@
         </div>
         <div class="card-body">
           <!-- API 状态 -->
-          <div v-if="apiStatus.loggedIn" class="alert alert-success py-2 small mb-3">
+          <div v-if="usePons && apiStatus.prepared" class="alert alert-success py-2 small mb-3">
+            <i class="bi bi-check-circle me-1"></i>
+            Pons 链上配置已读取 | IPFS 图片已上传 | 已准备就绪
+          </div>
+          <div v-else-if="apiStatus.loggedIn" class="alert alert-success py-2 small mb-3">
             <i class="bi bi-check-circle me-1"></i>
             FourMeme API 已登录
             <span v-if="apiStatus.imageUrl" class="ms-2">| 图片已上传</span>
@@ -332,6 +346,7 @@
           <!-- 准备按钮 -->
           <div class="d-flex gap-2 mb-3">
             <button
+              v-if="!usePons"
               class="btn btn-outline-secondary btn-sm flex-fill"
               @click="loginToFourMeme"
               :disabled="!connectedWallet || isLoading"
@@ -342,10 +357,10 @@
             <button
               class="btn btn-outline-secondary btn-sm flex-fill"
               @click="uploadTokenImage"
-              :disabled="!apiStatus.loggedIn || !selectedImage || isLoading"
+              :disabled="(!usePons && !apiStatus.loggedIn) || !selectedImage || isLoading"
             >
               <i class="bi bi-upload me-1"></i>
-              2. 上传图片
+              {{ usePons ? '1. 上传 IPFS 图片' : '2. 上传图片' }}
             </button>
             <button
               class="btn btn-outline-secondary btn-sm flex-fill"
@@ -353,12 +368,12 @@
               :disabled="!apiStatus.imageUrl || !canPrepare || isLoading"
             >
               <i class="bi bi-gear me-1"></i>
-              3. 准备创建
+              {{ usePons ? '2. 读取链上配置' : '3. 准备创建' }}
             </button>
           </div>
 
           <!-- Gas 设置 -->
-          <div class="row mb-3">
+          <div v-if="!usePons" class="row mb-3">
             <div class="col-12">
               <label class="form-label small">创建 Gas Price (Gwei)</label>
               <input
@@ -371,6 +386,9 @@
               <small class="text-muted">高优先级，确保先执行</small>
             </div>
           </div>
+          <div v-else class="alert alert-info py-2 small mb-3">
+            Robinhood Gas 将在发送时动态估算，并包含 L2 执行与 L1 calldata 成本。
+          </div>
 
           <button
             class="btn btn-success w-100"
@@ -378,7 +396,7 @@
             :disabled="!canLaunch || isLoading"
           >
             <i class="bi bi-rocket-takeoff me-1"></i>
-            {{ isLoading ? '处理中...' : '发射创建代币' }}
+            {{ isLoading ? '处理中...' : (usePons ? '在 Pons 发射代币' : '发射创建代币') }}
           </button>
         </div>
       </div>
@@ -426,8 +444,21 @@ import { createPublicClient, createWalletClient, http, parseEther, formatEther, 
 import { privateKeyToAccount } from 'viem/accounts';
 import { bsc } from 'viem/chains';
 import { useWalletStore } from '../../stores/walletStore';
+import { useChainStore } from '../../stores/chainStore';
+import {
+  ROBINHOOD_CHAIN,
+  ROBINHOOD_EXPLORER,
+  ROBINHOOD_HTTP_RPCS,
+  launchPonsToken,
+  readPonsRuntimeConfig,
+  requestPonsVerification,
+  uploadPonsImage,
+  validatePonsLaunch,
+  type PonsRuntimeConfig,
+} from '../../services/ponsService';
 
 const walletStore = useWalletStore();
+const chainStore = useChainStore();
 
 // ========== 常量 ==========
 
@@ -482,7 +513,12 @@ const NETWORKS: Record<string, { chainId: string; chainIdDecimal: number; name: 
     chainId: '0x61',
     chainIdDecimal: 97,
     name: 'BSC Testnet',
-  }
+  },
+  robinhood: {
+    chainId: '0x1237',
+    chainIdDecimal: 4663,
+    name: 'Robinhood Chain Mainnet',
+  },
 };
 
 // RPC 节点列表
@@ -500,13 +536,18 @@ const RPC_NODES: Record<string, { label: string; url: string }[]> = {
   bscTestnet: [
     { label: 'BNB Chain 测试网', url: 'https://bsc-testnet-dataseed.bnbchain.org' },
     { label: 'PublicNode 测试网', url: 'https://bsc-testnet-rpc.publicnode.com' },
-  ]
+  ],
+  robinhood: [
+    { label: 'Robinhood 官方节点', url: ROBINHOOD_HTTP_RPCS[0] },
+    { label: 'ArrowRPC 免费节点', url: ROBINHOOD_HTTP_RPCS[1] },
+  ],
 };
 
 // ========== 状态 ==========
 
-const currentNetwork = ref<'bscMainnet' | 'bscTestnet'>(
-  (localStorage.getItem('selectedNetwork') as 'bscMainnet' | 'bscTestnet') || 'bscMainnet'
+type CreateNetwork = 'bscMainnet' | 'bscTestnet' | 'robinhood';
+const currentNetwork = ref<CreateNetwork>(
+  (localStorage.getItem('selectedNetwork') as CreateNetwork) || 'bscMainnet'
 );
 
 const selectedRpcUrl = ref(
@@ -515,13 +556,25 @@ const selectedRpcUrl = ref(
 
 // 当前网络可用的 RPC 节点
 const currentRpcNodes = computed(() => RPC_NODES[currentNetwork.value] || []);
+const usePons = computed(() => currentNetwork.value === 'robinhood');
 
 watch(currentNetwork, (val) => {
   localStorage.setItem('selectedNetwork', val);
   // 切换网络时重置 RPC 为该网络的第一个节点
   selectedRpcUrl.value = RPC_NODES[val][0].url;
   localStorage.setItem('selectedRpcUrl', selectedRpcUrl.value);
+  const chainId = NETWORKS[val].chainIdDecimal;
+  if (chainStore.selectedChainId !== chainId) chainStore.setSelectedChain(chainId);
+  if (val === 'robinhood') createMode.value = 'standard';
+  onNetworkChange();
 });
+
+watch(() => chainStore.selectedChainId, (chainId) => {
+  // 创建面板不支持 OKX；不要把全局 OKX 选择误改回 BSC。
+  if (![56, 97, 4663].includes(chainId)) return;
+  const target: CreateNetwork = chainId === 4663 ? 'robinhood' : chainId === 97 ? 'bscTestnet' : 'bscMainnet';
+  if (currentNetwork.value !== target) currentNetwork.value = target;
+}, { immediate: true });
 
 watch(selectedRpcUrl, (val) => {
   localStorage.setItem('selectedRpcUrl', val);
@@ -535,6 +588,7 @@ function onNetworkChange() {
   apiStatus.createArgs = '';
   apiStatus.signature = '';
   predictedAddress.value = '';
+  ponsRuntimeConfig.value = null;
   addLog('info', `已切换到 ${NETWORKS[currentNetwork.value].name}`);
 }
 
@@ -558,6 +612,7 @@ const tokenInfo = reactive({
   twitterUrl: '',
   telegramUrl: ''
 });
+const ponsDeveloperBuy = ref('0');
 
 // 图片状态
 const selectedImage = ref<File | null>(null);
@@ -601,6 +656,7 @@ const enableNftRegistration = ref(true);
 
 // Public config (raisedToken)
 const publicConfig = ref<any>(null);
+const ponsRuntimeConfig = ref<PonsRuntimeConfig | null>(null);
 
 // ========== 计算属性 ==========
 
@@ -621,11 +677,20 @@ const canPrepare = computed(() => {
 });
 
 const canLaunch = computed(() => {
+  if (usePons.value) return apiStatus.prepared && !!apiStatus.imageUrl && !!connectedWallet.value;
   return apiStatus.prepared &&
     apiStatus.createArgs &&
     apiStatus.signature &&
     connectedWallet.value;
 });
+
+function parsePonsDeveloperBuy(value: string): bigint {
+  const amount = value.trim() || '0';
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(amount)) {
+    throw new Error('Dev 买入金额必须是非负十进制数，且最多 18 位小数');
+  }
+  return parseEther(amount);
+}
 
 // Reset agent state when mode changes
 watch(createMode, () => {
@@ -689,9 +754,8 @@ function getMainWalletClient() {
     throw new Error('请先选择主钱包批次');
   }
 
-  const network = NETWORKS[currentNetwork.value];
   const account = privateKeyToAccount(mainWallet.value.privateKey as `0x${string}`);
-  const chain = currentNetwork.value === 'bscMainnet' ? bsc : {
+  const chain = currentNetwork.value === 'robinhood' ? ROBINHOOD_CHAIN : currentNetwork.value === 'bscMainnet' ? bsc : {
     id: 97,
     name: 'BSC Testnet',
     nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
@@ -706,9 +770,8 @@ function getMainWalletClient() {
 }
 
 function getPublicClient() {
-  const network = NETWORKS[currentNetwork.value];
   return createPublicClient({
-    chain: currentNetwork.value === 'bscMainnet' ? bsc : {
+    chain: currentNetwork.value === 'robinhood' ? ROBINHOOD_CHAIN : currentNetwork.value === 'bscMainnet' ? bsc : {
       id: 97,
       name: 'BSC Testnet',
       nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
@@ -969,8 +1032,29 @@ async function loginToFourMeme() {
 }
 
 async function uploadTokenImage() {
-  if (!apiStatus.accessToken || !selectedImage.value) {
-    addLog('error', '请先登录并选择图片');
+  if (!selectedImage.value) {
+    addLog('error', '请先选择图片');
+    return;
+  }
+
+  if (usePons.value) {
+    isLoading.value = true;
+    try {
+      addLog('info', '正在通过服务端代理上传图片到 Pons IPFS...');
+      apiStatus.imageUrl = await uploadPonsImage(selectedImage.value);
+      apiStatus.prepared = false;
+      ponsRuntimeConfig.value = null;
+      addLog('success', `Pons IPFS 图片上传成功: ${apiStatus.imageUrl}`);
+    } catch (error: any) {
+      addLog('error', `Pons 图片上传失败: ${error.message}`);
+    } finally {
+      isLoading.value = false;
+    }
+    return;
+  }
+
+  if (!apiStatus.accessToken) {
+    addLog('error', '请先登录 FourMeme API');
     return;
   }
 
@@ -1001,8 +1085,8 @@ async function uploadTokenImage() {
 }
 
 async function prepareTokenCreate() {
-  if (!apiStatus.accessToken || !apiStatus.imageUrl) {
-    addLog('error', '请先登录并上传图片');
+  if (!apiStatus.imageUrl) {
+    addLog('error', '请先上传图片');
     return;
   }
   if (!canPrepare.value) {
@@ -1012,6 +1096,35 @@ async function prepareTokenCreate() {
 
   isLoading.value = true;
   try {
+    if (usePons.value) {
+      if (!mainWallet.value) throw new Error('请先选择主钱包批次');
+      const account = privateKeyToAccount(mainWallet.value.privateKey as `0x${string}`);
+      const ponsInput = {
+        name: tokenInfo.name,
+        symbol: tokenInfo.symbol,
+        logo: apiStatus.imageUrl,
+        description: tokenInfo.desc,
+        feeWallet: account.address,
+        developerBuy: parsePonsDeveloperBuy(ponsDeveloperBuy.value),
+        twitter: tokenInfo.twitterUrl,
+        telegram: tokenInfo.telegramUrl,
+        website: tokenInfo.webUrl,
+      };
+      validatePonsLaunch(ponsInput);
+      addLog('info', '正在从 Pons Factory 动态读取 launchFee、launch config 和 dex config...');
+      ponsRuntimeConfig.value = await readPonsRuntimeConfig(getPublicClient());
+      const runtime = ponsRuntimeConfig.value;
+      if (!runtime.launchEnabled || !runtime.launch.enabled || !runtime.dex.enabled) {
+        throw new Error('Pons 当前发射或 Uniswap V3 配置未启用');
+      }
+      apiStatus.prepared = true;
+      addLog('success', `Pons 配置就绪：创建费 ${formatEther(runtime.launchFee)} ETH`);
+      addLog('info', 'Dev 买入不设置客户端金额上限；正式发送前将按完整金额执行链上模拟');
+      addLog('info', `供应量 ${formatEther(runtime.launch.supply)}，V3 fee ${runtime.dex.poolFee}，毕业阈值 ${formatEther(runtime.launch.graduationThreshold)} ETH`);
+      return;
+    }
+
+    if (!apiStatus.accessToken) throw new Error('请先登录 FourMeme API');
     // In agent mode, fetch public config first
     if (createMode.value === 'agent') {
       await fetchPublicConfig();
@@ -1123,6 +1236,11 @@ function predictTokenAddress(salt: `0x${string}`): string {
 
 async function launchAndBuy() {
   if (!canLaunch.value) return;
+
+  if (usePons.value) {
+    await launchPonsAndBuy();
+    return;
+  }
 
   isLoading.value = true;
   try {
@@ -1263,6 +1381,79 @@ async function launchAndBuy() {
     addLog('success', `查看: https://four.meme/token/${tokenAddress}`);
   } catch (error: any) {
     addLog('error', `发射失败: ${error.message}`);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function launchPonsAndBuy() {
+  if (!mainWallet.value || !apiStatus.imageUrl) {
+    addLog('error', '请先选择主钱包并上传图片');
+    return;
+  }
+
+  isLoading.value = true;
+  try {
+    const account = privateKeyToAccount(mainWallet.value.privateKey as `0x${string}`);
+    const publicClient = getPublicClient();
+    const walletClient = getMainWalletClient();
+    // Re-read owner-mutable configuration immediately before sending.
+    const runtime = await readPonsRuntimeConfig(publicClient);
+    ponsRuntimeConfig.value = runtime;
+    const developerBuy = parsePonsDeveloperBuy(ponsDeveloperBuy.value);
+    addLog('info', `Pons 发射总 value: ${formatEther(runtime.launchFee)} ETH 创建费 + ${formatEther(developerBuy)} ETH 开发者预购`);
+    addLog('info', 'Dev 买入不设金额上限，正在使用完全相同的 calldata 和 value 执行链上模拟、Gas 与余额检查');
+    addLog('info', `使用 ${runtime.dex.name || 'Uniswap V3'}，pool fee=${runtime.dex.poolFee}；Gas 由 RPC 动态估算`);
+
+    const result = await launchPonsToken({
+      input: {
+        name: tokenInfo.name,
+        symbol: tokenInfo.symbol,
+        logo: apiStatus.imageUrl,
+        description: tokenInfo.desc,
+        feeWallet: account.address,
+        developerBuy,
+        twitter: tokenInfo.twitterUrl,
+        telegram: tokenInfo.telegramUrl,
+        website: tokenInfo.webUrl,
+      },
+      account,
+      publicClient,
+      walletClient,
+    });
+
+    addLog('success', `Pons 链上模拟通过；Gas 估算 ${result.gasEstimate}，发送上限 ${result.gasLimit}，最大 Gas 预算 ${formatEther(result.estimatedGasCost)} ETH`);
+    addLog('success', `Pons 发射交易确认成功: ${result.hash}`);
+    if (!result.token) {
+      addLog('warning', '交易成功，但未能从 TokenLaunched 日志解析代币地址');
+      return;
+    }
+    predictedAddress.value = result.token;
+    addLog('success', `代币地址: ${result.token}`);
+    addLog('success', `浏览器: ${ROBINHOOD_EXPLORER}/tx/${result.hash}`);
+    if (!result.developerBuyVerified) {
+      addLog(
+        'error',
+        `代币交易已确认，但原子买入回执校验失败；链上记录 ${formatEther(result.initialBuyAmount ?? 0n)} ETH、Dev 到账 ${formatEther(result.developerTokensReceived)} 枚`,
+      );
+      addLog('warning', '已停止后续验证流程。请先在区块浏览器核对这笔交易，切勿直接重复创建');
+      return;
+    }
+    if (developerBuy > 0n) {
+      addLog(
+        'success',
+        `Dev 原子买入已核验：${formatEther(result.initialBuyAmount ?? 0n)} ETH → ${formatEther(result.developerTokensReceived)} ${tokenInfo.symbol.trim().toUpperCase()}`,
+      );
+    } else {
+      addLog('info', '本次未设置 Dev 买入，链上 initialBuyAmount 已核验为 0');
+    }
+    addLog('success', `Pons: https://pons.family/launchpad/${result.token}`);
+
+    requestPonsVerification(result.token)
+      .then(() => addLog('success', 'Pons 代币验证请求已提交'))
+      .catch((error) => addLog('warning', `代币已创建，但验证请求失败: ${error.message}`));
+  } catch (error: any) {
+    addLog('error', `Pons 发射失败: ${error.message}`);
   } finally {
     isLoading.value = false;
   }

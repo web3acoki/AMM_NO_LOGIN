@@ -44,7 +44,7 @@ export interface MigrationEvent {
   pairedWith: string;
   blockNumber: bigint;
   transactionHash: string;
-  source: 'PairCreated' | 'FourMeme';
+  source: 'PairCreated' | 'FourMeme' | 'PonsGraduation';
 }
 
 export interface MigrationLog {
@@ -81,6 +81,9 @@ export class MigrationService {
   private onLog: ((log: MigrationLog) => void) | null = null;
 
   constructor(chainId: number, _httpRpcUrl?: string, pollInterval?: number) {
+    if (chainId !== 56 && chainId !== 97) {
+      throw new Error(`FourMeme 迁移监控仅支持 BSC（收到 chainId=${chainId}）`);
+    }
     this.chainId = chainId;
     this.pollInterval = pollInterval || 3000;
 

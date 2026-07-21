@@ -15,6 +15,7 @@ import {
 } from '../services/snipeService';
 import { useChainStore } from './chainStore';
 import { useWalletStore } from './walletStore';
+import { createPonsSnipeService, type PonsSnipeService } from '../services/ponsSnipeService';
 
 // 生成唯一 ID
 function generateId(): string {
@@ -25,10 +26,11 @@ export const useSnipeStore = defineStore('snipe', () => {
   // ==================== 状态 ====================
 
   const tasks = ref<SnipeTaskConfig[]>([]);
-  const activeServices = ref<Map<string, SnipeService>>(new Map());
+  const activeServices = ref<Map<string, SnipeService | PonsSnipeService>>(new Map());
   const taskLogs = ref<Map<string, SnipeLog[]>>(new Map());
   const currentTaskId = ref<string | null>(null);
   const detectedInnerToken = ref<string | null>(null);  // 检测到的内盘代币地址
+  const detectedInnerTokenChainId = ref<number | null>(null);
 
   // ==================== 计算属性 ====================
 
@@ -60,12 +62,14 @@ export const useSnipeStore = defineStore('snipe', () => {
     buyAmount: number;
     gasPrice: number;
     gasLimit: number;
+    slippage?: number;
     walletAddresses?: string[];  // 从钱包列表选择
     batchId?: string;            // 或从批次选择
     customHttpRpc?: string;      // 自定义 HTTP RPC
     customWssRpc?: string;       // 自定义 WebSocket
   }): SnipeTaskConfig {
     const walletStore = useWalletStore();
+    const chainStore = useChainStore();
 
     // 获取执行钱包
     let snipeWallets: SnipeWallet[] = [];
@@ -116,11 +120,13 @@ export const useSnipeStore = defineStore('snipe', () => {
       buyAmount: config.buyAmount,
       gasPrice: config.gasPrice,
       gasLimit: config.gasLimit,
+      slippage: config.slippage,
       wallets: snipeWallets,
       status: 'pending',
       createdAt: Date.now(),
       customHttpRpc: config.customHttpRpc,
-      customWssRpc: config.customWssRpc
+      customWssRpc: config.customWssRpc,
+      chainId: chainStore.selectedChainId
     };
 
     tasks.value.push(task);
@@ -184,15 +190,18 @@ export const useSnipeStore = defineStore('snipe', () => {
       return false;
     }
 
-    const chainStore = useChainStore();
-
     // 创建服务（优先使用自定义节点，否则使用默认节点）
-    const service = createSnipeService(
-      task,
-      chainStore.selectedChainId,
-      task.customHttpRpc,
-      task.customWssRpc
-    );
+    const taskChainId = task.chainId ?? 56;
+    let service: SnipeService | PonsSnipeService;
+    try {
+      service = taskChainId === 4663
+        ? createPonsSnipeService(task, task.customHttpRpc, task.customWssRpc)
+        : createSnipeService(task, taskChainId, task.customHttpRpc, task.customWssRpc);
+    } catch (error: any) {
+      addLog(taskId, 'error', `启动失败: ${error.message}`);
+      task.status = 'failed';
+      return false;
+    }
 
     // 设置回调
     service.setOnLog((log) => {
@@ -221,8 +230,19 @@ export const useSnipeStore = defineStore('snipe', () => {
     // 启动
     try {
       await service.start();
+      if (task.status === 'failed') {
+        service.destroy();
+        if (activeServices.value.get(taskId) === service) {
+          activeServices.value.delete(taskId);
+        }
+        return false;
+      }
       return true;
     } catch (error: any) {
+      service.destroy();
+      if (activeServices.value.get(taskId) === service) {
+        activeServices.value.delete(taskId);
+      }
       addLog(taskId, 'error', `启动失败: ${error.message}`);
       task.status = 'failed';
       return false;
@@ -280,8 +300,11 @@ export const useSnipeStore = defineStore('snipe', () => {
   /**
    * 设置内盘目标代币地址（从狙击检测中获取）
    */
-  function setInnerToken(tokenAddress: string | null) {
+  function setInnerToken(tokenAddress: string | null, chainId?: number) {
     detectedInnerToken.value = tokenAddress;
+    detectedInnerTokenChainId.value = tokenAddress
+      ? (chainId ?? useChainStore().selectedChainId)
+      : null;
   }
 
   // ==================== 返回 ====================
@@ -292,6 +315,7 @@ export const useSnipeStore = defineStore('snipe', () => {
     currentTaskId,
     taskLogs,
     detectedInnerToken,
+    detectedInnerTokenChainId,
 
     // 计算属性
     currentTask,

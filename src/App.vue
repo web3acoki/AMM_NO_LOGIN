@@ -18,6 +18,13 @@
       </header>
 
       <section class="content-area">
+        <div class="container-fluid pt-3">
+          <div class="card shadow-sm global-network-card">
+            <div class="card-body py-3">
+              <NetworkSelector />
+            </div>
+          </div>
+        </div>
         <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel,CreateTokenPanel,MigrationSellPanel">
           <component :is="currentComponent" />
         </keep-alive>
@@ -27,11 +34,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { apiRequest } from './api';
 import { ENABLE_LOGIN, DEFAULT_USERNAME } from './config';
 import LoginView from './components/auth/LoginView.vue';
 import Sidebar from './components/layout/Sidebar.vue';
+import NetworkSelector from './components/market/NetworkSelector.vue';
 import WalletManagePanel from './components/panels/WalletManagePanel.vue';
 import BatchTransferPanel from './components/panels/BatchTransferPanel.vue';
 import TaskManagePanel from './components/panels/TaskManagePanel.vue';
@@ -42,19 +50,38 @@ import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
 import MigrationSellPanel from './components/panels/MigrationSellPanel.vue';
 import { useWalletStore } from './stores/walletStore';
 import { useTaskStore } from './stores/taskStore';
+import { useChainStore } from './stores/chainStore';
+import { useDexStore } from './stores/dexStore';
 import { getServerConfig } from './services/configApi';
 import { setPremiumSellRpc } from './services/fourMemeService';
 
 const walletStore = useWalletStore();
 const taskStore = useTaskStore();
+const chainStore = useChainStore();
+const dexStore = useDexStore();
 const requireLogin = ENABLE_LOGIN;
+
+// 网络是整个应用的执行上下文。切链时同步钱包客户端，并清除只属于旧链的
+// 目标代币/池查询结果，避免把同一个地址误当成新链上的资产。
+watch(
+  () => chainStore.selectedChainId,
+  (chainId, previousChainId) => {
+    walletStore.setCurrentChainId(chainId);
+    dexStore.setDexByChainId(chainId);
+    if (previousChainId !== undefined && previousChainId !== chainId) {
+      walletStore.clearTargetToken();
+    }
+  },
+  { immediate: true }
+);
 
 // 从服务端加载配置（付费 RPC 节点等）
 async function loadServerConfig() {
   try {
     const config = await getServerConfig();
-    if (config.premiumRpcUrl) {
-      setPremiumSellRpc(config.premiumRpcUrl);
+    const bscPremiumRpc = config.premiumRpcUrlsByChain?.[56] || config.premiumRpcUrl;
+    if (bscPremiumRpc) {
+      setPremiumSellRpc(bscPremiumRpc);
     }
   } catch (error) {
     console.error('加载服务端配置失败:', error);
@@ -203,5 +230,10 @@ body {
   min-height: calc(100vh - 64px);
   background: #f8fafc;
   overflow-x: auto;
+}
+
+.global-network-card {
+  position: relative;
+  z-index: 2;
 }
 </style>

@@ -69,14 +69,16 @@ export const HTTP_RPC_NODES = [
 export interface SnipeTaskConfig {
   id: string;
   targetWallet: string;      // 被监听的目标钱包
-  buyAmount: number;         // 买入金额 (BNB)
+  buyAmount: number;         // 买入金额（BSC=BNB，Robinhood=ETH）
   gasPrice: number;          // Gas Price (Gwei)
   gasLimit: number;          // Gas Limit
+  slippage?: number;         // 滑点百分比（Robinhood Uniswap V3 使用）
   wallets: SnipeWallet[];    // 执行买入的钱包列表
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
   createdAt: number;
   customHttpRpc?: string;    // 自定义 HTTP RPC
   customWssRpc?: string;     // 自定义 WebSocket
+  chainId?: number;          // 创建任务时的网络快照（旧任务默认 BSC 56）
 }
 
 export interface SnipeWallet {
@@ -182,7 +184,9 @@ export function parseTokenCreatedEvent(log: Log): TokenCreatedEvent {
  * 获取链配置
  */
 function getChainConfig(chainId: number) {
-  return chainId === 97 ? bscTestnet : bsc;
+  if (chainId === 56) return bsc;
+  if (chainId === 97) return bscTestnet;
+  throw new Error(`FourMeme 狙击仅支持 BSC（收到 chainId=${chainId}）`);
 }
 
 // ==================== 狙击服务类 ====================
@@ -218,6 +222,8 @@ export class SnipeService {
     httpRpcUrl?: string,
     wssRpcUrl?: string
   ) {
+    // Robinhood / Pons 必须由 PonsSnipeService 处理，禁止静默回落到 BSC。
+    getChainConfig(chainId);
     this.task = task;
     this.chainId = chainId;
     // 优先使用传入的自定义节点，其次使用任务配置的，最后使用默认
