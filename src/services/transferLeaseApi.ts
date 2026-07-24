@@ -7,6 +7,8 @@ type AcquireLeaseData = {
   expiresAt: string;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
+  nextNonceFloor?: number;
+  lastTxHash?: string;
 };
 
 type RenewLeaseData = {
@@ -19,6 +21,20 @@ const LEASE_REQUEST_TIMEOUT_MS = 10_000;
 
 export type TransferLeaseGuard = {
   assertActive: () => void;
+  /**
+   * The server-persisted lower bound for the next nonce. This bridges the
+   * short propagation window where a second RPC node has not yet reflected a
+   * transaction that the previous task already broadcast successfully.
+   */
+  getNonceState?: () => {
+    nextNonceFloor?: number;
+    lastTxHash?: string;
+  };
+  /**
+   * Persist an RPC-accepted deterministic transaction hash before releasing
+   * the exclusive wallet lease.
+   */
+  commitBroadcast?: (nonce: number, txHash: string) => Promise<void>;
   /**
    * Keep the server lease and heartbeat alive after the transaction callback
    * returns. Used when a broadcast is pending/unknown so another task cannot
@@ -43,6 +59,8 @@ async function leaseApiRequest<T>(path: string, options: RequestInit = {}) {
     if (error?.name === 'AbortError') {
       throw new Error('全局锁请求超时，已停止后续交易');
     }
+    if (error?.code === 'LEASE_BUSY') error.code = 'TRANSFER_LEASE_BUSY';
+    if (error?.code === 'LEASE_LOST') error.code = 'TRANSFER_LEASE_LOST';
     throw error;
   } finally {
     window.clearTimeout(timer);
@@ -67,6 +85,21 @@ function validateAcquireLease(data: AcquireLeaseData, label: string): AcquireLea
     || data.heartbeatIntervalMs >= data.leaseDurationMs - LEASE_SAFETY_WINDOW_MS
   ) {
     throw new Error(`后端返回的${label}租约周期无效`);
+  }
+  const hasNonceFloor = data.nextNonceFloor !== undefined;
+  const hasLastTxHash = data.lastTxHash !== undefined;
+  if (hasNonceFloor !== hasLastTxHash) {
+    throw new Error(`后端返回的${label} nonce 游标不完整`);
+  }
+  if (
+    hasNonceFloor
+    && (
+      !Number.isSafeInteger(data.nextNonceFloor)
+      || data.nextNonceFloor! < 0
+      || !/^0x[a-f0-9]{64}$/.test(String(data.lastTxHash || '').toLowerCase())
+    )
+  ) {
+    throw new Error(`后端返回的${label} nonce 游标无效`);
   }
   return data;
 }
@@ -138,6 +171,38 @@ async function releaseLease(
   });
 }
 
+async function commitBroadcastNonce(
+  basePath: string,
+  tokenHeader: string,
+  leaseId: string,
+  leaseToken: string,
+  nonce: number,
+  txHash: string,
+): Promise<{ nextNonceFloor: number; lastTxHash: string }> {
+  const response = await leaseApiRequest<{ nextNonceFloor: number; lastTxHash: string }>(
+    `${basePath}/${leaseId}/commit-broadcast`,
+    {
+      method: 'POST',
+      headers: { [tokenHeader]: leaseToken },
+      body: JSON.stringify({ nonce, txHash }),
+    },
+  );
+  const data = response.data;
+  if (
+    !data
+    || !Number.isSafeInteger(data.nextNonceFloor)
+    || data.nextNonceFloor !== nonce + 1
+    || data.lastTxHash?.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error(`${labelForBasePath(basePath)} nonce 游标提交响应无效`);
+  }
+  return data;
+}
+
+function labelForBasePath(basePath: string): string {
+  return basePath === '/api/transfer-leases' ? '源钱包全局锁' : '全局锁';
+}
+
 function createLeaseLifecycle(
   basePath: string,
   label: string,
@@ -154,6 +219,8 @@ function createLeaseLifecycle(
   let lostError: Error | null = null;
   let renewInFlight = false;
   let retainedUntil: Promise<unknown> | null = null;
+  let nextNonceFloor = lease.nextNonceFloor;
+  let lastTxHash = lease.lastTxHash;
   let resolveReleaseCompleted!: () => void;
   const releaseCompleted = new Promise<void>(resolve => {
     resolveReleaseCompleted = resolve;
@@ -166,6 +233,25 @@ function createLeaseLifecycle(
         lostError = new Error(`${label}已过期，后续交易已停止`);
         throw lostError;
       }
+    },
+    getNonceState() {
+      return { nextNonceFloor, lastTxHash };
+    },
+    async commitBroadcast(nonce, txHash) {
+      guard.assertActive();
+      if (!Number.isSafeInteger(nonce) || nonce < 0 || !/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+        throw new Error(`${label}广播 nonce 或交易哈希无效`);
+      }
+      const committed = await commitBroadcastNonce(
+        basePath,
+        tokenHeader,
+        lease.leaseId,
+        lease.leaseToken,
+        nonce,
+        txHash.toLowerCase(),
+      );
+      nextNonceFloor = committed.nextNonceFloor;
+      lastTxHash = committed.lastTxHash;
     },
     retainUntil(settlement) {
       const safeSettlement = Promise.resolve(settlement).catch(() => undefined);

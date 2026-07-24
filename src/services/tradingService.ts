@@ -65,6 +65,11 @@ export interface TradeParams {
   v3FeeTier?: number;           // Uniswap V3 fee tier，Pons 为 10000 (1%)
   leaseGuard?: {                // 后端全局钱包租约，在每次链上写入前再次校验
     assertActive: () => void;
+    getNonceState?: () => {
+      nextNonceFloor?: number;
+      lastTxHash?: string;
+    };
+    commitBroadcast?: (nonce: number, txHash: string) => Promise<void>;
   };
   onTransactionHash?: (txHash: string, kind: 'approval' | 'trade') => void;
   /**
@@ -133,7 +138,8 @@ function applyBalancePercent(balance: bigint, percent: number): bigint {
 async function getAndIncrementNonce(
   publicClient: any,
   address: `0x${string}`,
-  chainId: number
+  chainId: number,
+  leaseGuard?: TradeParams['leaseGuard'],
 ): Promise<number> {
   const key = `${chainId}:${address.toLowerCase()}`;
 
@@ -145,30 +151,57 @@ async function getAndIncrementNonce(
   await previous;
 
   try {
-    // This system now waits for finality after every write, so there is no
-    // legitimate nonce pipeline to extend. If an older/external transaction is
-    // still pending, using the next pending nonce would only queue this trade
-    // behind it and recreate the hour-long "stuck" behaviour.
     const [latestNonce, pendingNonce] = await Promise.all([
       publicClient.getTransactionCount({ address, blockTag: 'latest' }),
       publicClient.getTransactionCount({ address, blockTag: 'pending' }),
     ]);
-    if (pendingNonce > latestNonce) {
+    const noncePipelineEnabled = chainId === 4663;
+    if (!noncePipelineEnabled && pendingNonce > latestNonce) {
       throw createWalletPendingPredecessorError(latestNonce, pendingNonce);
     }
     if (pendingNonce < latestNonce) {
       throw new Error('RPC 返回的 pending nonce 小于 latest nonce，状态不一致');
     }
 
-    // 获取本地追踪的nonce
+    const nonceState = leaseGuard?.getNonceState?.() ?? {};
+    const serverNonceFloor = Number.isSafeInteger(nonceState.nextNonceFloor)
+      ? Number(nonceState.nextNonceFloor)
+      : 0;
     const localNonce = nonceManager.get(key) || 0;
-    if (localNonce > pendingNonce) {
+    const observedNonceFloor = Math.max(latestNonce, pendingNonce, serverNonceFloor);
+
+    // A successful previous task may have committed its deterministic hash a
+    // few milliseconds before this RPC node updates eth_getTransactionCount.
+    // Confirm that hash is visible before extending the server nonce floor.
+    if (serverNonceFloor > pendingNonce) {
+      const lastTxHash = nonceState.lastTxHash;
+      let visibleTransaction: any;
+      try {
+        visibleTransaction = lastTxHash
+          ? await publicClient.getTransaction({ hash: lastTxHash as `0x${string}` })
+          : undefined;
+      } catch {
+        visibleTransaction = undefined;
+      }
+      if (
+        !visibleTransaction
+        || Number(visibleTransaction.nonce) !== serverNonceFloor - 1
+        || String(visibleTransaction.from || '').toLowerCase() !== address.toLowerCase()
+      ) {
+        const error = new Error(
+          '上一笔已广播交易尚未同步到当前 RPC，本轮暂时跳过该钱包并自动重试',
+        ) as Error & { code: string };
+        error.code = 'TRANSFER_LEASE_BUSY';
+        throw error;
+      }
+    }
+
+    if (localNonce > observedNonceFloor) {
       throw new Error('本地仍保留一笔提交状态未知的 nonce，已停止继续发送');
     }
 
-    const nonce = pendingNonce;
+    const nonce = observedNonceFloor;
 
-    // 更新本地追踪的nonce
     nonceManager.set(key, nonce + 1);
 
     return nonce;
@@ -344,9 +377,17 @@ export class TradingService {
   }
 
   // 获取最新的 nonce（使用全局nonce管理器）
-  private async getLatestNonce(address: `0x${string}`): Promise<number> {
+  private async getLatestNonce(
+    address: `0x${string}`,
+    leaseGuard?: TradeParams['leaseGuard'],
+  ): Promise<number> {
     try {
-      return await getAndIncrementNonce(this.publicClient, address, this.chainId);
+      return await getAndIncrementNonce(
+        this.publicClient,
+        address,
+        this.chainId,
+        leaseGuard,
+      );
     } catch (error) {
       if (isWalletPendingPredecessorError(error)) throw error;
       throw new Error(`链 ${this.chainId} pending nonce 获取失败: ${parseBlockchainError(error)}`);
@@ -467,7 +508,10 @@ export class TradingService {
         if (this.chainId === 4663) {
           if (!localAccount) throw new Error('Robinhood 鎺堟潈缂哄皯鏈湴绛惧悕璐︽埛');
           params.leaseGuard?.assertActive();
-          const preparation = await this.reserveRobinhoodNonceAndFee(ownerAddress);
+          const preparation = await this.reserveRobinhoodNonceAndFee(
+            ownerAddress,
+            params.leaseGuard,
+          );
           const nonce = preparation.nonce;
           reservedNonce = nonce;
           const signed = await this.prepareRobinhoodRawTransaction(localAccount, {
@@ -484,6 +528,7 @@ export class TradingService {
           params.leaseGuard?.assertActive();
           submitAttempted = true;
           await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+          await params.leaseGuard?.commitBroadcast?.(nonce, signed.hash);
           sentApprovalHash = signed.hash;
         } else {
           params.leaseGuard?.assertActive();
@@ -1776,9 +1821,10 @@ export class TradingService {
    */
   private async reserveRobinhoodNonceAndFee(
     address: `0x${string}`,
+    leaseGuard?: TradeParams['leaseGuard'],
   ): Promise<{ nonce: number; fees: RobinhoodFeeEstimate }> {
     const [nonceResult, feeResult] = await Promise.allSettled([
-      this.getLatestNonce(address),
+      this.getLatestNonce(address, leaseGuard),
       this.getRobinhoodFeeEstimate(),
     ]);
 
@@ -1956,7 +2002,7 @@ export class TradingService {
           fee,
         });
         params.leaseGuard?.assertActive();
-        const nonce = await this.getLatestNonce(account.address);
+        const nonce = await this.getLatestNonce(account.address, params.leaseGuard);
         reservedNonce = nonce;
         const signed = await this.prepareRobinhoodRawTransaction(account, {
           to: request.to,
@@ -1970,6 +2016,7 @@ export class TradingService {
           params.leaseGuard?.assertActive();
           submitAttempted = true;
           await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+          await params.leaseGuard?.commitBroadcast?.(nonce, signed.hash);
         };
         if (params.robinhoodBroadcastParticipant) {
           await params.robinhoodBroadcastParticipant.arrive(
@@ -2080,7 +2127,7 @@ export class TradingService {
           amountIn,
           fee,
         }),
-        this.reserveRobinhoodNonceAndFee(account.address),
+        this.reserveRobinhoodNonceAndFee(account.address, params.leaseGuard),
       ]);
       if (preparationResult.status === 'fulfilled') {
         reservedNonce = preparationResult.value.nonce;
@@ -2112,6 +2159,7 @@ export class TradingService {
         params.leaseGuard?.assertActive();
         submitAttempted = true;
         await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+        await params.leaseGuard?.commitBroadcast?.(nonce, signed.hash);
       };
       if (params.robinhoodBroadcastParticipant) {
         await params.robinhoodBroadcastParticipant.arrive(

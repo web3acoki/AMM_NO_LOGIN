@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { keccak256, type Address, type Hash, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { WALLET_PENDING_PREDECESSOR_CODE } from '../pendingNonceGuard';
 
 const mocks = vi.hoisted(() => ({
   httpTransport: vi.fn(),
@@ -9,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     readContract: vi.fn(),
     getBalance: vi.fn(),
     getTransactionCount: vi.fn(),
+    getTransaction: vi.fn(),
     getBlockNumber: vi.fn(),
     estimateFeesPerGas: vi.fn(),
     estimateGas: vi.fn(),
@@ -143,6 +143,7 @@ beforeEach(() => {
   mocks.httpTransport.mockImplementation((url: string, config?: unknown) => ({ url, config }));
   installReadContractDefaults();
   mocks.publicClient.getTransactionCount.mockResolvedValue(7);
+  mocks.publicClient.getTransaction.mockResolvedValue(undefined);
   mocks.publicClient.getBalance.mockResolvedValue(10n ** 18n);
   mocks.publicClient.getBlockNumber.mockResolvedValue(123n);
   mocks.sequencerClient.request.mockResolvedValue({ rpc: '1.0' });
@@ -446,6 +447,93 @@ describe('TradingService broadcast finality', () => {
     expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it('commits the accepted Robinhood nonce before returning a background settlement', async () => {
+    const commitBroadcast = vi.fn().mockResolvedValue(undefined);
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      leaseGuard: {
+        assertActive: vi.fn(),
+        getNonceState: () => ({}),
+        commitBroadcast,
+      },
+    });
+
+    expect(result).toMatchObject({ success: true, status: 'broadcast' });
+    expect(commitBroadcast).toHaveBeenCalledTimes(1);
+    expect(commitBroadcast).toHaveBeenCalledWith(7, result.txHash);
+    expect(mocks.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a committed nonce floor after verifying the previous hash on a lagging RPC', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY_A);
+    const previousHash = `0x${'78'.repeat(32)}` as Hash;
+    mocks.publicClient.getTransaction.mockResolvedValue({
+      hash: previousHash,
+      nonce: 7,
+      from: account.address,
+    });
+    const commitBroadcast = vi.fn().mockResolvedValue(undefined);
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      leaseGuard: {
+        assertActive: vi.fn(),
+        getNonceState: () => ({
+          nextNonceFloor: 8,
+          lastTxHash: previousHash,
+        }),
+        commitBroadcast,
+      },
+    });
+
+    expect(result).toMatchObject({ success: true, status: 'broadcast' });
+    expect(mocks.publicClient.getTransaction).toHaveBeenCalledWith({ hash: previousHash });
+    expect(commitBroadcast).toHaveBeenCalledWith(8, result.txHash);
+  });
+
+  it('waits instead of opening a nonce gap when a committed hash is not visible yet', async () => {
+    const previousHash = `0x${'90'.repeat(32)}` as Hash;
+    mocks.publicClient.getTransaction.mockRejectedValueOnce(new Error('not found'));
+    const commitBroadcast = vi.fn().mockResolvedValue(undefined);
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      leaseGuard: {
+        assertActive: vi.fn(),
+        getNonceState: () => ({
+          nextNonceFloor: 8,
+          lastTxHash: previousHash,
+        }),
+        commitBroadcast,
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, status: 'failed' });
+    expect(result.txHash).toBeUndefined();
+    expect(result.error).toContain('自动重试');
+    expect(commitBroadcast).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it('shares one fee snapshot and broadcasts concurrent wallets as raw transactions', async () => {
     const service = createTradingService(
       4663,
@@ -651,26 +739,33 @@ describe('TradingService broadcast finality', () => {
     expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
-  it('refuses to stack a new trade behind an existing pending nonce', async () => {
+  it('allocates the next pending nonce for another Robinhood task on the same wallet', async () => {
     mocks.publicClient.getTransactionCount.mockImplementation(async ({ blockTag }: { blockTag: string }) => (
       blockTag === 'pending' ? 8 : 7
     ));
+    const commitBroadcast = vi.fn().mockResolvedValue(undefined);
     const service = createTradingService(
       4663,
       'http://robinhood.test',
       UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
     );
 
-    const result = await service.executeTrade(robinhoodSellParams(PRIVATE_KEY_A));
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      leaseGuard: {
+        assertActive: vi.fn(),
+        getNonceState: () => ({}),
+        commitBroadcast,
+      },
+    });
 
     expect(result).toMatchObject({
-      success: false,
-      status: 'pending',
-      code: WALLET_PENDING_PREDECESSOR_CODE,
+      success: true,
+      status: 'broadcast',
       transactionKind: 'trade',
     });
-    expect(result.txHash).toBeUndefined();
-    expect(result.error).toContain('待确认前序交易');
-    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+    expect(commitBroadcast).toHaveBeenCalledWith(8, result.txHash);
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
 });

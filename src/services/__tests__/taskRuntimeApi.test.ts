@@ -41,7 +41,7 @@ describe('task runtime API', () => {
     const [url, request] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain(`/api/tasks/${TASK_ID}/runtime/start`);
     const headers = request.headers as Headers;
-    expect(headers.get('X-AMM-Coordination-Version')).toBe('2');
+    expect(headers.get('X-AMM-Coordination-Version')).toBe('3');
     expect(headers.get('Authorization')).toBe('Bearer test-auth-token');
     expect(JSON.parse(String(request.body))).toMatchObject({
       runtimeId: RUNTIME_ID,
@@ -80,9 +80,9 @@ describe('task runtime API', () => {
     const heartbeatHeaders = fetchMock.mock.calls[0][1].headers as Headers;
     const stopHeaders = fetchMock.mock.calls[1][1].headers as Headers;
     expect(heartbeatHeaders.get('X-Task-Runtime-Token')).toBe(RUNTIME_TOKEN);
-    expect(heartbeatHeaders.get('X-AMM-Coordination-Version')).toBe('2');
+    expect(heartbeatHeaders.get('X-AMM-Coordination-Version')).toBe('3');
     expect(stopHeaders.get('X-Task-Runtime-Token')).toBe(RUNTIME_TOKEN);
-    expect(stopHeaders.get('X-AMM-Coordination-Version')).toBe('2');
+    expect(stopHeaders.get('X-AMM-Coordination-Version')).toBe('3');
     expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
       runtimeId: RUNTIME_ID,
     });

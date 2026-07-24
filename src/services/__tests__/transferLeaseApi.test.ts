@@ -34,6 +34,62 @@ beforeEach(() => {
 });
 
 describe('server lease retention lifecycle', () => {
+  it('exposes and advances the server nonce floor before releasing the lease', async () => {
+    const txHash = `0x${'12'.repeat(32)}`;
+    mocks.apiRequest.mockImplementation(async (path: string, options: RequestInit = {}) => {
+      if (path.endsWith('/acquire')) {
+        return {
+          data: {
+            leaseId: LEASE_ID,
+            leaseToken: LEASE_TOKEN,
+            expiresAt: new Date(Date.now() + 90_000).toISOString(),
+            leaseDurationMs: 90_000,
+            heartbeatIntervalMs: 20_000,
+            nextNonceFloor: 7,
+            lastTxHash: `0x${'34'.repeat(32)}`,
+          },
+        };
+      }
+      if (path.endsWith('/commit-broadcast')) {
+        expect(options).toMatchObject({
+          method: 'POST',
+          headers: { 'X-Transfer-Lease-Token': LEASE_TOKEN },
+          body: JSON.stringify({ nonce: 7, txHash }),
+        });
+        return {
+          data: {
+            nextNonceFloor: 8,
+            lastTxHash: txHash,
+          },
+        };
+      }
+      if (options.method === 'DELETE') return { data: undefined };
+      throw new Error(`unexpected lease request: ${options.method} ${path}`);
+    });
+
+    await withTransferLease(
+      4663,
+      '0x000000000000000000000000000000000000beef',
+      async guard => {
+        expect(guard.getNonceState?.()).toEqual({
+          nextNonceFloor: 7,
+          lastTxHash: `0x${'34'.repeat(32)}`,
+        });
+        await guard.commitBroadcast?.(7, txHash);
+        expect(guard.getNonceState?.()).toEqual({
+          nextNonceFloor: 8,
+          lastTxHash: txHash,
+        });
+      },
+    );
+
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(3);
+    expect(mocks.apiRequest).toHaveBeenLastCalledWith(
+      `/api/transfer-leases/${LEASE_ID}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
   it('keeps retention completion pending until the server DELETE finishes', async () => {
     const settlement = deferred<void>();
     const release = deferred<{ data: undefined }>();

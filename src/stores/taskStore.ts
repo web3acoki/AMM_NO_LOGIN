@@ -1074,10 +1074,19 @@ export const useTaskStore = defineStore('task', () => {
   ): TransferLeaseGuard | undefined {
     const activeGuards = guards.filter((guard): guard is TransferLeaseGuard => !!guard);
     if (activeGuards.length === 0) return undefined;
+    const nonceCoordinator = activeGuards.find(
+      guard => guard.getNonceState && guard.commitBroadcast,
+    );
     return {
       assertActive() {
         for (const guard of activeGuards) guard.assertActive();
       },
+      getNonceState: nonceCoordinator?.getNonceState
+        ? () => nonceCoordinator.getNonceState!()
+        : undefined,
+      commitBroadcast: nonceCoordinator?.commitBroadcast
+        ? (nonce, txHash) => nonceCoordinator.commitBroadcast!(nonce, txHash)
+        : undefined,
       retainUntil(settlement) {
         const completions = activeGuards
           .map(guard => guard.retainUntil?.(settlement))
@@ -1103,6 +1112,12 @@ export const useTaskStore = defineStore('task', () => {
         localGuard.assertActive();
         serverGuard.assertActive();
       },
+      getNonceState: serverGuard.getNonceState
+        ? () => serverGuard.getNonceState!()
+        : undefined,
+      commitBroadcast: serverGuard.commitBroadcast
+        ? (nonce, txHash) => serverGuard.commitBroadcast!(nonce, txHash)
+        : undefined,
       retainUntil(settlement) {
         const serverReleased = serverGuard.retainUntil?.(settlement)
           ?? Promise.resolve(settlement).then(() => undefined, () => undefined);
@@ -1763,6 +1778,7 @@ export const useTaskStore = defineStore('task', () => {
     ) => Promise<T>,
     shouldAcquire?: () => boolean,
     isWalletAvailable?: (walletAddress: string) => boolean,
+    busyRetryAttempt = 0,
   ): Promise<T> {
     const uniqueAddresses = [...new Map(
       walletAddresses
@@ -1770,6 +1786,15 @@ export const useTaskStore = defineStore('task', () => {
         .map(address => [address.trim().toLowerCase(), address.trim()] as const),
     ).values()];
     if (uniqueAddresses.length === 0) return callback(new Map(), []);
+    const initiallyLockedWalletKeys = new Set(
+      uniqueAddresses
+        .map(address => taskWalletLeaseKey(chainId, address))
+        .filter(key => taskWalletOperationLocks.has(key)),
+    );
+    const hasImmediatelyAvailableLocalWallet = uniqueAddresses.some(address => (
+      !initiallyLockedWalletKeys.has(taskWalletLeaseKey(chainId, address))
+      && (!isWalletAvailable || isWalletAvailable(address))
+    ));
 
     // Acquire every source wallet independently. The server batch endpoint is
     // intentionally all-or-none, which meant one remotely busy wallet could
@@ -1789,8 +1814,11 @@ export const useTaskStore = defineStore('task', () => {
     const entries = uniqueAddresses.map(address => {
       const localLeaseKey = taskWalletLeaseKey(chainId, address);
       if (
-        taskWalletOperationLocks.has(localLeaseKey)
-        || (isWalletAvailable && !isWalletAvailable(address))
+        (isWalletAvailable && !isWalletAvailable(address))
+        || (
+          hasImmediatelyAvailableLocalWallet
+          && initiallyLockedWalletKeys.has(localLeaseKey)
+        )
       ) {
         const outcome: ReadyOutcome = {
           address,
@@ -1871,6 +1899,30 @@ export const useTaskStore = defineStore('task', () => {
     for (const outcome of outcomes) {
       if ('guard' in outcome) guards.set(outcome.address.toLowerCase(), outcome.guard);
       else busyWalletAddresses.push(outcome.address);
+    }
+
+    // If every wallet is remotely busy there is no useful partial cohort to
+    // broadcast. Keep this one round queued with bounded backoff so a task in
+    // another tab/device can hand the wallet directly to us instead of making
+    // the user wait for the full configured task interval.
+    if (
+      guards.size === 0
+      && busyWalletAddresses.length === uniqueAddresses.length
+      && (!shouldAcquire || shouldAcquire())
+    ) {
+      releaseAcquiredCallbacks();
+      await Promise.all(entries.map(entry => entry.operation));
+      const retryDelayMs = Math.min(1_000, 100 * (2 ** Math.min(busyRetryAttempt, 4)));
+      await new Promise<void>(resolve => globalThis.setTimeout(resolve, retryDelayMs));
+      if (shouldAcquire && !shouldAcquire()) throw new TaskRoundCancelledError();
+      return withAvailableTaskWalletLeases(
+        chainId,
+        uniqueAddresses,
+        callback,
+        shouldAcquire,
+        isWalletAvailable,
+        busyRetryAttempt + 1,
+      );
     }
 
     let callbackResult!: T;
@@ -3575,6 +3627,15 @@ export const useTaskStore = defineStore('task', () => {
     } catch (error: any) {
       if (error instanceof TaskRoundCancelledError) return false;
       if (!isCurrentExecution()) return false;
+      if (isRecoverableWalletLeaseBusy(error)) {
+        addLog(
+          task.id,
+          'warning',
+          `钱包正在执行另一个任务，本轮暂时跳过并在下一轮自动重试: ${error.message}`,
+          walletAddress,
+        );
+        return false;
+      }
       if (isCoordinationLeaseError(error)) {
         addLog(task.id, 'warning', `交易协调锁不可用: ${error.message}；任务已暂停且本轮剩余交易不会发送`, walletAddress);
         if (task.status === 'running') pauseTask(task.id);
@@ -3935,6 +3996,15 @@ export const useTaskStore = defineStore('task', () => {
     } catch (error: any) {
       if (error instanceof TaskRoundCancelledError) return false;
       if (!isCurrentExecution()) return false;
+      if (isRecoverableWalletLeaseBusy(error)) {
+        addLog(
+          task.id,
+          'warning',
+          `[内盘-快速] 钱包正在执行另一个任务，本轮暂时跳过并在下一轮自动重试: ${error.message}`,
+          walletAddress,
+        );
+        return false;
+      }
       if (isCoordinationLeaseError(error)) {
         addLog(task.id, 'warning', `[内盘-快速] 交易协调锁不可用: ${error.message}；任务已暂停且本轮剩余交易不会发送`, walletAddress);
         if (task.status === 'running') pauseTask(task.id);
@@ -4349,10 +4419,11 @@ export const useTaskStore = defineStore('task', () => {
         scheduleStatsSync(task.id);
       });
 
-      // Keep both the in-page wallet gate and the server heartbeat lease alive
-      // until confirmation/reconciliation settles, while returning this round
-      // immediately after the RPC accepted the deterministic transaction hash.
-      leaseGuard.retainUntil(completion);
+      // The RPC-accepted nonce/hash was committed while the short wallet lease
+      // was still held. Release that lease now so another running task can
+      // reserve the next nonce; finality remains a read-only background job.
+      // Unknown/hashless submissions still use the fail-closed retention path
+      // below and therefore cannot open a nonce hole.
       return true;
     }
 
@@ -4594,21 +4665,33 @@ export const useTaskStore = defineStore('task', () => {
       }
     }
 
-    // Select only wallets that are not already broadcasting/confirming in this
-    // tab.  A fixed-rate scheduler must never queue a whole new round behind a
-    // slow receipt from the same wallet; it should immediately use other
-    // wallets and revisit the busy one after its retained lease is released.
+    // Prefer wallets that are immediately free. If every Robinhood wallet is
+    // already in another task's short critical section, queue this one round
+    // behind that section instead of starving a same-wallet task until its
+    // configured interval elapses. The per-task active-round fence below
+    // prevents duplicate queued rounds.
     const reservedThisRound = new Set<string>();
     const currentlyFreeWalletCount = wallets.filter(walletAddress => {
       const leaseKey = taskWalletLeaseKey(task.config.chainId, walletAddress);
       return !taskWalletOperationLocks.has(leaseKey)
         && !activeBatchSellWalletKeys.has(leaseKey);
     }).length;
+    const queueSharedRobinhoodWallets = (
+      task.config.chainId === 4663
+      && currentlyFreeWalletCount === 0
+    );
+    const robinhoodDirectionCapacity = queueSharedRobinhoodWallets
+      ? wallets.filter(walletAddress => (
+          !activeBatchSellWalletKeys.has(
+            taskWalletLeaseKey(task.config.chainId, walletAddress),
+          )
+        )).length
+      : currentlyFreeWalletCount;
 
     const remainingCountSlots = remainingCountAdmissionSlots(task);
     const directionCapacity = task.config.chainId === 4663
       ? Math.min(
-          currentlyFreeWalletCount,
+          robinhoodDirectionCapacity,
           remainingCountSlots ?? Number.POSITIVE_INFINITY,
         )
       : Math.min(
@@ -4654,8 +4737,11 @@ export const useTaskStore = defineStore('task', () => {
         const normalized = walletAddress.toLowerCase();
         const leaseKey = taskWalletLeaseKey(task.config.chainId, walletAddress);
         const unavailable = (
-          taskWalletOperationLocks.has(leaseKey)
-          || activeBatchSellWalletKeys.has(leaseKey)
+          activeBatchSellWalletKeys.has(leaseKey)
+          || (
+            !queueSharedRobinhoodWallets
+            && taskWalletOperationLocks.has(leaseKey)
+          )
           || (robinhoodFixedRate && reservedThisRound.has(normalized))
         );
         if (!unavailable) {
@@ -5184,11 +5270,29 @@ export const useTaskStore = defineStore('task', () => {
     // 30-second deadline, so routing a large clear-all batch through it would
     // negate that adaptive window. Successful pure-sell barriers still join
     // the shared broadcast wave directly.
+    //
+    // A task that overlaps an already starting/running task on the same wallet
+    // must not join that task's first-round cohort: the wallet queue is
+    // intentionally serial, so making the first holder wait for the queued
+    // holder would deadlock the cohort. It still joins the ordinary short
+    // broadcast wave after it acquires the wallet.
+    const taskWalletKeys = new Set(
+      task.walletAddresses.map(address => taskWalletLeaseKey(task.config.chainId, address)),
+    );
+    const overlapsActiveTaskWallet = tasks.value.some(candidate => (
+      candidate.id !== task.id
+      && candidate.config.chainId === task.config.chainId
+      && (candidate.status === 'running' || startingTaskIds.has(candidate.id))
+      && candidate.walletAddresses.some(
+        address => taskWalletKeys.has(taskWalletLeaseKey(candidate.config.chainId, address)),
+      )
+    ));
     let firstRoundBroadcastRegistration: RobinhoodTaskBroadcastRegistration | undefined;
     try {
       firstRoundBroadcastRegistration = (
         task.config.chainId === 4663
         && !isPureSellAllTask(task)
+        && !overlapsActiveTaskWallet
       )
         ? registerRobinhoodTaskBroadcastCohort(getRuntimeRobinhoodRpcUrl())
         : undefined;
@@ -5455,6 +5559,7 @@ export const useTaskStore = defineStore('task', () => {
     function dispatchRound(
       currentTask: Task,
       suppliedRegistration?: RobinhoodTaskBroadcastRegistration,
+      suppressRegistration = false,
     ): void {
       if (!isTaskExecutionCurrent(currentTask, executionGeneration)) {
         suppliedRegistration?.fail();
@@ -5463,6 +5568,7 @@ export const useTaskStore = defineStore('task', () => {
       const roundBroadcastRegistration = (
         currentTask.config.chainId === 4663
         && !isPureSellAllTask(currentTask)
+        && !suppressRegistration
       )
         ? (
             suppliedRegistration
@@ -5472,8 +5578,12 @@ export const useTaskStore = defineStore('task', () => {
       const roundStartedAt = Date.now();
       scheduleNextRound(roundStartedAt);
 
-      const allowOverlap = currentTask.config.chainId === 4663
-        && currentTask.config.stopType === 'none';
+      // Accepted Robinhood hashes now finish the wallet critical section
+      // immediately and settle in the background. There is no longer a reason
+      // to overlap two preparation rounds from the same task; keeping one
+      // active round also prevents a temporarily queued shared wallet from
+      // accumulating duplicate future rounds.
+      const allowOverlap = false;
       if (!allowOverlap && activeRoundsForTask(taskId).length > 0) {
         roundBroadcastRegistration?.fail();
         return;
@@ -5511,7 +5621,11 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     if (task.config.chainId === 4663) {
-      dispatchRound(task, firstRoundBroadcastRegistration);
+      dispatchRound(
+        task,
+        firstRoundBroadcastRegistration,
+        overlapsActiveTaskWallet,
+      );
     } else {
       // Preserve the established first-round completion contract for BSC/OKX.
       // Their services still return only after finality and are intentionally

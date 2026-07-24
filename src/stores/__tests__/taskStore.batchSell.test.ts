@@ -1516,7 +1516,7 @@ describe('automatic task cadence and Robinhood thread concurrency', () => {
     expect(oldTokenBalanceReads).toBe(1);
     expect(task.stats.sellCount).toBe(0);
     expect(task.status).toBe('running');
-    expect(mocks.executeTrade).toHaveBeenCalledTimes(1);
+    expect(mocks.executeTrade).toHaveBeenCalledTimes(2);
   });
 
   it('skips one remotely busy pure-sell wallet before the barrier and sells the other free wallets', async () => {
@@ -1601,6 +1601,57 @@ describe('automatic task cadence and Robinhood thread concurrency', () => {
     expect(task.logs.some(log => (
       log.message.includes('本轮跳过 1 个正被其他任务使用的钱包')
     ))).toBe(true);
+    expect(store.stopTask(task.id)).toBe(true);
+  });
+
+  it('keeps a buy task running when its only wallet lease is temporarily busy', async () => {
+    mocks.serverMode = true;
+    mocks.loggedIn = true;
+    installWallets([WALLET_A]);
+
+    const busyError = Object.assign(
+      new Error('TRANSFER_LEASE_BUSY: wallet is owned by another task'),
+      { code: 'TRANSFER_LEASE_BUSY' },
+    );
+    let remoteBusy = true;
+    mocks.withTransferLease.mockImplementation(
+      async (_chainId: number, _walletAddress: string, callback: Function) => {
+        if (remoteBusy) throw busyError;
+        return callback({
+          assertActive: vi.fn(),
+          retainUntil: mocks.retainUntil,
+        });
+      },
+    );
+    mocks.executeTrade.mockResolvedValue({
+      success: true,
+      status: 'confirmed',
+      txHash: '0xbuy-after-wallet-release',
+    });
+
+    const task = makeTask(4663, [WALLET_A], {
+      id: 'busy-wallet-buy-task',
+      _id: 'server-busy-wallet-buy-task',
+    });
+    task.config.marketType = 'outer';
+    task.config.buyThreadCount = 1;
+    task.config.sellThreadCount = 0;
+    task.config.sellAll = false;
+    task.config.stopType = 'none';
+    task.config.interval = 0.05;
+    const store = installTask(task);
+
+    expect(await store.startTask(task.id)).toBe(true);
+    await vi.waitFor(() => expect(mocks.withTransferLease).toHaveBeenCalled());
+    expect(task.status).toBe('running');
+    expect(mocks.executeTrade).not.toHaveBeenCalled();
+
+    remoteBusy = false;
+    await vi.waitFor(
+      () => expect(mocks.executeTrade).toHaveBeenCalled(),
+      { timeout: 2_000 },
+    );
+    expect(task.status).toBe('running');
     expect(store.stopTask(task.id)).toBe(true);
   });
 
@@ -1981,6 +2032,61 @@ describe('automatic task cadence and Robinhood thread concurrency', () => {
     await Promise.all([executionA, executionB]);
 
     expect(mocks.executeTrade).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the shared wallet after accepted hashes so two tasks pipeline consecutive transactions', async () => {
+    installWallets([WALLET_A]);
+    const settlementA = deferred<{ status: 'confirmed' }>();
+    const settlementB = deferred<{ status: 'confirmed' }>();
+    mocks.executeTrade
+      .mockResolvedValueOnce({
+        success: true,
+        status: 'broadcast',
+        txHash: '0xpipelined-a',
+        settlement: settlementA.promise,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        status: 'broadcast',
+        txHash: '0xpipelined-b',
+        settlement: settlementB.promise,
+      });
+
+    const taskA = makeTask(4663, [WALLET_A], { id: 'pipelined-wallet-task-a' });
+    const taskB = makeTask(4663, [WALLET_A], { id: 'pipelined-wallet-task-b' });
+    for (const task of [taskA, taskB]) {
+      task.config.marketType = 'outer';
+      task.config.buyThreadCount = 1;
+      task.config.sellThreadCount = 0;
+      task.config.sellAll = false;
+      task.config.stopType = 'none';
+      task.config.interval = 60;
+    }
+    const store = useTaskStore();
+    store.tasks = [taskA, taskB];
+
+    expect(await store.startTask(taskA.id)).toBe(true);
+    expect(await store.startTask(taskB.id)).toBe(true);
+    await vi.waitFor(
+      () => expect(mocks.executeTrade).toHaveBeenCalledTimes(2),
+      { timeout: 2_000 },
+    );
+
+    // Neither receipt has settled, but both accepted hashes have already left
+    // the short wallet critical section and both tasks remain schedulable.
+    expect(taskA.stats.buyCount).toBe(0);
+    expect(taskB.stats.buyCount).toBe(0);
+    expect(taskA.status).toBe('running');
+    expect(taskB.status).toBe('running');
+
+    settlementA.resolve({ status: 'confirmed' });
+    settlementB.resolve({ status: 'confirmed' });
+    await vi.waitFor(() => {
+      expect(taskA.stats.buyCount).toBe(1);
+      expect(taskB.stats.buyCount).toBe(1);
+    });
+    expect(store.stopTask(taskA.id)).toBe(true);
+    expect(store.stopTask(taskB.id)).toBe(true);
   });
 
   it('does not schedule the same wallet twice when thread count exceeds wallet count', async () => {
