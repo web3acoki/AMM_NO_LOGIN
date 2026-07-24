@@ -5,7 +5,15 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { bscTestnet, bsc, okc } from 'viem/chains';
 import { erc20Abi } from '../viem/abis/erc20';
 import { WalletDetector } from '../utils/walletDetector';
-import { USDT_ADDRESSES, USDT_DECIMALS, BATCH_TRANSFER_CONTRACTS, PRIVATE_KEY_REGEX, ASTER_TOKEN_ADDRESS, ASTER_DECIMALS } from '../constants';
+import {
+  USDT_ADDRESSES,
+  USDT_DECIMALS,
+  BATCH_TRANSFER_CONTRACTS,
+  PRIVATE_KEY_REGEX,
+  ASTER_TOKEN_ADDRESS,
+  ASTER_DECIMALS,
+  ROBINHOOD_CHAIN_ID,
+} from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
 import { useChainStore } from './chainStore';
 import * as walletApi from '../services/walletApi';
@@ -61,6 +69,110 @@ type WalletBatch = {
   totalTokenBalance?: string;
   totalAsterBalance?: string;
 };
+
+type BalanceQueryTargetToken = {
+  address: string;
+  decimals: number;
+} | null;
+
+type RawBatchBalanceTotals = {
+  totalNative: bigint;
+  totalToken: bigint;
+  totalAster: bigint;
+  failedCount: number;
+};
+
+export type SelectedBatchBalanceSummary = {
+  totalNativeBalance: string;
+  totalTokenBalance?: string;
+  totalAsterBalance?: string;
+  walletCount: number;
+  failedCount: number;
+};
+
+/**
+ * A wallet may have been imported into more than one batch. Selected-batch
+ * totals represent actual funds, so the same address must only be counted once.
+ */
+export function deduplicateBatchWallets(wallets: readonly WalletBatchItem[]): WalletBatchItem[] {
+  const uniqueWallets = new Map<string, WalletBatchItem>();
+  for (const wallet of wallets) {
+    const normalizedAddress = wallet.address.trim().toLowerCase();
+    if (!normalizedAddress || uniqueWallets.has(normalizedAddress)) continue;
+    uniqueWallets.set(normalizedAddress, wallet);
+  }
+  return Array.from(uniqueWallets.values());
+}
+
+async function queryBatchWalletBalanceTotals(
+  publicClient: ReturnType<typeof createPublicClient>,
+  wallets: readonly WalletBatchItem[],
+  targetToken: BalanceQueryTargetToken,
+  isBscChain: boolean,
+): Promise<RawBatchBalanceTotals> {
+  const batchSize = 20;
+  const totalBatches = Math.ceil(wallets.length / batchSize);
+  const results: { native: bigint; token: bigint; aster: bigint; failed: boolean }[] = [];
+
+  for (let i = 0; i < totalBatches; i++) {
+    const start = i * batchSize;
+    const end = Math.min(start + batchSize, wallets.length);
+    const currentBatch = wallets.slice(start, end);
+
+    const batchResults = await Promise.all(
+      currentBatch.map(async (wallet) => {
+        try {
+          const balance = await publicClient.getBalance({
+            address: wallet.address as `0x${string}`,
+          });
+          let tokenBalance = 0n;
+          let asterBalance = 0n;
+
+          if (targetToken) {
+            tokenBalance = await publicClient.readContract({
+              address: targetToken.address as `0x${string}`,
+              abi: erc20Abi,
+              functionName: 'balanceOf',
+              args: [wallet.address as `0x${string}`],
+            }) as bigint;
+          }
+
+          if (isBscChain) {
+            try {
+              asterBalance = await publicClient.readContract({
+                address: ASTER_TOKEN_ADDRESS,
+                abi: erc20Abi,
+                functionName: 'balanceOf',
+                args: [wallet.address as `0x${string}`],
+              }) as bigint;
+            } catch (error) {
+              console.warn(`Failed to fetch ASTER balance for ${wallet.address}:`, error);
+            }
+          }
+
+          return {
+            native: balance,
+            token: tokenBalance,
+            aster: asterBalance,
+            failed: false,
+          };
+        } catch (error) {
+          console.error(`Failed to fetch balance for ${wallet.address}:`, error);
+          return { native: 0n, token: 0n, aster: 0n, failed: true };
+        }
+      }),
+    );
+
+    results.push(...batchResults);
+  }
+
+  return {
+    failedCount: results.filter(result => result.failed).length,
+    totalNative: results.reduce((sum, result) => sum + result.native, 0n),
+    totalToken: results.reduce((sum, result) => sum + result.token, 0n),
+    totalAster: results.reduce((sum, result) => sum + result.aster, 0n),
+  };
+}
 
 // 检查是否应该使用服务器模式
 function shouldUseServerMode(): boolean {
@@ -213,7 +325,7 @@ export const useWalletStore = defineStore('wallet', {
     connectedWalletType: '' as string,
     localWallets: [] as LocalWallet[],
     walletDetector: WalletDetector.getInstance(),
-    currentChainId: 56 as number, // 默认BSC主网
+    currentChainId: ROBINHOOD_CHAIN_ID as number, // 默认 Robinhood Chain
     // 钱包选择相关状态
     selectedWalletAddresses: [] as string[], // 选中的钱包地址列表
     // 钱包批次管理
@@ -771,84 +883,34 @@ export const useWalletStore = defineStore('wallet', {
       };
     },
 
-    // 查询批次余额
-    // 并发批量查询批次钱包余额（优化版本，分批查询 + 单一RPC保证一致性）
+    // 查询单个批次余额（分批查询 + 单一 RPC 保证一致性）
     async refreshBatchBalances(batchId: string) {
       const batch = this.walletBatches.find(b => b.id === batchId);
       if (!batch) return;
 
-      // 使用单一 RPC 客户端保证所有查询在同一区块高度，避免不同节点数据不一致
       const publicClient = this.getPublicClient();
-      const tokenDecimals = this.targetToken?.decimals || 18;
+      const targetToken = this.targetToken
+        ? { address: this.targetToken.address, decimals: this.targetToken.decimals }
+        : null;
       const isBscChain = this.currentChainId === 56 || this.currentChainId === 97;
+      const totals = await queryBatchWalletBalanceTotals(
+        publicClient,
+        batch.wallets,
+        targetToken,
+        isBscChain,
+      );
 
-      const wallets = batch.wallets;
-      const batchSize = 20; // 每批20个，避免RPC限流
-      const totalBatches = Math.ceil(wallets.length / batchSize);
-
-      console.log(`开始查询批次余额: ${wallets.length} 个钱包, 分 ${totalBatches} 批, 每批 ${batchSize} 个`);
-
-      const results: { native: bigint; token: bigint; aster: bigint; failed: boolean }[] = [];
-
-      for (let i = 0; i < totalBatches; i++) {
-        const start = i * batchSize;
-        const end = Math.min(start + batchSize, wallets.length);
-        const currentBatch = wallets.slice(start, end);
-
-        const batchResults = await Promise.all(
-          currentBatch.map(async (wallet) => {
-          try {
-            const balance = await publicClient.getBalance({ address: wallet.address as `0x${string}` });
-            let tokenBalance = BigInt(0);
-            let asterBalance = BigInt(0);
-
-            if (this.targetToken) {
-              tokenBalance = await publicClient.readContract({
-                address: this.targetToken.address as `0x${string}`,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [wallet.address as `0x${string}`]
-              }) as bigint;
-            }
-
-            try {
-              if (!isBscChain) throw new Error('ASTER is BSC-only');
-              asterBalance = await publicClient.readContract({
-                address: ASTER_TOKEN_ADDRESS,
-                abi: erc20Abi,
-                functionName: 'balanceOf',
-                args: [wallet.address as `0x${string}`]
-              }) as bigint;
-            } catch (e) {
-              if (!isBscChain) return { native: balance, token: tokenBalance, aster: 0n, failed: false };
-              console.warn(`Failed to fetch ASTER balance for ${wallet.address}:`, e);
-            }
-
-            return { native: balance, token: tokenBalance, aster: asterBalance, failed: false };
-          } catch (error) {
-            console.error(`Failed to fetch balance for ${wallet.address}:`, error);
-            return { native: BigInt(0), token: BigInt(0), aster: BigInt(0), failed: true };
-          }
-        })
-        );
-
-        results.push(...batchResults);
-        console.log(`已完成 ${end}/${wallets.length} 个钱包`);
-      }
-
-      // 汇总结果（排除失败的钱包）
-      const failedCount = results.filter(r => r.failed).length;
-      const totalNative = results.reduce((sum, r) => sum + r.native, BigInt(0));
-      const totalToken = results.reduce((sum, r) => sum + r.token, BigInt(0));
-      const totalAster = results.reduce((sum, r) => sum + r.aster, BigInt(0));
-
-      batch.totalNativeBalance = formatEther(totalNative);
-      batch.totalTokenBalance = this.targetToken ? formatUnits(totalToken, tokenDecimals) : undefined;
-      batch.totalAsterBalance = isBscChain ? formatUnits(totalAster, ASTER_DECIMALS) : undefined;
+      batch.totalNativeBalance = formatEther(totals.totalNative);
+      batch.totalTokenBalance = targetToken
+        ? formatUnits(totals.totalToken, targetToken.decimals)
+        : undefined;
+      batch.totalAsterBalance = isBscChain
+        ? formatUnits(totals.totalAster, ASTER_DECIMALS)
+        : undefined;
       this.persistBatches();
 
-      if (failedCount > 0) {
-        console.warn(`批次余额查询完成，${failedCount}/${results.length} 个钱包查询失败`);
+      if (totals.failedCount > 0) {
+        console.warn(`批次余额查询完成，${totals.failedCount}/${batch.wallets.length} 个钱包查询失败`);
       }
       console.log(`批次余额查询完成: ${batch.totalNativeBalance} ${this.getChainConfig().nativeCurrency.symbol}`);
 
@@ -856,6 +918,48 @@ export const useWalletStore = defineStore('wallet', {
         totalNativeBalance: batch.totalNativeBalance,
         totalTokenBalance: batch.totalTokenBalance,
         totalAsterBalance: batch.totalAsterBalance,
+      };
+    },
+
+    // 查询选中批次的余额总和。跨批次重复地址只查询、计数一次。
+    async refreshSelectedBatchBalances(batchIds: string[]): Promise<SelectedBatchBalanceSummary> {
+      const selectedIds = new Set(batchIds);
+      const selectedWallets = this.walletBatches
+        .filter(batch => selectedIds.has(batch.id))
+        .flatMap(batch => batch.wallets);
+      const wallets = deduplicateBatchWallets(selectedWallets);
+      const targetToken = this.targetToken
+        ? { address: this.targetToken.address, decimals: this.targetToken.decimals }
+        : null;
+      const isBscChain = this.currentChainId === 56 || this.currentChainId === 97;
+
+      if (wallets.length === 0) {
+        return {
+          totalNativeBalance: '0',
+          totalTokenBalance: targetToken ? '0' : undefined,
+          totalAsterBalance: isBscChain ? '0' : undefined,
+          walletCount: 0,
+          failedCount: 0,
+        };
+      }
+
+      const totals = await queryBatchWalletBalanceTotals(
+        this.getPublicClient(),
+        wallets,
+        targetToken,
+        isBscChain,
+      );
+
+      return {
+        totalNativeBalance: formatEther(totals.totalNative),
+        totalTokenBalance: targetToken
+          ? formatUnits(totals.totalToken, targetToken.decimals)
+          : undefined,
+        totalAsterBalance: isBscChain
+          ? formatUnits(totals.totalAster, ASTER_DECIMALS)
+          : undefined,
+        walletCount: wallets.length,
+        failedCount: totals.failedCount,
       };
     },
 
@@ -1476,7 +1580,7 @@ export const useWalletStore = defineStore('wallet', {
         return this.currentChainId;
       }
       const chainStore = useChainStore();
-      return chainStore.selectedChainId || 56; // 默认BSC主网
+      return chainStore.selectedChainId || ROBINHOOD_CHAIN_ID;
     },
 
     setCurrentChainId(chainId: number) {

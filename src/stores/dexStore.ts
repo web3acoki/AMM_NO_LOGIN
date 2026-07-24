@@ -92,7 +92,7 @@ export const useDexStore = defineStore('dex', {
       { chainId: ROBINHOOD_CHAIN_ID, dexId: 'uniswap-v3' }, // Robinhood -> Uniswap V3
     ] as ChainDexMapping[],
     
-    selectedDexId: 'pancake-v2-mainnet' as string,
+    selectedDexId: 'uniswap-v3' as string,
   }),
   
   getters: {

@@ -96,9 +96,9 @@ export const useChainStore = defineStore('chain', {
         ],
       },
     ] as ChainItem[],
-    selectedChainId: 56 as number, // 默认选择 BSC 主网
-    selectedDex: 'pancake-v2' as SupportedDexProtocol,
-    rpcUrl: 'https://bsc-dataseed.binance.org' as string,
+    selectedChainId: ROBINHOOD_CHAIN_ID as number,
+    selectedDex: 'uniswap-v3' as SupportedDexProtocol,
+    rpcUrl: ROBINHOOD_OFFICIAL_RPC_URL as string,
     customRpcUrl: '' as string, // 自定义RPC节点
   }),
   getters: {

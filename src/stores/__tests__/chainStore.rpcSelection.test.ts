@@ -6,14 +6,27 @@ import {
 } from '../chainStore';
 import {
   ROBINHOOD_ARROW_RPC_URL,
+  ROBINHOOD_CHAIN_ID,
   ROBINHOOD_OFFICIAL_RPC_URL,
 } from '../../constants';
+import { useDexStore } from '../dexStore';
 
 beforeEach(() => {
   setActivePinia(createPinia());
 });
 
 describe('chainStore RPC selection', () => {
+  it('starts on Robinhood with its matching DEX and RPC after a fresh load', () => {
+    const store = useChainStore();
+    const dexStore = useDexStore();
+
+    expect(store.selectedChainId).toBe(ROBINHOOD_CHAIN_ID);
+    expect(store.selectedDex).toBe('uniswap-v3');
+    expect(store.rpcUrl).toBe(ROBINHOOD_OFFICIAL_RPC_URL);
+    expect(store.effectiveRpcUrl).toBe(ROBINHOOD_OFFICIAL_RPC_URL);
+    expect(dexStore.selectedDexId).toBe('uniswap-v3');
+  });
+
   it('falls back to the selected chain RPC when v-model left the previous chain RPC behind', () => {
     const store = useChainStore();
     store.selectedChainId = 4663;

@@ -65,8 +65,8 @@
     <!-- 批次列表 -->
     <div v-if="walletBatches.length > 0" class="batch-list">
       <!-- 批量操作栏 -->
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <div class="d-flex align-items-center gap-2">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <div class="d-flex flex-wrap align-items-center gap-2">
           <div class="form-check">
             <input
               type="checkbox"
@@ -81,6 +81,21 @@
           <span v-if="selectedBatchIds.length > 0" class="badge bg-primary">
             已选 {{ selectedBatchIds.length }} 个
           </span>
+          <div class="form-check form-switch mb-0 ms-1">
+            <input
+              id="autoCalculateSelectedBatchBalances"
+              v-model="autoCalculateSelectedBalances"
+              class="form-check-input"
+              type="checkbox"
+            >
+            <label
+              class="form-check-label small"
+              for="autoCalculateSelectedBatchBalances"
+              title="勾选后，选择批次时会自动查询并汇总余额"
+            >
+              自动计算余额总和
+            </label>
+          </div>
         </div>
         <button
           v-if="selectedBatchIds.length > 0"
@@ -95,6 +110,65 @@
             <i class="bi bi-trash me-1"></i>删除选中 ({{ selectedBatchIds.length }})
           </span>
         </button>
+      </div>
+
+      <div
+        v-if="autoCalculateSelectedBalances"
+        class="selected-balance-summary border rounded bg-light px-3 py-2 mb-2"
+        aria-live="polite"
+      >
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="small fw-semibold">
+              <i class="bi bi-calculator me-1"></i>选中批次余额总和
+            </span>
+            <span v-if="selectedBatchIds.length === 0" class="small text-muted">
+              请先勾选批次
+            </span>
+            <span v-else-if="isCalculatingSelectedBalances" class="small text-primary">
+              <span class="spinner-border spinner-border-sm me-1"></span>
+              正在查询 {{ selectedBatchIds.length }} 个批次...
+            </span>
+            <span v-else-if="selectedBalanceError" class="small text-danger">
+              {{ selectedBalanceError }}
+            </span>
+            <template v-else-if="selectedBalanceTotals">
+              <span class="badge bg-warning text-dark">
+                {{ formatBalance(selectedBalanceTotals.totalNativeBalance) }} {{ currentGovernanceToken }}
+              </span>
+              <span
+                v-if="isBscChain && selectedBalanceTotals.totalAsterBalance !== undefined"
+                class="badge bg-info"
+              >
+                {{ formatBalance(selectedBalanceTotals.totalAsterBalance) }} ASTER
+              </span>
+              <span
+                v-if="targetToken && selectedBalanceTotals.totalTokenBalance !== undefined"
+                class="badge bg-success"
+              >
+                {{ formatBalance(selectedBalanceTotals.totalTokenBalance) }} {{ targetToken.symbol }}
+              </span>
+              <span class="small text-muted">
+                {{ selectedBalanceTotals.walletCount }} 个唯一钱包
+              </span>
+              <span v-if="selectedBalanceTotals.failedCount > 0" class="badge bg-danger">
+                {{ selectedBalanceTotals.failedCount }} 个查询失败
+              </span>
+            </template>
+          </div>
+          <button
+            v-if="selectedBatchIds.length > 0"
+            type="button"
+            class="btn btn-outline-primary btn-sm"
+            :disabled="isCalculatingSelectedBalances"
+            @click="calculateSelectedBalances()"
+          >
+            <i class="bi bi-arrow-clockwise me-1"></i>重新计算
+          </button>
+        </div>
+        <div v-if="selectedBalanceTotals && !isCalculatingSelectedBalances" class="small text-muted mt-1">
+          跨批次重复的钱包地址只计算一次。
+        </div>
       </div>
 
       <div
@@ -341,9 +415,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useWalletStore } from '../../stores/walletStore';
+import {
+  useWalletStore,
+  type SelectedBatchBalanceSummary,
+} from '../../stores/walletStore';
 import { useChainStore } from '../../stores/chainStore';
 
 const walletStore = useWalletStore();
@@ -364,6 +441,12 @@ const selectedBatch = ref<any>(null);
 // 批量选择删除相关
 const selectedBatchIds = ref<string[]>([]);
 const isDeletingBatches = ref(false);
+const autoCalculateSelectedBalances = ref(false);
+const isCalculatingSelectedBalances = ref(false);
+const selectedBalanceTotals = ref<SelectedBatchBalanceSummary | null>(null);
+const selectedBalanceError = ref('');
+let selectedBalanceTimer: ReturnType<typeof setTimeout> | null = null;
+let selectedBalanceGeneration = 0;
 
 // 计算属性：是否全选
 const isAllSelected = computed(() => {
@@ -383,6 +466,85 @@ function toggleSelectAll() {
     selectedBatchIds.value = walletBatches.value.map(b => b.id);
   }
 }
+
+function clearSelectedBalanceTimer() {
+  if (selectedBalanceTimer !== null) {
+    clearTimeout(selectedBalanceTimer);
+    selectedBalanceTimer = null;
+  }
+}
+
+async function calculateSelectedBalances(scheduledGeneration?: number) {
+  clearSelectedBalanceTimer();
+  const generation = scheduledGeneration ?? ++selectedBalanceGeneration;
+  const batchIds = [...selectedBatchIds.value];
+
+  if (!autoCalculateSelectedBalances.value || batchIds.length === 0) {
+    isCalculatingSelectedBalances.value = false;
+    selectedBalanceTotals.value = null;
+    selectedBalanceError.value = '';
+    return;
+  }
+
+  isCalculatingSelectedBalances.value = true;
+  selectedBalanceError.value = '';
+  selectedBalanceTotals.value = null;
+
+  try {
+    const totals = await walletStore.refreshSelectedBatchBalances(batchIds);
+    if (generation !== selectedBalanceGeneration) return;
+    selectedBalanceTotals.value = totals;
+  } catch (error: any) {
+    if (generation !== selectedBalanceGeneration) return;
+    selectedBalanceError.value = error?.message || '余额汇总失败，请重试';
+  } finally {
+    if (generation === selectedBalanceGeneration) {
+      isCalculatingSelectedBalances.value = false;
+    }
+  }
+}
+
+function scheduleSelectedBalanceCalculation() {
+  clearSelectedBalanceTimer();
+  const generation = ++selectedBalanceGeneration;
+  selectedBalanceTotals.value = null;
+  selectedBalanceError.value = '';
+
+  if (!autoCalculateSelectedBalances.value || selectedBatchIds.value.length === 0) {
+    isCalculatingSelectedBalances.value = false;
+    return;
+  }
+
+  isCalculatingSelectedBalances.value = true;
+  selectedBalanceTimer = setTimeout(() => {
+    selectedBalanceTimer = null;
+    void calculateSelectedBalances(generation);
+  }, 250);
+}
+
+watch(
+  [
+    autoCalculateSelectedBalances,
+    () => selectedBatchIds.value.join('|'),
+    selectedChainId,
+    () => targetToken.value?.address || '',
+    () => targetToken.value?.decimals || 0,
+  ],
+  scheduleSelectedBalanceCalculation,
+);
+
+watch(
+  () => walletBatches.value.map(batch => batch.id).join('|'),
+  () => {
+    const existingIds = new Set(walletBatches.value.map(batch => batch.id));
+    selectedBatchIds.value = selectedBatchIds.value.filter(id => existingIds.has(id));
+  },
+);
+
+onBeforeUnmount(() => {
+  selectedBalanceGeneration++;
+  clearSelectedBalanceTimer();
+});
 
 // 批量删除选中的批次
 async function deleteSelectedBatches() {
@@ -611,6 +773,10 @@ async function confirmImport() {
 .wallet-list-scroll {
   max-height: 200px;
   overflow-y: auto;
+}
+
+.selected-balance-summary {
+  min-height: 44px;
 }
 
 .modal.show {
