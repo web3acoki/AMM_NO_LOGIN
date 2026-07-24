@@ -185,7 +185,10 @@ export async function validateTransfer(sourceAddresses: string[], targetAddresse
     method: 'POST',
     body: JSON.stringify({ sourceAddresses, targetAddresses })
   });
-  return response.data!;
+  // Older backend builds returned only { success: true, message }. Treat a
+  // successful HTTP/API response as valid while newer builds return the data
+  // object explicitly.
+  return response.data ?? { valid: true };
 }
 
 // 迁移本地钱包到服务器

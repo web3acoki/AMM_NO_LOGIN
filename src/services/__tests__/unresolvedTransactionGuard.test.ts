@@ -24,7 +24,6 @@ vi.mock('viem', async (importOriginal) => {
 });
 
 import {
-  UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS,
   checkUnresolvedTransaction,
   clearUnresolvedTransaction,
   getUnresolvedTransaction,
@@ -65,10 +64,6 @@ class MemoryStorage implements Storage {
   }
 }
 
-function advancePastStrictWindow(): void {
-  vi.setSystemTime(START_TIME.getTime() + UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS);
-}
-
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(START_TIME);
@@ -97,7 +92,7 @@ afterAll(() => {
 });
 
 describe('unresolved transaction guard', () => {
-  it('persists only public metadata and strictly blocks for at least two minutes', async () => {
+  it('persists only public metadata and reconciles a known receipt immediately', async () => {
     const record = markUnresolvedTransaction({
       chainId: 4663,
       walletAddress: WALLET_A.toUpperCase().replace('0X', '0x'),
@@ -107,15 +102,14 @@ describe('unresolved transaction guard', () => {
       privateKey: 'must-not-be-persisted',
     } as Parameters<typeof markUnresolvedTransaction>[0] & { privateKey: string });
 
-    vi.setSystemTime(START_TIME.getTime() + UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS - 1);
+    mocks.publicClient.getTransactionReceipt.mockResolvedValueOnce({ status: 'success' });
     const check = await checkUnresolvedTransaction({ chainId: 4663, walletAddress: WALLET_A });
 
-    expect(check).toMatchObject({ blocked: true, reason: 'strict-window', record });
-    expect(mocks.createPublicClient).not.toHaveBeenCalled();
+    expect(check).toMatchObject({ blocked: false, reason: 'receipt-settled', record });
+    expect(mocks.createPublicClient).toHaveBeenCalledTimes(1);
     const persisted = sessionStorage.getItem(`amm:unresolved-transaction:v1:4663:${WALLET_A}`);
-    expect(persisted).not.toBeNull();
-    expect(persisted).not.toContain('privateKey');
-    expect(JSON.parse(persisted!)).toEqual(record);
+    expect(persisted).toBeNull();
+    expect(JSON.stringify(record)).not.toContain('privateKey');
   });
 
   it.each(['success', 'reverted'] as const)(
@@ -128,7 +122,6 @@ describe('unresolved transaction guard', () => {
         txHash: HASH_A,
         rpcUrl: RPC_URL,
       });
-      advancePastStrictWindow();
       mocks.publicClient.getTransactionReceipt.mockResolvedValueOnce({ status });
 
       const check = await checkUnresolvedTransaction({ chainId: 56, walletAddress: WALLET_A });
@@ -147,7 +140,6 @@ describe('unresolved transaction guard', () => {
       txHash: HASH_A,
       rpcUrl: RPC_URL,
     });
-    advancePastStrictWindow();
     mocks.publicClient.getTransactionCount.mockImplementation(
       async ({ blockTag }: { blockTag: 'pending' | 'latest' }) => (
         blockTag === 'pending' ? 11 : 10
@@ -169,8 +161,6 @@ describe('unresolved transaction guard', () => {
       rpcUrl: RPC_URL,
       receiptRequired: true,
     });
-    advancePastStrictWindow();
-
     const check = await checkUnresolvedTransaction({
       chainId: 56,
       walletAddress: WALLET_A,
@@ -192,7 +182,6 @@ describe('unresolved transaction guard', () => {
       rpcUrl: RPC_URL,
       receiptRequired: true,
     });
-    advancePastStrictWindow();
     mocks.publicClient.getTransactionReceipt.mockResolvedValueOnce({ status: 'success' });
 
     const check = await checkUnresolvedTransaction({ chainId: 56, walletAddress: WALLET_A });
@@ -201,7 +190,7 @@ describe('unresolved transaction guard', () => {
     expect(getUnresolvedTransaction(56, WALLET_A)).toBeUndefined();
   });
 
-  it('keeps a receipt-required peer barrier when the peer reports an inconsistent revert', async () => {
+  it('clears a receipt-required barrier when the saved RPC reports a terminal revert', async () => {
     markUnresolvedTransaction({
       chainId: 56,
       walletAddress: WALLET_A,
@@ -210,13 +199,12 @@ describe('unresolved transaction guard', () => {
       rpcUrl: RPC_URL,
       receiptRequired: true,
     });
-    advancePastStrictWindow();
     mocks.publicClient.getTransactionReceipt.mockResolvedValueOnce({ status: 'reverted' });
 
     const check = await checkUnresolvedTransaction({ chainId: 56, walletAddress: WALLET_A });
 
-    expect(check).toMatchObject({ blocked: true, reason: 'receipt-inconsistent' });
-    expect(getUnresolvedTransaction(56, WALLET_A)).toBeDefined();
+    expect(check).toMatchObject({ blocked: false, reason: 'receipt-settled' });
+    expect(getUnresolvedTransaction(56, WALLET_A)).toBeUndefined();
   });
 
   it('clears a hashless unknown result only when pending and latest nonce agree', async () => {
@@ -226,8 +214,6 @@ describe('unresolved transaction guard', () => {
       status: 'unknown',
       rpcUrl: RPC_URL,
     });
-    advancePastStrictWindow();
-
     const check = await checkUnresolvedTransaction({
       chainId: 66,
       walletAddress: WALLET_A,
@@ -247,7 +233,6 @@ describe('unresolved transaction guard', () => {
       txHash: HASH_A,
       rpcUrl: RPC_URL,
     });
-    advancePastStrictWindow();
     mocks.publicClient.getTransactionReceipt.mockRejectedValueOnce(new Error('gateway timeout'));
 
     const check = await checkUnresolvedTransaction({ chainId: 4663, walletAddress: WALLET_A });
@@ -264,7 +249,6 @@ describe('unresolved transaction guard', () => {
       status: 'unknown',
       rpcUrl: RPC_URL,
     });
-    advancePastStrictWindow();
     mocks.publicClient.getTransactionCount.mockRejectedValueOnce(new Error('RPC unavailable'));
 
     const check = await checkUnresolvedTransaction({ chainId: 56, walletAddress: WALLET_A });

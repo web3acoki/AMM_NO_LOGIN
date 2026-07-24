@@ -10,6 +10,7 @@
 import {
   createPublicClient,
   http,
+  type Address,
   type PublicClient,
   type Log
 } from 'viem';
@@ -339,7 +340,7 @@ export class MigrationService {
       const logs = await this.httpClient.request({
         method: 'eth_getLogs',
         params: [{
-          address: PANCAKESWAP_V2_FACTORY.toLowerCase(),
+          address: PANCAKESWAP_V2_FACTORY.toLowerCase() as Address,
           topics: [PAIR_CREATED_TOPIC],
           fromBlock: `0x${fromBlock.toString(16)}`,
           toBlock: `0x${toBlock.toString(16)}`

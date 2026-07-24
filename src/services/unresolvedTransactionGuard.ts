@@ -8,8 +8,6 @@ import {
   type Hash,
 } from 'viem';
 
-export const UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS = 2 * 60 * 1000;
-
 const STORAGE_PREFIX = 'amm:unresolved-transaction:v1';
 const SUPPORTED_CHAIN_IDS = new Set([56, 66, 97, 4663] as const);
 
@@ -21,7 +19,7 @@ export interface UnresolvedTransactionRecord {
   walletAddress: Address;
   status: UnresolvedTransactionStatus;
   txHash?: Hash;
-  /** Only the saved RPC observing this exact successful receipt may clear the guard. */
+  /** The saved RPC must observe this exact terminal receipt before clearing the guard. */
   receiptRequired?: boolean;
   rpcUrl: string;
   recordedAt: number;
@@ -44,12 +42,10 @@ export interface CheckUnresolvedTransactionInput {
 }
 
 export type UnresolvedTransactionBlockReason =
-  | 'strict-window'
   | 'pending-nonce'
   | 'rpc-unavailable'
   | 'nonce-inconsistent'
-  | 'receipt-required'
-  | 'receipt-inconsistent';
+  | 'receipt-required';
 
 export type UnresolvedTransactionClearReason =
   | 'none'
@@ -256,8 +252,9 @@ export function clearUnresolvedTransaction(chainIdInput: number, walletAddressIn
 }
 
 /**
- * Fails closed while a previous broadcast may still consume this wallet's next
- * nonce. During the first two minutes no RPC request can make the guard pass.
+ * Reconciles a previous ambiguous write against live chain state immediately.
+ * There is no wall-clock cooldown: a settled receipt or nonce releases the
+ * wallet at once, while a real pending nonce/RPC ambiguity still fails closed.
  */
 export async function checkUnresolvedTransaction(
   input: CheckUnresolvedTransactionInput,
@@ -267,19 +264,6 @@ export async function checkUnresolvedTransaction(
   const key = recordKey(chainId, walletAddress);
   const record = readRecord(key);
   if (!record) return { blocked: false, reason: 'none' };
-
-  const elapsedMs = Date.now() - record.recordedAt;
-  if (elapsedMs < UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS) {
-    const remainingSeconds = Math.ceil(
-      (UNRESOLVED_TRANSACTION_STRICT_WINDOW_MS - Math.max(0, elapsedMs)) / 1000,
-    );
-    return {
-      blocked: true,
-      reason: 'strict-window',
-      record,
-      message: `该钱包上一笔交易仍待确认，至少再等待 ${remainingSeconds} 秒后检查链上状态`,
-    };
-  }
 
   let rpcUrl: string;
   try {
@@ -305,14 +289,10 @@ export async function checkUnresolvedTransaction(
         return { blocked: false, reason: 'receipt-settled', record };
       }
       if (receipt.status === 'reverted') {
-        if (record.receiptRequired) {
-          return {
-            blocked: true,
-            reason: 'receipt-inconsistent',
-            record,
-            message: '另一交易节点返回了与执行节点不一致的回执，禁止继续发送',
-          };
-        }
+        // A reverted receipt is still a terminal on-chain result: the nonce
+        // was consumed and no transaction remains pending. The next operation
+        // re-reads balance, allowance and quote, so keeping this record would
+        // permanently brick the wallet without adding nonce safety.
         clearRecordIfCurrent(key, record);
         return { blocked: false, reason: 'receipt-settled', record };
       }

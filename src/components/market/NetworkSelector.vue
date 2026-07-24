@@ -139,19 +139,14 @@ function clearCustomRpc() {
 }
 
 function onChainChange() {
-  // 更新RPC URL（选择第一个RPC选项）
-  const chain = chains.value.find(c => c.id === selectedChainId.value);
-  if (chain && chain.rpcOptions && chain.rpcOptions.length > 0) {
-    rpcUrl.value = chain.rpcOptions[0].url;
-  } else if (chain) {
-    rpcUrl.value = chain.rpc;
-  }
+  // 用同一个 action 原子更新 chainId、预设 RPC 并清除旧链自定义 RPC。
+  // 直接通过 v-model 只改 chainId 会短暂留下上一条链的 rpcUrl，其他组件
+  // 可能在 change handler 之前观察到这个混合状态并向错误网络读取合约。
+  chainStore.setSelectedChain(selectedChainId.value);
 
   // 自动选择对应的DEX
   dexStore.setDexByChainId(selectedChainId.value);
 
-  // 清除自定义RPC（切换链时）
-  chainStore.clearCustomRpc();
   customRpcInput.value = '';
 }
 
@@ -209,6 +204,7 @@ async function switchBrowserWalletNetwork() {
 
 // 组件挂载时初始化DEX
 onMounted(() => {
+  chainStore.ensureSelectedChainRpc();
   dexStore.setDexByChainId(selectedChainId.value);
   // 如果有自定义RPC，显示在输入框中
   if (customRpcUrl.value) {
@@ -216,4 +212,3 @@ onMounted(() => {
   }
 });
 </script>
-

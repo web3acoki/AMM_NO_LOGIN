@@ -82,7 +82,17 @@
             <i class="bi bi-search me-1"></i>
             {{ isQuerying ? '查询中...' : '查询价格' }}
           </button>
+          <button
+            class="btn btn-sm"
+            :class="isTargetToken ? 'btn-success' : 'btn-outline-success'"
+            @click="setAsTargetToken"
+            :disabled="!canSetTargetToken"
+          >
+            <i class="bi me-1" :class="isSettingTargetToken ? 'bi-hourglass-split' : (isTargetToken ? 'bi-check-circle' : 'bi-send')"></i>
+            {{ isSettingTargetToken ? '读取代币中...' : (isTargetToken ? '已设为转账目标' : '设为转账目标') }}
+          </button>
         </div>
+        <div class="form-text">转账目标只读取 ERC-20 信息，不要求代币已经创建交易池。</div>
       </div>
 
       <!-- 价格显示 -->
@@ -114,10 +124,10 @@
                   class="btn btn-sm"
                   :class="isTargetToken ? 'btn-success' : 'btn-outline-primary'"
                   @click="setAsTargetToken"
-                  :disabled="!tokenSymbol"
+                  :disabled="!canSetTargetToken"
                 >
                   <i class="bi me-1" :class="isTargetToken ? 'bi-check-circle' : 'bi-crosshair'"></i>
-                  {{ isTargetToken ? '已设为目标' : '设为目标' }}
+                  {{ isSettingTargetToken ? '读取代币中...' : (isTargetToken ? '已设为目标' : '设为目标') }}
                 </button>
               </div>
             </div>
@@ -154,7 +164,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useChainStore } from '../../stores/chainStore';
+import { resolvePresetRpcUrl, useChainStore } from '../../stores/chainStore';
 import { useDexStore } from '../../stores/dexStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { PriceCalculator, type TokenPair } from '../../utils/priceCalculator';
@@ -166,12 +176,13 @@ import { bscTestnet, bsc, okc } from 'viem/chains';
 import { robinhood } from '../../viem/chains/robinhood';
 import { PONS_V3_POOL_FEE } from '../../constants';
 import { UniswapV3Service, formatV3PriceFraction, getV3SpotPriceFraction } from '../../services/uniswapV3Service';
+import { assertTargetTokenQueryContextCurrent } from '../../services/transferAssetContext';
 
 const chainStore = useChainStore();
 const dexStore = useDexStore();
 const walletStore = useWalletStore();
 
-const { chains, rpcUrl } = storeToRefs(chainStore);
+const { chains } = storeToRefs(chainStore);
 const { localWallets, targetToken, poolQueryState } = storeToRefs(walletStore);
 const {
   currentDex,
@@ -185,7 +196,7 @@ const {
 
 // 状态 - 链和DEX相关（本地状态）
 const selectedChainId = ref<number>(chainStore.selectedChainId);
-const selectedRpcUrl = ref<string>(rpcUrl.value);
+const selectedRpcUrl = ref<string>(chainStore.rpcUrl);
 const selectedDexIdLocal = ref<string>(selectedDexId.value);
 
 // 使用全局状态的计算属性
@@ -240,6 +251,7 @@ const tokenDecimals = computed({
 
 // 本地状态（不需要跨页面共享）
 const isQuerying = ref<boolean>(false);
+const isSettingTargetToken = ref<boolean>(false);
 const errorMessage = ref<string>('');
 const routePathDisplay = ref<string[]>([]);
 const updateInterval = ref<number | null>(null);
@@ -410,19 +422,67 @@ function formatPrice(price: number): string {
   return trimmed;
 }
 
-// 设置为目标代币
-function setAsTargetToken() {
-  if (!tokenAddress.value || !tokenSymbol.value) {
-    alert('请先查询代币信息');
-    return;
+// 设置为目标代币是资产管理动作，不应该依赖 DEX 池或价格查询成功。
+async function setAsTargetToken() {
+  if (!canSetTargetToken.value) return;
+  isSettingTargetToken.value = true;
+  errorMessage.value = '';
+  try {
+    const requestedChainId = selectedChainId.value;
+    const normalizedAddress = getAddress(tokenAddress.value.trim());
+    const requestContext = {
+      chainId: requestedChainId,
+      address: normalizedAddress,
+    };
+    const publicClient = await createVerifiedPublicClient(requestedChainId);
+    const bytecode = await publicClient.getBytecode({ address: normalizedAddress });
+    if (!bytecode || bytecode === '0x') {
+      throw new Error('该地址在当前网络上不是合约，请检查网络和代币地址');
+    }
+
+    const [tokenInfo, decimalsResult] = await Promise.all([
+      getTokenInfo(normalizedAddress, publicClient, requestedChainId),
+      publicClient.readContract({
+        address: normalizedAddress,
+        abi: erc20Abi,
+        functionName: 'decimals',
+      }),
+    ]);
+    assertTargetTokenQueryContextCurrent(
+      requestContext,
+      chainStore.selectedChainId,
+      tokenAddress.value,
+    );
+    assertTargetTokenQueryContextCurrent(
+      requestContext,
+      selectedChainId.value,
+      tokenAddress.value,
+    );
+    const decimals = Number(decimalsResult);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+      throw new Error('代币 decimals 无效，不能安全计算转账金额');
+    }
+    if (!tokenInfo?.symbol) {
+      throw new Error('无法读取 ERC-20 代币符号，请确认该合约支持标准 symbol()');
+    }
+
+    tokenAddress.value = normalizedAddress;
+    tokenSymbol.value = tokenInfo.symbol;
+    tokenName.value = tokenInfo.name || tokenInfo.symbol;
+    tokenDecimals.value = decimals;
+    walletStore.setTargetToken({
+      address: normalizedAddress,
+      symbol: tokenInfo.symbol,
+      name: tokenInfo.name || tokenInfo.symbol,
+      decimals,
+      chainId: requestedChainId,
+    });
+    alert(`已将 ${tokenInfo.symbol} 设置为转账目标代币`);
+  } catch (error: any) {
+    errorMessage.value = `设置目标代币失败: ${error.message || '未知错误'}`;
+  } finally {
+    isSettingTargetToken.value = false;
   }
-  walletStore.setTargetToken({
-    address: tokenAddress.value,
-    symbol: tokenSymbol.value,
-    name: tokenName.value || tokenSymbol.value,
-    decimals: tokenDecimals.value
-  });
-  alert(`已将 ${tokenSymbol.value} 设置为目标代币`);
 }
 
 // 清除目标代币
@@ -432,7 +492,10 @@ function clearTargetToken() {
 
 // 是否已设置为目标代币
 const isTargetToken = computed(() => {
-  return walletStore.targetToken?.address?.toLowerCase() === tokenAddress.value?.toLowerCase();
+  return (
+    walletStore.targetToken?.chainId === selectedChainId.value
+    && walletStore.targetToken?.address?.toLowerCase() === tokenAddress.value?.toLowerCase()
+  );
 });
 
 // 代币信息缓存
@@ -460,7 +523,7 @@ const quoteTokenOptions = computed(() => {
   cacheUpdateTrigger.value;
   const baseTokens = currentBaseTokens.value || [];
   return baseTokens.map(address => {
-    const cached = tokenInfoCache.get(address.toLowerCase());
+    const cached = tokenInfoCache.get(getTokenInfoCacheKey(selectedChainId.value, address));
     if (cached) {
       return { address, display: `${cached.symbol} (${cached.name})` };
     }
@@ -469,15 +532,70 @@ const quoteTokenOptions = computed(() => {
 });
 
 const canQuery = computed(() => {
-  return selectedQuoteToken.value && tokenAddress.value && !isQuerying.value;
+  return Boolean(
+    selectedQuoteToken.value
+    && /^0x[0-9a-fA-F]{40}$/.test(tokenAddress.value.trim())
+    && !isQuerying.value
+  );
 });
 
-function getChainConfig() {
-  if (selectedChainId.value === 97) return bscTestnet;
-  if (selectedChainId.value === 56) return bsc;
-  if (selectedChainId.value === 66) return okc;
-  if (selectedChainId.value === 4663) return robinhood;
-  throw new Error(`不支持的链 ID: ${selectedChainId.value}`);
+const canSetTargetToken = computed(() => (
+  /^0x[0-9a-fA-F]{40}$/.test(tokenAddress.value.trim())
+  && !isSettingTargetToken.value
+));
+
+function getChainConfig(chainId = selectedChainId.value) {
+  if (chainId === 97) return bscTestnet;
+  if (chainId === 56) return bsc;
+  if (chainId === 66) return okc;
+  if (chainId === 4663) return robinhood;
+  throw new Error(`不支持的链 ID: ${chainId}`);
+}
+
+function getSelectedChainItem(chainId = selectedChainId.value) {
+  const chain = chains.value.find(item => item.id === chainId);
+  if (!chain) throw new Error(`未找到 chainId=${chainId} 的网络配置`);
+  return chain;
+}
+
+function syncRpcSelectionForChain(): string {
+  const chain = getSelectedChainItem();
+  const configuredCustomRpc = chainStore.customRpcUrl.trim();
+  if (configuredCustomRpc) {
+    customRpcUrl.value = configuredCustomRpc;
+    selectedRpcUrl.value = configuredCustomRpc;
+    useCustomRpc.value = true;
+    return configuredCustomRpc;
+  }
+
+  const presetRpc = resolvePresetRpcUrl(chain, chainStore.rpcUrl || selectedRpcUrl.value);
+  chainStore.rpcUrl = presetRpc;
+  selectedRpcUrl.value = presetRpc;
+  customRpcUrl.value = '';
+  useCustomRpc.value = false;
+  return presetRpc;
+}
+
+function getActiveRpcUrl(chainId = selectedChainId.value): string {
+  const chain = getSelectedChainItem(chainId);
+  const configuredCustomRpc = chainStore.customRpcUrl.trim();
+  if (configuredCustomRpc) return configuredCustomRpc;
+  return resolvePresetRpcUrl(chain, selectedRpcUrl.value || chainStore.rpcUrl);
+}
+
+async function createVerifiedPublicClient(expectedChainId = selectedChainId.value): Promise<any> {
+  const rpc = getActiveRpcUrl(expectedChainId);
+  const publicClient = createPublicClient({
+    chain: getChainConfig(expectedChainId),
+    transport: http(rpc),
+  });
+  const actualChainId = await publicClient.getChainId();
+  if (actualChainId !== expectedChainId) {
+    throw new Error(
+      `RPC 网络不匹配：请求 chainId=${expectedChainId}，节点实际返回 chainId=${actualChainId}`,
+    );
+  }
+  return publicClient;
 }
 
 function formatAddress(address: string): string {
@@ -485,8 +603,17 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-async function getTokenInfo(address: string, publicClient: any): Promise<{ name: string; symbol: string } | null> {
-  const cacheKey = address.toLowerCase();
+function getTokenInfoCacheKey(chainId: number, address: string): string {
+  return `${chainId}:${address.toLowerCase()}`;
+}
+
+async function getTokenInfo(
+  address: string,
+  publicClient: any,
+  chainId = selectedChainId.value,
+): Promise<{ name: string; symbol: string } | null> {
+  const addressKey = address.toLowerCase();
+  const cacheKey = getTokenInfoCacheKey(chainId, address);
   if (tokenInfoCache.has(cacheKey)) {
     return tokenInfoCache.get(cacheKey)!;
   }
@@ -504,7 +631,9 @@ async function getTokenInfo(address: string, publicClient: any): Promise<{ name:
       return defaultInfo;
     }
     let info = { name: name || 'Unknown Token', symbol: symbol || formatAddress(address).toUpperCase() };
-    const mapping = tokenNameMapping[cacheKey];
+    const mapping = (chainId === 56 || chainId === 97)
+      ? tokenNameMapping[addressKey]
+      : undefined;
     if (mapping) info = { name: mapping.name, symbol: mapping.symbol };
     tokenInfoCache.set(cacheKey, info);
     cacheUpdateTrigger.value++;
@@ -518,14 +647,20 @@ async function getTokenInfo(address: string, publicClient: any): Promise<{ name:
 }
 
 async function loadBaseTokenInfos() {
-  const baseTokens = currentBaseTokens.value || [];
+  const requestedChainId = selectedChainId.value;
+  const baseTokens = [...(currentBaseTokens.value || [])];
   if (baseTokens.length === 0) return;
-  const chain = chains.value.find(c => c.id === selectedChainId.value);
+  const chain = chains.value.find(c => c.id === requestedChainId);
   if (!chain) return;
-  const publicClient = createPublicClient({ chain: getChainConfig(), transport: http(chain.rpc) });
+  const publicClient = createPublicClient({
+    chain: getChainConfig(requestedChainId),
+    transport: http(chain.rpc),
+  });
   await Promise.allSettled(baseTokens.map(address => {
-    const cacheKey = address.toLowerCase();
-    if (!tokenInfoCache.has(cacheKey)) return getTokenInfo(address, publicClient);
+    const cacheKey = getTokenInfoCacheKey(requestedChainId, address);
+    if (!tokenInfoCache.has(cacheKey)) {
+      return getTokenInfo(address, publicClient, requestedChainId);
+    }
     return Promise.resolve(tokenInfoCache.get(cacheKey)!);
   }));
   cacheUpdateTrigger.value++;
@@ -537,9 +672,7 @@ async function onChainChange() {
   chainStore.setSelectedChain(selectedChainId.value);
   // 同步更新 walletStore 的链ID
   walletStore.setCurrentChainId(selectedChainId.value);
-  selectedRpcUrl.value = chainStore.rpcUrl;
-  useCustomRpc.value = false;
-  customRpcUrl.value = '';
+  syncRpcSelectionForChain();
   rpcTestResult.value = null;
   dexStore.setDexByChainId(selectedChainId.value);
   selectedDexIdLocal.value = selectedDexId.value;
@@ -559,8 +692,10 @@ async function onChainChange() {
 }
 
 function onRpcChange() {
+  const chain = getSelectedChainItem();
   chainStore.clearCustomRpc();
-  chainStore.rpcUrl = selectedRpcUrl.value;
+  chainStore.rpcUrl = resolvePresetRpcUrl(chain, selectedRpcUrl.value);
+  selectedRpcUrl.value = chainStore.rpcUrl;
   rpcTestResult.value = null;
   console.log('RPC切换到:', selectedRpcUrl.value);
 }
@@ -569,8 +704,7 @@ function toggleCustomRpcMode() {
   useCustomRpc.value = !useCustomRpc.value;
   if (!useCustomRpc.value) {
     chainStore.clearCustomRpc();
-    selectedRpcUrl.value = chainStore.rpcUrl;
-    customRpcUrl.value = '';
+    syncRpcSelectionForChain();
     rpcTestResult.value = null;
   }
 }
@@ -596,10 +730,17 @@ async function testRpcConnection() {
 
   try {
     const testClient = createPublicClient({
+      chain: getChainConfig(),
       transport: http(customRpcUrl.value)
     });
 
-    const blockNumber = await testClient.getBlockNumber();
+    const [actualChainId, blockNumber] = await Promise.all([
+      testClient.getChainId(),
+      testClient.getBlockNumber(),
+    ]);
+    if (actualChainId !== selectedChainId.value) {
+      throw new Error(`节点 chainId=${actualChainId}，当前网络 chainId=${selectedChainId.value}`);
+    }
     rpcTestResult.value = {
       success: true,
       message: `连接成功，区块高度: ${blockNumber}`
@@ -643,16 +784,14 @@ function onTokenAddressChange() {
   stopUpdate();
   currentPrice.value = null;
   marketCap.value = null;
+  tokenSymbol.value = '';
+  tokenName.value = '';
+  tokenDecimals.value = 18;
   errorMessage.value = '';
 }
 
 async function readRobinhoodV3Price(tokenAddr: string) {
-  const chain = chains.value.find(c => c.id === 4663);
-  if (!chain) throw new Error('Robinhood Chain 配置不存在');
-  const client = createPublicClient({
-    chain: robinhood,
-    transport: http(selectedRpcUrl.value || chain.rpc),
-  });
+  const client = await createVerifiedPublicClient();
   const v3 = new UniswapV3Service(client, { defaultFee: PONS_V3_POOL_FEE });
   const quoteToken = selectedQuoteToken.value as `0x${string}`;
   const targetToken = tokenAddr as `0x${string}`;
@@ -718,7 +857,7 @@ async function queryPool() {
       return;
     }
 
-    const publicClient = createPublicClient({ chain: getChainConfig(), transport: http(selectedRpcUrl.value || chain.rpc) });
+    const publicClient = await createVerifiedPublicClient();
     const tokenInfo = await getTokenInfo(tokenAddress.value, publicClient);
     const quoteTokenInfo = await getTokenInfo(selectedQuoteToken.value, publicClient);
     if (tokenInfo) {
@@ -739,7 +878,7 @@ async function queryPool() {
     if (quoteTokenInfo) quoteTokenSymbol.value = quoteTokenInfo.symbol;
     else quoteTokenSymbol.value = 'QUOTE';
     const calculator = new PriceCalculator(
-      selectedRpcUrl.value || chain.rpc,
+      getActiveRpcUrl(),
       currentFactoryAddress.value,
       currentBaseTokens.value,
       currentRouterAddress.value,
@@ -850,7 +989,7 @@ function startRealTimeUpdate(calculator: PriceCalculator, tokenAddr: string) {
     const chain = chains.value.find(c => c.id === selectedChainId.value);
     if (!chain) { stopUpdate(); return; }
     const freshCalculator = new PriceCalculator(
-      selectedRpcUrl.value || chain.rpc,
+      getActiveRpcUrl(),
       currentFactoryAddress.value,
       currentBaseTokens.value,
       currentRouterAddress.value,
@@ -881,7 +1020,7 @@ async function updatePrice(calculator: PriceCalculator, tokenAddr: string) {
       if (pairInfo.reserve0 === BigInt(0) && pairInfo.reserve1 === BigInt(0)) {
         const chain = chains.value.find(c => c.id === selectedChainId.value);
         if (chain) {
-          const client = createPublicClient({ chain: getChainConfig(), transport: http(selectedRpcUrl.value || chain.rpc) });
+          const client = await createVerifiedPublicClient();
           // 尝试多个 DEX 找到有效的池子地址
           const result = await findValidPairAddress(
             client,
@@ -951,9 +1090,7 @@ watch(() => chainStore.selectedChainId, async (newChainId) => {
   if (newChainId === selectedChainId.value) return;
   stopUpdate();
   selectedChainId.value = newChainId;
-  selectedRpcUrl.value = chainStore.rpcUrl;
-  customRpcUrl.value = chainStore.customRpcUrl;
-  useCustomRpc.value = Boolean(chainStore.customRpcUrl);
+  syncRpcSelectionForChain();
   selectedDexIdLocal.value = dexStore.selectedDexId;
   walletStore.setCurrentChainId(newChainId);
   tokenAddress.value = '';
@@ -965,15 +1102,22 @@ watch(() => chainStore.selectedChainId, async (newChainId) => {
   selectedQuoteToken.value = currentBaseTokens.value?.[0] || '';
 });
 
+watch(
+  [() => chainStore.rpcUrl, () => chainStore.customRpcUrl],
+  () => {
+    if (chainStore.selectedChainId === selectedChainId.value) {
+      syncRpcSelectionForChain();
+    }
+  },
+);
+
 onUnmounted(() => {
   stopUpdate();
 });
 
 onMounted(async () => {
   selectedChainId.value = chainStore.selectedChainId;
-  selectedRpcUrl.value = rpcUrl.value;
-  customRpcUrl.value = chainStore.customRpcUrl;
-  useCustomRpc.value = Boolean(chainStore.customRpcUrl);
+  syncRpcSelectionForChain();
   selectedDexIdLocal.value = selectedDexId.value;
   // 同步 walletStore 的链ID
   walletStore.setCurrentChainId(chainStore.selectedChainId);
@@ -994,7 +1138,7 @@ onMounted(async () => {
         startRobinhoodV3RealTimeUpdate(tokenAddress.value);
       } else {
         const calculator = new PriceCalculator(
-          selectedRpcUrl.value || chain.rpc,
+          getActiveRpcUrl(),
           currentFactoryAddress.value,
           currentBaseTokens.value,
           currentRouterAddress.value,
@@ -1016,7 +1160,7 @@ onActivated(async () => {
         startRobinhoodV3RealTimeUpdate(tokenAddress.value);
       } else {
         const calculator = new PriceCalculator(
-          selectedRpcUrl.value || chain.rpc,
+          getActiveRpcUrl(),
           currentFactoryAddress.value,
           currentBaseTokens.value,
           currentRouterAddress.value,
@@ -1039,4 +1183,3 @@ watch(selectedDexIdLocal, async () => {
   await loadBaseTokenInfos();
 });
 </script>
-

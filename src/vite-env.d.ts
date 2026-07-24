@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __AMM_BUILD_ID__: string;
+
 interface Window {
   ethereum?: {
     isMetaMask?: boolean;

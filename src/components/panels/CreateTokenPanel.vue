@@ -456,6 +456,11 @@ import {
   validatePonsLaunch,
   type PonsRuntimeConfig,
 } from '../../services/ponsService';
+import {
+  ROBINHOOD_CREATE_TOKEN_RPC_URL,
+  resolveCreateTokenRpcUrl,
+  type CreateTokenNetwork,
+} from '../../services/createTokenRpc';
 
 const walletStore = useWalletStore();
 const chainStore = useChainStore();
@@ -545,23 +550,34 @@ const RPC_NODES: Record<string, { label: string; url: string }[]> = {
 
 // ========== 状态 ==========
 
-type CreateNetwork = 'bscMainnet' | 'bscTestnet' | 'robinhood';
+type CreateNetwork = CreateTokenNetwork;
 const currentNetwork = ref<CreateNetwork>(
   (localStorage.getItem('selectedNetwork') as CreateNetwork) || 'bscMainnet'
 );
 
 const selectedRpcUrl = ref(
-  localStorage.getItem('selectedRpcUrl') || RPC_NODES.bscMainnet[0].url
+  currentNetwork.value === 'robinhood'
+    ? ROBINHOOD_CREATE_TOKEN_RPC_URL
+    : (localStorage.getItem('selectedRpcUrl') || RPC_NODES.bscMainnet[0].url)
 );
 
 // 当前网络可用的 RPC 节点
-const currentRpcNodes = computed(() => RPC_NODES[currentNetwork.value] || []);
+const currentRpcNodes = computed(() => (
+  currentNetwork.value === 'robinhood'
+    ? [{ label: 'Robinhood 官方普通节点（创建专用）', url: ROBINHOOD_CREATE_TOKEN_RPC_URL }]
+    : (RPC_NODES[currentNetwork.value] || [])
+));
+const activeRpcUrl = computed(() => (
+  resolveCreateTokenRpcUrl(currentNetwork.value, selectedRpcUrl.value)
+));
 const usePons = computed(() => currentNetwork.value === 'robinhood');
 
 watch(currentNetwork, (val) => {
   localStorage.setItem('selectedNetwork', val);
   // 切换网络时重置 RPC 为该网络的第一个节点
-  selectedRpcUrl.value = RPC_NODES[val][0].url;
+  selectedRpcUrl.value = val === 'robinhood'
+    ? ROBINHOOD_CREATE_TOKEN_RPC_URL
+    : RPC_NODES[val][0].url;
   localStorage.setItem('selectedRpcUrl', selectedRpcUrl.value);
   const chainId = NETWORKS[val].chainIdDecimal;
   if (chainStore.selectedChainId !== chainId) chainStore.setSelectedChain(chainId);
@@ -759,13 +775,13 @@ function getMainWalletClient() {
     id: 97,
     name: 'BSC Testnet',
     nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-    rpcUrls: { default: { http: [selectedRpcUrl.value] } }
+    rpcUrls: { default: { http: [activeRpcUrl.value] } }
   };
 
   return createWalletClient({
     account,
     chain,
-    transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
+    transport: http(activeRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 
@@ -775,9 +791,9 @@ function getPublicClient() {
       id: 97,
       name: 'BSC Testnet',
       nativeCurrency: { name: 'BNB', symbol: 'tBNB', decimals: 18 },
-      rpcUrls: { default: { http: [selectedRpcUrl.value] } }
+      rpcUrls: { default: { http: [activeRpcUrl.value] } }
     },
-    transport: http(selectedRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
+    transport: http(activeRpcUrl.value, { timeout: 60_000, retryCount: 3, retryDelay: 2_000 })
   });
 }
 

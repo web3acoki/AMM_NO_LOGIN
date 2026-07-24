@@ -23,6 +23,7 @@ import {
   UNISWAP_V3_ROBINHOOD_ADDRESSES,
 } from '../constants';
 import { robinhood } from '../viem/chains/robinhood';
+import { getRuntimeRobinhoodRpcUrl } from './robinhoodRpcConfig';
 
 export { ROBINHOOD_CHAIN_ID, ROBINHOOD_EXPLORER_URL } from '../constants';
 export const ROBINHOOD_HTTP_RPCS = [
@@ -243,7 +244,7 @@ const ERC20_TRANSFER_ABI = [{
   ],
 }] as const;
 
-export function createPonsPublicClient(rpcUrl: string = ROBINHOOD_HTTP_RPCS[0]) {
+export function createPonsPublicClient(rpcUrl: string = getRuntimeRobinhoodRpcUrl()) {
   return createPublicClient({
     chain: ROBINHOOD_CHAIN,
     transport: http(rpcUrl, { timeout: 20_000, retryCount: 2, retryDelay: 400 }),

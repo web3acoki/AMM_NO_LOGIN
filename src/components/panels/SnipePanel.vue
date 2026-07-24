@@ -321,7 +321,8 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { useSnipeStore } from '../../stores/snipeStore';
 import { useWalletStore } from '../../stores/walletStore';
 import { HTTP_RPC_NODES, WSS_RPC_NODES } from '../../services/snipeService';
-import { ROBINHOOD_HTTP_RPCS, ROBINHOOD_WSS_RPCS } from '../../services/ponsService';
+import { ROBINHOOD_WSS_RPCS } from '../../services/ponsService';
+import { getRuntimeRobinhoodRpcUrl } from '../../services/robinhoodRpcConfig';
 import { useChainStore } from '../../stores/chainStore';
 
 const snipeStore = useSnipeStore();
@@ -332,7 +333,7 @@ const isRobinhood = computed(() => chainStore.selectedChainId === 4663);
 const nativeSymbol = computed(() => isRobinhood.value ? 'ETH' : 'BNB');
 
 // 默认节点
-const defaultHttpRpc = computed(() => isRobinhood.value ? ROBINHOOD_HTTP_RPCS[0] : HTTP_RPC_NODES[0]);
+const defaultHttpRpc = computed(() => isRobinhood.value ? getRuntimeRobinhoodRpcUrl() : HTTP_RPC_NODES[0]);
 const defaultWssRpc = computed(() => isRobinhood.value ? ROBINHOOD_WSS_RPCS[0] : WSS_RPC_NODES[0]);
 
 // 节点设置显示

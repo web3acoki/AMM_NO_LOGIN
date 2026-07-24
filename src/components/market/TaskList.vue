@@ -274,7 +274,7 @@ function stopSelectedTasks() {
 
   // 停止所有选中的任务
   for (const task of tasksToStop) {
-    taskStore.stopTask(task.id);
+    taskStore.stopTask(task.id, undefined, { forceServer: true });
   }
 }
 

@@ -14,6 +14,10 @@ export async function apiRequest<T = any>(path: string, options: RequestInit = {
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
+  // Every transaction-coordination request is fenced by this protocol
+  // version. After a deployment, an older open page can no longer renew
+  // wallet/market/runtime leases and continue writing with stale semantics.
+  headers.set('X-AMM-Coordination-Version', '2');
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }

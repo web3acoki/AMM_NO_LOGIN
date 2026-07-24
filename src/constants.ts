@@ -3,6 +3,10 @@
 export const ROBINHOOD_CHAIN_ID = 4663 as const;
 
 export const ROBINHOOD_OFFICIAL_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com/';
+// Robinhood's documented write endpoint.  Transaction broadcasts go directly
+// to the sequencer instead of competing with high-volume read traffic on the
+// rate-limited public RPC endpoint.
+export const ROBINHOOD_SEQUENCER_RPC_URL = 'https://sequencer.mainnet.chain.robinhood.com/';
 export const ROBINHOOD_ARROW_RPC_URL = 'https://rpc.arrowrpc.com';
 export const ROBINHOOD_ARROW_WS_URL = 'wss://ws.arrowrpc.com';
 export const ROBINHOOD_EXPLORER_URL = 'https://robinhoodchain.blockscout.com';

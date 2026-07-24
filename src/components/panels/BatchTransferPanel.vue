@@ -34,9 +34,9 @@
         </div>
         <div class="alert alert-info small mt-3 mb-0">
           <i class="bi bi-info-circle me-1"></i>
-          <span v-if="transferMode === 'oneToMany'">一个源钱包向多个目标钱包转账（源钱包只能填1个，必须是主钱包）</span>
-          <span v-else-if="transferMode === 'manyToOne'">多个源钱包向一个目标钱包转账（目标钱包必须是主钱包，源钱包可直接输入私钥）</span>
-          <span v-else>源钱包和目标钱包一一对应转账（数量必须相等，源钱包可直接输入私钥）</span>
+          <span v-if="transferMode === 'oneToMany'">从任意钱包批次选择一个源钱包，向多个目标地址转账（主钱包和普通钱包均可）</span>
+          <span v-else-if="transferMode === 'manyToOne'">多个源钱包向一个目标地址转账（源钱包可直接输入私钥）</span>
+          <span v-else>源钱包和目标地址一一对应转账（数量必须相等，源钱包可直接输入私钥）</span>
         </div>
       </div>
     </div>
@@ -52,34 +52,76 @@
               <span class="badge bg-primary ms-2">{{ sourceAddressCount }} 个</span>
             </span>
             <div class="d-flex gap-2">
-              <label class="btn btn-outline-primary btn-sm">
+              <label v-if="transferMode !== 'oneToMany'" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
                 <input type="file" accept=".txt" class="d-none" @change="handleSourceFileImport">
               </label>
-              <button class="btn btn-outline-danger btn-sm" @click="sourceAddressesText = ''; selectedSourceBatchId = ''">
+              <button class="btn btn-outline-danger btn-sm" @click="clearSourceAddresses">
                 <i class="bi bi-trash"></i>
               </button>
             </div>
           </div>
           <div class="card-body">
-            <!-- 批次选择 -->
-            <div class="mb-3" v-if="walletBatches.length > 0">
-              <label class="form-label small text-muted">从批次填充</label>
-              <select class="form-select form-select-sm" v-model="selectedSourceBatchId">
-                <option value="">-- 选择批次 --</option>
-                <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
-                  {{ batch.remark }} ({{ batch.wallets.length }} 个)
-                </option>
-              </select>
+            <!-- 一转多：先选批次，再从该批次选择唯一源钱包 -->
+            <div v-if="transferMode === 'oneToMany'">
+              <div class="mb-3">
+                <label class="form-label small text-muted">1. 选择源钱包批次</label>
+                <select
+                  class="form-select form-select-sm"
+                  v-model="selectedSourceBatchId"
+                  :disabled="walletBatches.length === 0"
+                >
+                  <option value="">-- 选择批次 --</option>
+                  <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+                    {{ batch.remark }} ({{ batch.wallets.length }} 个 · {{ batch.walletType === 'main' ? '主钱包' : '普通钱包' }})
+                  </option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small text-muted">2. 选择一个源钱包</label>
+                <select
+                  class="form-select form-select-sm source-wallet-select"
+                  v-model="selectedOneToManySourceAddress"
+                  :disabled="!selectedSourceBatch"
+                  :class="{ 'is-invalid': sourceAddressError }"
+                >
+                  <option value="">-- 从所选批次选择一个钱包 --</option>
+                  <option
+                    v-for="option in oneToManySourceWalletOptions"
+                    :key="option.address.toLowerCase()"
+                    :value="option.address"
+                  >
+                    {{ option.label }} — {{ option.address }}
+                  </option>
+                </select>
+                <div class="form-text">仅使用当前账号所选批次中的一个钱包签名；主钱包和普通钱包均可。</div>
+              </div>
+              <div v-if="selectedOneToManySourceAddress" class="alert alert-light border py-2 mb-0 small">
+                已选源钱包：<span class="font-monospace">{{ selectedOneToManySourceAddress }}</span>
+              </div>
+              <div v-if="sourceAddressError" class="invalid-feedback d-block">{{ sourceAddressError }}</div>
             </div>
-            <textarea
-              class="form-control"
-              v-model="sourceAddressesText"
-              rows="10"
-              placeholder="每行一个钱包地址或私钥&#10;0x1234...&#10;0x5678..."
-              :class="{ 'is-invalid': sourceAddressError }"
-            ></textarea>
-            <div v-if="sourceAddressError" class="invalid-feedback">{{ sourceAddressError }}</div>
+
+            <!-- 多转一/多转多：保留整批填充和地址/私钥输入 -->
+            <div v-else>
+              <div class="mb-3" v-if="walletBatches.length > 0">
+                <label class="form-label small text-muted">从批次填充</label>
+                <select class="form-select form-select-sm" v-model="selectedSourceBatchId">
+                  <option value="">-- 选择批次 --</option>
+                  <option v-for="batch in walletBatches" :key="batch.id" :value="batch.id">
+                    {{ batch.remark }} ({{ batch.wallets.length }} 个)
+                  </option>
+                </select>
+              </div>
+              <textarea
+                class="form-control"
+                v-model="sourceAddressesText"
+                rows="10"
+                placeholder="每行一个钱包地址或私钥&#10;0x1234...&#10;0x5678..."
+                :class="{ 'is-invalid': sourceAddressError }"
+              ></textarea>
+              <div v-if="sourceAddressError" class="invalid-feedback">{{ sourceAddressError }}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -97,13 +139,12 @@
                 <i class="bi bi-file-earmark-arrow-up me-1"></i>导入TXT
                 <input type="file" accept=".txt" class="d-none" @change="handleTargetFileImport">
               </label>
-              <button class="btn btn-outline-danger btn-sm" @click="targetAddressesText = ''; selectedTargetBatchId = ''">
+              <button class="btn btn-outline-danger btn-sm" @click="clearTargetAddresses">
                 <i class="bi bi-trash"></i>
               </button>
             </div>
           </div>
           <div class="card-body">
-            <!-- 批次选择 -->
             <div class="mb-3" v-if="walletBatches.length > 0">
               <label class="form-label small text-muted">从批次填充</label>
               <select class="form-select form-select-sm" v-model="selectedTargetBatchId">
@@ -122,6 +163,64 @@
             ></textarea>
             <div v-if="targetAddressError" class="invalid-feedback">{{ targetAddressError }}</div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 当前目标 ERC20 -->
+    <div class="card mb-4">
+      <div class="card-header bg-light d-flex justify-content-between align-items-center">
+        <span class="fw-bold"><i class="bi bi-coin me-2"></i>目标 ERC20 代币</span>
+        <span v-if="targetToken" class="badge bg-success">
+          {{ targetToken.symbol }} · {{ formatAddress(targetToken.address) }}
+        </span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-12 col-lg-8">
+            <label class="form-label">代币合约地址</label>
+            <input
+              v-model.trim="targetTokenAddressInput"
+              type="text"
+              class="form-control font-monospace"
+              placeholder="0x..."
+              autocomplete="off"
+              spellcheck="false"
+              :disabled="isLoadingTargetToken || isTransferring"
+              @input="handleTargetTokenAddressInput"
+              @keyup.enter="loadTargetTokenFromContract"
+            >
+          </div>
+          <div class="col-12 col-lg-4 d-flex gap-2">
+            <button
+              class="btn btn-outline-primary flex-grow-1"
+              :disabled="isLoadingTargetToken || isTransferring || !targetTokenAddressInput.trim()"
+              @click="loadTargetTokenFromContract"
+            >
+              <span v-if="isLoadingTargetToken" class="spinner-border spinner-border-sm me-1"></span>
+              <i v-else class="bi bi-search me-1"></i>
+              读取当前链代币
+            </button>
+            <button
+              v-if="targetToken"
+              class="btn btn-outline-danger"
+              :disabled="isLoadingTargetToken || isTransferring"
+              @click="clearTargetTokenSelection"
+            >
+              清除
+            </button>
+          </div>
+        </div>
+        <div v-if="targetToken" class="alert alert-success py-2 mt-3 mb-0 small">
+          已设置 {{ targetToken.name }} ({{ targetToken.symbol }})，
+          合约 <span class="font-monospace">{{ targetToken.address }}</span>，
+          精度 {{ targetToken.decimals }}。一转多可在下方选择该目标代币。
+        </div>
+        <div v-else-if="!targetTokenQueryError" class="form-text mt-2">
+          输入当前网络的 ERC20 合约后读取 symbol、name 和 decimals；读取成功前不会启用“目标代币”转账。
+        </div>
+        <div v-if="targetTokenQueryError" class="alert alert-danger py-2 mt-3 mb-0 small">
+          {{ targetTokenQueryError }}
         </div>
       </div>
     </div>
@@ -353,7 +452,7 @@
                 </td>
                 <td>
                   <div v-if="result.hash">
-                    <a :href="getExplorerTxUrl(result.hash)" target="_blank" class="text-decoration-none">
+                    <a :href="getExplorerTxUrl(result.hash, result._chainId)" target="_blank" class="text-decoration-none">
                       <i class="bi bi-box-arrow-up-right me-1"></i>{{ formatAddress(result.hash) }}
                     </a>
                     <small v-if="result.error" class="d-block" :class="resultDetailClass(result)" :title="result.error">
@@ -379,7 +478,19 @@ import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useWalletStore } from '../../stores/walletStore';
 import { useChainStore } from '../../stores/chainStore';
+import { getAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { erc20Abi } from '../../viem/abis/erc20';
+import {
+  buildBatchTransferRetryPlans,
+  type BatchTransferMode,
+  type BatchTransferTokenType,
+} from '../../services/batchTransferRetryPlan';
+import {
+  assertTargetTokenQueryContextCurrent,
+  createTransferExecutionContextGuard,
+  getTransferTargetTokenIdentity,
+} from '../../services/transferAssetContext';
 
 // 私钥正则表达式
 const PRIVATE_KEY_REGEX = /^(0x)?[0-9a-fA-F]{64}$/;
@@ -390,8 +501,19 @@ const { targetToken, walletBatches } = storeToRefs(walletStore);
 const { currentGovernanceToken, selectedChainId } = storeToRefs(chainStore);
 const isBscChain = computed(() => selectedChainId.value === 56 || selectedChainId.value === 97);
 
+function currentTransferExecutionContext() {
+  return {
+    chainId: selectedChainId.value,
+    rpcUrl: chainStore.effectiveRpcUrl,
+    targetToken: targetToken.value,
+  };
+}
+
 const isTransferring = ref(false);
 const transferResults = ref<any[]>([]);
+const targetTokenAddressInput = ref(targetToken.value?.address || '');
+const isLoadingTargetToken = ref(false);
+const targetTokenQueryError = ref('');
 
 type TransferResultStatus = 'confirmed' | 'pending' | 'failed' | 'not_sent' | 'unknown';
 
@@ -470,10 +592,14 @@ const intervalSeconds = ref(3);
 
 // 批次选择
 const selectedSourceBatchId = ref('');
+const selectedOneToManySourceAddress = ref('');
 const selectedTargetBatchId = ref('');
 
 // 当切换到多转多或多转一模式时，默认勾选"转全部余额"
-watch(transferMode, (newMode) => {
+watch(transferMode, (newMode, previousMode) => {
+  if (newMode === 'oneToMany' || previousMode === 'oneToMany') {
+    clearSourceAddresses();
+  }
   if (newMode === 'manyToMany' || newMode === 'manyToOne') {
     transferAllBalance.value = true;
     transferAllBalance2.value = true;
@@ -485,6 +611,9 @@ watch(transferMode, (newMode) => {
 });
 
 watch(selectedChainId, () => {
+  // 目标代币只属于查询时的链。即使外层 App 的链 watcher 尚未运行，
+  // 本面板也先清空，避免把旧链合约带到新链。
+  clearTargetTokenSelection();
   if (!isBscChain.value) {
     if (transferTokenType.value === 'aster') transferTokenType.value = 'native';
     if (transferTokenType2.value === 'aster') {
@@ -495,11 +624,44 @@ watch(selectedChainId, () => {
 
 // 当选择批次时，填充地址
 watch(selectedSourceBatchId, (batchId) => {
-  if (batchId) {
-    const batch = walletBatches.value.find(b => b.id === batchId);
-    if (batch) {
-      sourceAddressesText.value = batch.wallets.map(w => w.address).join('\n');
-    }
+  selectedOneToManySourceAddress.value = '';
+  if (transferMode.value === 'oneToMany') {
+    sourceAddressesText.value = '';
+    return;
+  }
+
+  const batch = walletBatches.value.find(b => b.id === batchId);
+  sourceAddressesText.value = batch
+    ? batch.wallets.map(w => w.address).join('\n')
+    : '';
+});
+
+watch(walletBatches, () => {
+  if (!selectedSourceBatchId.value) return;
+  const batch = walletBatches.value.find(item => item.id === selectedSourceBatchId.value);
+  if (!batch) {
+    clearSourceAddresses();
+    return;
+  }
+  if (
+    selectedOneToManySourceAddress.value &&
+    !batch.wallets.some(wallet => (
+      wallet.address.toLowerCase() === selectedOneToManySourceAddress.value.toLowerCase()
+    ))
+  ) {
+    selectedOneToManySourceAddress.value = '';
+  }
+}, { deep: true });
+
+watch(targetToken, (token) => {
+  if (token) {
+    targetTokenAddressInput.value = token.address;
+    targetTokenQueryError.value = '';
+    return;
+  }
+  if (transferTokenType.value === 'token') transferTokenType.value = 'native';
+  if (transferTokenType2.value === 'token') {
+    transferTokenType2.value = isBscChain.value ? 'aster' : 'native';
   }
 });
 
@@ -533,6 +695,103 @@ function tokenLabel(type: string): string {
   if (type === 'aster') return 'ASTER';
   if (type === 'token' && targetToken.value) return targetToken.value.symbol;
   return currentGovernanceToken.value;
+}
+
+function handleTargetTokenAddressInput() {
+  targetTokenQueryError.value = '';
+  const activeAddress = targetToken.value?.address?.toLowerCase();
+  if (
+    activeAddress &&
+    targetTokenAddressInput.value.trim().toLowerCase() !== activeAddress
+  ) {
+    walletStore.clearTargetToken();
+  }
+}
+
+function clearTargetTokenSelection() {
+  walletStore.clearTargetToken();
+  targetTokenAddressInput.value = '';
+  targetTokenQueryError.value = '';
+}
+
+async function loadTargetTokenFromContract() {
+  if (isLoadingTargetToken.value || isTransferring.value) return;
+
+  const requestedChainId = selectedChainId.value;
+  let tokenAddress: `0x${string}`;
+  try {
+    tokenAddress = getAddress(targetTokenAddressInput.value.trim().toLowerCase());
+  } catch {
+    targetTokenQueryError.value = '代币合约地址格式无效';
+    return;
+  }
+
+  isLoadingTargetToken.value = true;
+  targetTokenQueryError.value = '';
+
+  try {
+    const publicClient = walletStore.getPublicClient() as any;
+    const actualChainId = Number(await publicClient.getChainId());
+    if (actualChainId !== requestedChainId) {
+      throw new Error(`RPC 实际连接链 ID ${actualChainId}，与当前选择的链 ID ${requestedChainId} 不一致`);
+    }
+
+    const bytecode = await publicClient.getBytecode({ address: tokenAddress });
+    if (!bytecode || bytecode === '0x') {
+      throw new Error('当前链上未找到该合约');
+    }
+
+    const [symbolValue, nameValue, decimalsValue] = await Promise.all([
+      publicClient.readContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: 'symbol',
+      }),
+      publicClient.readContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: 'name',
+      }),
+      publicClient.readContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: 'decimals',
+      }),
+    ]);
+
+    assertTargetTokenQueryContextCurrent(
+      { chainId: requestedChainId, address: tokenAddress },
+      selectedChainId.value,
+      targetTokenAddressInput.value,
+    );
+
+    const symbol = String(symbolValue || '').trim();
+    const name = String(nameValue || '').trim() || symbol;
+    const decimals = Number(decimalsValue);
+    if (!symbol) throw new Error('合约未返回有效的 ERC20 symbol');
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+      throw new Error('合约返回的 ERC20 decimals 无效');
+    }
+
+    walletStore.setTargetToken({
+      address: tokenAddress,
+      symbol,
+      name,
+      decimals,
+      chainId: requestedChainId,
+    });
+    targetTokenAddressInput.value = tokenAddress;
+  } catch (error: any) {
+    if (
+      selectedChainId.value === requestedChainId
+      && targetTokenAddressInput.value.trim().toLowerCase() === tokenAddress.toLowerCase()
+    ) {
+      walletStore.clearTargetToken();
+    }
+    targetTokenQueryError.value = error?.message || '读取目标 ERC20 失败';
+  } finally {
+    isLoadingTargetToken.value = false;
+  }
 }
 
 const BATCH_REPLAY_GUARD_KEY = 'amm-batch-transfer-replay-guard-v1';
@@ -643,6 +902,12 @@ const batchPrivateKeyMap = computed(() => {
     const batch = walletBatches.value.find(b => b.id === selectedSourceBatchId.value);
     if (batch) {
       for (const wallet of batch.wallets) {
+        if (
+          transferMode.value === 'oneToMany' &&
+          wallet.address.toLowerCase() !== selectedOneToManySourceAddress.value.toLowerCase()
+        ) {
+          continue;
+        }
         // 服务器模式下 privateKey 可能为空，但地址依然有效
         // 私钥会在执行转账时从服务器获取
         if (wallet.privateKey) {
@@ -654,16 +919,46 @@ const batchPrivateKeyMap = computed(() => {
   return map;
 });
 
-// 检查是否选择了批次（用于跳过私钥验证）
-const isUsingBatch = computed(() => !!selectedSourceBatchId.value);
+const selectedSourceBatch = computed(() => (
+  walletBatches.value.find(batch => batch.id === selectedSourceBatchId.value) || null
+));
+
+const oneToManySourceWalletOptions = computed(() => {
+  const batch = selectedSourceBatch.value;
+  if (!batch) return [];
+  const typeLabel = batch.walletType === 'main' ? '主钱包' : '普通钱包';
+  const seen = new Set<string>();
+  return batch.wallets.flatMap((wallet, index) => {
+    if (!isValidAddress(wallet.address)) return [];
+    const normalizedAddress = wallet.address.toLowerCase();
+    if (seen.has(normalizedAddress)) return [];
+    seen.add(normalizedAddress);
+    const position = wallet.remark?.trim() || `第 ${index + 1} 个`;
+    return [{
+      address: wallet.address,
+      label: `${typeLabel} · ${position}`,
+    }];
+  });
+});
+
+function clearSourceAddresses() {
+  selectedSourceBatchId.value = '';
+  selectedOneToManySourceAddress.value = '';
+  sourceAddressesText.value = '';
+}
+
+function clearTargetAddresses() {
+  selectedTargetBatchId.value = '';
+  targetAddressesText.value = '';
+}
 
 // 解析地址文本为地址数组
 function parseAddresses(text: string): string[] {
   if (!text.trim()) return [];
   return text
     .split(/[\n,;]/)
-    .map(addr => addr.trim())
-    .filter(addr => addr.length > 0);
+    .map(address => address.trim())
+    .filter(address => address.length > 0);
 }
 
 // 解析源地址（支持私钥输入，仅多转多模式）
@@ -735,11 +1030,13 @@ async function handleTargetFileImport(event: Event) {
 
 // 源地址列表
 const sourceAddresses = computed(() => {
-  // 多转多和多转一模式都支持私钥输入
-  if (transferMode.value === 'manyToMany' || transferMode.value === 'manyToOne') {
-    return parseSourceAddressesWithPrivateKey(sourceAddressesText.value).addresses;
+  if (transferMode.value === 'oneToMany') {
+    return selectedOneToManySourceAddress.value
+      ? [selectedOneToManySourceAddress.value]
+      : [];
   }
-  return parseAddresses(sourceAddressesText.value);
+  // 多转多和多转一模式都支持私钥输入
+  return parseSourceAddressesWithPrivateKey(sourceAddressesText.value).addresses;
 });
 const targetAddresses = computed(() => parseAddresses(targetAddressesText.value));
 
@@ -758,34 +1055,28 @@ const targetAddressCount = computed(() => targetAddresses.value.length);
 // 源地址验证错误
 const sourceAddressError = computed(() => {
   const addresses = sourceAddresses.value;
-  if (addresses.length === 0) return '';
-
-  // 多转多和多转一模式支持私钥输入
-  if (transferMode.value === 'manyToMany' || transferMode.value === 'manyToOne') {
-    const lines = sourceAddressesText.value.split(/[\n,;]/).map(line => line.trim()).filter(Boolean);
-    for (const line of lines) {
-      const isAddress = /^0x[0-9a-fA-F]{40}$/.test(line);
-      const isPrivateKey = PRIVATE_KEY_REGEX.test(line);
-      if (!isAddress && !isPrivateKey) {
-        return '存在无效的地址或私钥格式';
-      }
-    }
-    // 服务器模式下私钥会在执行时从服务器获取，不需要本地验证
+  if (transferMode.value === 'oneToMany') {
+    if (!selectedSourceBatchId.value || !selectedOneToManySourceAddress.value) return '';
+    const batch = selectedSourceBatch.value;
+    if (!batch) return '所选源钱包批次已不存在，请重新选择';
+    const selectedWallet = batch.wallets.find(wallet => (
+      wallet.address.toLowerCase() === selectedOneToManySourceAddress.value.toLowerCase()
+    ));
+    if (!selectedWallet) return '所选源钱包已不在当前批次中，请重新选择';
+    if (!isValidAddress(selectedWallet.address)) return '所选源钱包地址格式无效';
     return '';
   }
 
-  // 一对多模式：只检查地址格式
-  const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
-  if (invalidAddrs.length > 0) {
-    return `${invalidAddrs.length} 个地址格式无效`;
+  // 多转多和多转一模式支持私钥输入
+  const lines = sourceAddressesText.value.split(/[\n,;]/).map(line => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    const isAddress = /^0x[0-9a-fA-F]{40}$/.test(line);
+    const isPrivateKey = PRIVATE_KEY_REGEX.test(line);
+    if (!isAddress && !isPrivateKey) {
+      return '存在无效的地址或私钥格式';
+    }
   }
-
   // 服务器模式下私钥会在执行时从服务器获取，不需要本地验证
-
-  if (transferMode.value === 'oneToMany' && addresses.length > 1) {
-    return '一对多模式只能填写一个源钱包地址';
-  }
-
   return '';
 });
 
@@ -797,6 +1088,19 @@ const targetAddressError = computed(() => {
   const invalidAddrs = addresses.filter(addr => !isValidAddress(addr));
   if (invalidAddrs.length > 0) {
     return `${invalidAddrs.length} 个地址格式无效`;
+  }
+
+  const normalizedAddresses = addresses.map(address => address.toLowerCase());
+  if (new Set(normalizedAddresses).size !== normalizedAddresses.length) {
+    return '目标钱包列表中存在重复地址，请取消重复选择';
+  }
+
+  if (
+    transferMode.value === 'oneToMany' &&
+    sourceAddresses.value[0] &&
+    normalizedAddresses.includes(sourceAddresses.value[0].toLowerCase())
+  ) {
+    return '目标钱包列表包含当前源钱包，请取消该目标以避免自转';
   }
 
   if (transferMode.value === 'manyToOne' && addresses.length > 1) {
@@ -838,12 +1142,6 @@ const canExecuteTransfer = computed(() => {
 async function executeTransfer() {
   if (!canExecuteTransfer.value) return;
 
-  const walletTypeError = validateWalletTypes();
-  if (walletTypeError) {
-    alert(walletTypeError);
-    return;
-  }
-
   const batchFingerprint = buildBatchFingerprint();
   const previousBroadcast = loadReplayGuards().find(entry => entry.fingerprint === batchFingerprint);
   if (
@@ -864,16 +1162,21 @@ async function executeTransfer() {
   const executionSourceAddresses = [...sourceAddresses.value];
   const executionTargetAddresses = [...targetAddresses.value];
   const executionChainId = selectedChainId.value;
-  const executionTargetTokenAddress = targetToken.value?.address?.toLowerCase() || null;
+  const executionTargetTokenIdentity = getTransferTargetTokenIdentity(targetToken.value);
   const executionIntervalMs = executionMode === 'oneToMany'
     ? 0
     : (intervalEnabled.value ? intervalSeconds.value * 1000 : 0);
-  let executionContextChanged = false;
+  const executionContextGuard = createTransferExecutionContextGuard(
+    currentTransferExecutionContext(),
+  );
   const stopExecutionContextWatch = watch(
-    [selectedChainId, () => targetToken.value?.address?.toLowerCase() || null],
-    () => {
-      executionContextChanged = true;
-    },
+    [
+      selectedChainId,
+      () => chainStore.effectiveRpcUrl,
+      () => getTransferTargetTokenIdentity(targetToken.value),
+    ],
+    () => executionContextGuard.invalidate(),
+    { flush: 'sync' },
   );
 
   isTransferring.value = true;
@@ -900,21 +1203,18 @@ async function executeTransfer() {
     let allResults: any[] = [];
 
     for (const round of rounds) {
-      if (executionContextChanged || selectedChainId.value !== executionChainId) {
-        throw new Error('执行期间网络或目标代币发生过切换。已广播结果保留，后续轮次未发送');
-      }
-      if (
-        round.tokenType === 'token' &&
-        (targetToken.value?.address?.toLowerCase() || null) !== executionTargetTokenAddress
-      ) {
-        throw new Error('执行期间目标代币发生变化。已广播结果保留，后续轮次未发送');
-      }
+      executionContextGuard.assertCurrent(currentTransferExecutionContext());
 
       const decorateRoundResults = (results: any[]) => results.map(result => ({
         ...result,
         _tokenLabel: round.label,
         _tokenType: round.tokenType,
         _amount: round.amount,
+        _transferMode: executionMode,
+        _chainId: executionChainId,
+        _targetTokenIdentity: round.tokenType === 'token'
+          ? executionTargetTokenIdentity
+          : null,
       }));
 
       const results = await walletStore.batchTransferByAddresses(
@@ -956,8 +1256,10 @@ async function executeTransfer() {
     const unknownCount = allResults.filter(r => resultStatus(r) === 'unknown').length;
     const failCount = allResults.filter(r => ['failed', 'not_sent'].includes(resultStatus(r))).length;
 
-    if (confirmedCount === allResults.length) {
+    if (allResults.length > 0 && confirmedCount === allResults.length) {
       alert(`转账完成！已确认 ${confirmedCount} 笔`);
+    } else if (allResults.length === 0) {
+      alert('转账未执行：没有生成任何可发送交易');
     } else if (pendingCount + unknownCount > 0) {
       alert(
         `批量广播已结束\n\n已确认: ${confirmedCount} 笔\n确认中: ${pendingCount} 笔\n待节点核对: ${unknownCount} 笔\n未完成: ${failCount} 笔` +
@@ -985,63 +1287,93 @@ async function retryFailedTransfers() {
   const failedResults = [...retryableResults.value];
   if (failedResults.length === 0) return;
 
+  const retryContext = currentTransferExecutionContext();
+  const retryExecutionChainId = retryContext.chainId;
+  const retryTargetTokenIdentity = getTransferTargetTokenIdentity(retryContext.targetToken);
+  const retryFallbackTokenType = transferTokenType.value as BatchTransferTokenType;
+  const retryFallbackMode = transferMode.value as BatchTransferMode;
+  const retryFallbackAllBalance = transferAllBalance.value;
+  const retryFallbackAmount = transferAmount.value;
+  const retryIntervalMs = intervalEnabled.value ? intervalSeconds.value * 1000 : 0;
+  const retryContextGuard = createTransferExecutionContextGuard(retryContext);
+  const stopRetryContextWatch = watch(
+    [
+      selectedChainId,
+      () => chainStore.effectiveRpcUrl,
+      () => getTransferTargetTokenIdentity(targetToken.value),
+    ],
+    () => retryContextGuard.invalidate(),
+    { flush: 'sync' },
+  );
+
   isTransferring.value = true;
 
   try {
+    for (const result of failedResults) {
+      if (!Number.isInteger(result._chainId) || result._chainId !== retryExecutionChainId) {
+        throw new Error('失败记录不属于当前网络，已停止重试；请切回原网络后再操作');
+      }
+      if (
+        result._tokenType === 'token'
+        && (
+          typeof result._targetTokenIdentity !== 'string'
+          || result._targetTokenIdentity !== retryTargetTokenIdentity
+        )
+      ) {
+        throw new Error('失败记录的目标代币与当前目标代币不一致，已停止重试');
+      }
+    }
+
     const mergedPrivateKeyMap = {
       ...batchPrivateKeyMap.value,
       ...sourcePrivateKeyMap.value
     };
 
-    // 按代币类型分组重试
-    const grouped = new Map<string, any[]>();
-    for (const r of failedResults) {
-      const key = r._tokenType || transferTokenType.value;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push(r);
-    }
+    const retryPlans = buildBatchTransferRetryPlans(failedResults, {
+      tokenType: retryFallbackTokenType,
+      mode: retryFallbackMode,
+    });
 
+    const originalResults = [...transferResults.value];
+    const completedRetrySet = new Set<any>();
     let allRetryResults: any[] = [];
 
-    for (const [tType, group] of grouped) {
-      const retrySources = group.map(r => r.source).filter(Boolean);
-      const retryTargets = group.map(r => r.target).filter(Boolean);
-      if (retrySources.length === 0 || retryTargets.length === 0) continue;
-
-      const amount = group[0]._amount ?? (transferAllBalance.value ? 0 : transferAmount.value);
-      const label = group[0]._tokenLabel || tokenLabel(tType);
-
-      // 若所有失败任务来自同一个源地址（oneToMany场景），必须用 oneToMany 串行执行，
-      // 否则并发时会出现 nonce 竞态，导致 RPC 返回 invalid params
-      const uniqueSources = [...new Set(retrySources)];
-      const retryMode = uniqueSources.length === 1 ? 'oneToMany' : 'manyToMany';
-      const retrySrc = retryMode === 'oneToMany' ? [uniqueSources[0]] : retrySources;
+    for (const plan of retryPlans) {
+      retryContextGuard.assertCurrent(currentTransferExecutionContext());
+      const amount = plan.results[0]._amount
+        ?? (retryFallbackAllBalance ? 0 : retryFallbackAmount);
+      const label = plan.results[0]._tokenLabel || tokenLabel(plan.tokenType);
 
       const retryResults = await walletStore.batchTransferByAddresses(
-        retrySrc,
-        retryTargets,
+        plan.sourceAddresses,
+        plan.targetAddresses,
         amount,
-        tType as 'native' | 'token' | 'aster',
-        retryMode,
+        plan.tokenType,
+        plan.mode,
         {
           privateKeyMap: mergedPrivateKeyMap,
           transferAllBalance: String(amount) === '0',
-          intervalMs: intervalEnabled.value ? intervalSeconds.value * 1000 : 0
+          intervalMs: retryIntervalMs
         }
       );
 
       for (const r of retryResults) {
         r._tokenLabel = label;
-        r._tokenType = tType;
+        r._tokenType = plan.tokenType;
         r._amount = amount;
+        r._transferMode = plan.mode;
+        r._chainId = retryExecutionChainId;
+        r._targetTokenIdentity = plan.tokenType === 'token'
+          ? retryTargetTokenIdentity
+          : null;
       }
       allRetryResults.push(...retryResults);
+      plan.results.forEach(result => completedRetrySet.add(result));
+      transferResults.value = [
+        ...originalResults.filter(result => !completedRetrySet.has(result)),
+        ...allRetryResults,
+      ];
     }
-
-    // 合并结果：只替换本次确实选择重试的行，保留 pending/hash 等安全状态。
-    const retrySet = new Set(failedResults);
-    const retainedResults = transferResults.value.filter(result => !retrySet.has(result));
-    transferResults.value = [...retainedResults, ...allRetryResults];
 
     const retrySuccess = allRetryResults.filter(r => r.success).length;
     const retryFail = allRetryResults.filter(r => !r.success).length;
@@ -1055,6 +1387,7 @@ async function retryFailedTransfers() {
   } catch (error: any) {
     alert(error.message || '重试失败');
   } finally {
+    stopRetryContextWatch();
     isTransferring.value = false;
   }
 }
@@ -1066,28 +1399,6 @@ function isValidAddress(address: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(trimmed);
 }
 
-// 检查钱包是否为主钱包
-function isMainWallet(address: string): boolean {
-  const walletType = walletStore.getWalletTypeByAddress(address);
-  return walletType === 'main';
-}
-
-// 验证钱包类型
-function validateWalletTypes(): string | null {
-  if (transferMode.value === 'oneToMany') {
-    const sourceAddr = sourceAddresses.value[0];
-    if (sourceAddr && !isMainWallet(sourceAddr)) {
-      return '一转多模式下，源钱包必须是主钱包';
-    }
-  } else if (transferMode.value === 'manyToOne') {
-    const targetAddr = targetAddresses.value[0];
-    if (targetAddr && !isMainWallet(targetAddr)) {
-      return '多转一模式下，目标钱包必须是主钱包';
-    }
-  }
-  return null;
-}
-
 // 格式化地址显示
 function formatAddress(address: string): string {
   if (!address) return '';
@@ -1095,8 +1406,10 @@ function formatAddress(address: string): string {
 }
 
 // 获取区块浏览器交易链接
-function getExplorerTxUrl(hash: string): string {
-  const chainId = walletStore.currentChainId;
+function getExplorerTxUrl(hash: string, resultChainId?: number): string {
+  const chainId = Number.isInteger(resultChainId)
+    ? resultChainId!
+    : walletStore.currentChainId;
   const explorers: Record<number, string> = {
     56: 'https://bscscan.com/tx/',
     97: 'https://testnet.bscscan.com/tx/',
@@ -1131,6 +1444,11 @@ function truncateError(error: string): string {
 textarea.form-control {
   font-family: monospace;
   font-size: 0.85rem;
+}
+
+.source-wallet-select {
+  font-family: monospace;
+  font-size: 0.82rem;
 }
 
 .table th, .table td {

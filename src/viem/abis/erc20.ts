@@ -1,4 +1,5 @@
 export const erc20Abi = [
+  { "type": "event", "name": "Transfer", "anonymous": false, "inputs": [{ "name": "from", "type": "address", "indexed": true }, { "name": "to", "type": "address", "indexed": true }, { "name": "value", "type": "uint256", "indexed": false }] },
   { "type": "function", "name": "decimals", "stateMutability": "view", "inputs": [], "outputs": [{ "name": "", "type": "uint8" }] },
   { "type": "function", "name": "name", "stateMutability": "view", "inputs": [], "outputs": [{ "name": "", "type": "string" }] },
   { "type": "function", "name": "symbol", "stateMutability": "view", "inputs": [], "outputs": [{ "name": "", "type": "string" }] },
@@ -8,5 +9,4 @@ export const erc20Abi = [
   { "type": "function", "name": "approve", "stateMutability": "nonpayable", "inputs": [{ "name": "spender", "type": "address" }, { "name": "amount", "type": "uint256" }], "outputs": [{ "name": "", "type": "bool" }] },
   { "type": "function", "name": "transfer", "stateMutability": "nonpayable", "inputs": [{ "name": "to", "type": "address" }, { "name": "amount", "type": "uint256" }], "outputs": [{ "name": "", "type": "bool" }] }
 ] as const;
-
 

@@ -14,9 +14,9 @@ import {
   getV3Allowance,
 } from './uniswapV3Service';
 import {
-  ROBINHOOD_HTTP_RPCS,
   readAndValidatePonsLaunchedToken,
 } from './ponsService';
+import { getRuntimeRobinhoodRpcUrl } from './robinhoodRpcConfig';
 
 /**
  * Pre-approval helper used by the graduation monitor. Actual buys and sells go
@@ -31,7 +31,7 @@ export async function approvePonsRouter(args: {
   /** Graduation/Pons-inner flows fail closed; generic V3 outer sells opt out. */
   requireOfficialPons?: boolean;
 }): Promise<Hash | null> {
-  const rpcUrl = args.rpcUrl ?? ROBINHOOD_HTTP_RPCS[0];
+  const rpcUrl = args.rpcUrl ?? getRuntimeRobinhoodRpcUrl();
   const normalizedKey = (args.privateKey.startsWith('0x') ? args.privateKey : `0x${args.privateKey}`) as `0x${string}`;
   const account = privateKeyToAccount(normalizedKey);
   const publicClient = createPublicClient({ chain: robinhood, transport: http(rpcUrl) });

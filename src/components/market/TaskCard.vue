@@ -82,12 +82,12 @@
       </button>
 
       <button
-        v-if="task.status === 'running' || task.status === 'paused'"
+        v-if="task.status === 'running' || task.status === 'paused' || task.remoteRuntimeActive"
         class="btn btn-danger btn-sm"
         @click="handleStop"
-        title="停止任务"
+        :title="task.remoteRuntimeActive && task.status === 'stopped' ? '撤销服务端仍在运行的任务实例' : '停止任务'"
       >
-        <i class="bi bi-stop-fill me-1"></i>停止
+        <i class="bi bi-stop-fill me-1"></i>{{ task.remoteRuntimeActive && task.status === 'stopped' ? '强制停止' : '停止' }}
       </button>
 
       <div class="flex-grow-1"></div>
@@ -106,7 +106,7 @@
         class="btn btn-outline-danger btn-sm"
         @click="handleBatchSell"
         :disabled="isBatchSelling"
-        title="批量卖出所有钱包的代币；共用钱包或同链同代币的冲突任务会先暂停"
+        title="批量卖出所有钱包的代币；其他任务只跳过共用源钱包，其余钱包继续运行"
       >
         <i class="bi bi-cash-stack me-1"></i>{{ isBatchSelling ? '卖出中' : '批量卖' }}
       </button>
@@ -276,7 +276,7 @@ function handlePause() {
 
 function handleStop() {
   if (confirm(`确定要停止任务 "${props.task.name}" 吗？`)) {
-    taskStore.stopTask(props.task.id);
+    taskStore.stopTask(props.task.id, undefined, { forceServer: true });
   }
 }
 
@@ -328,11 +328,11 @@ async function handleQueryBalances() {
 
 async function handleBatchSell() {
   const runningNotice = props.task.status === 'running'
-    ? '\n\n当前任务以及共用钱包或同链同代币市场的其他运行中任务会先暂停，等待已发起的轮次收尾；卖出完成后仍保持暂停，不会自动恢复。'
-    : '\n\n如果其他运行中任务共用这些钱包，它们也会先暂停并保持暂停。';
+    ? '\n\n当前任务会先暂停并在卖出后保持暂停。其他任务不会整项暂停：只会暂时跳过本批占用的源钱包，并继续使用各自其余钱包；同代币但钱包不同的任务完全不受影响。'
+    : '\n\n其他运行中任务不会整项暂停：只会暂时跳过本批占用的源钱包，并继续使用各自其余钱包。';
   if (!confirm(
     `确定要批量卖出任务 "${props.task.name}" 所有钱包的全部代币吗？`
-    + `${runningNotice}\n\n系统会同时获取钱包锁和代币市场锁，逐笔使用最新链上状态报价并等待最终确认；待确认/未知时持续只读对账，不会盲目重发。`,
+    + `${runningNotice}\n\n系统只获取相关源钱包锁，并逐笔使用最新链上状态报价、动态滑点保护和最终确认；不会锁住整个代币市场。待确认/未知时持续只读对账，不会盲目重发。`,
   )) return;
   isBatchSelling.value = true;
   taskStore.setActiveLogTask(props.task.id);

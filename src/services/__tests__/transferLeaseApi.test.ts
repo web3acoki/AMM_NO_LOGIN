@@ -8,7 +8,7 @@ vi.mock('../../api', () => ({
   apiRequest: mocks.apiRequest,
 }));
 
-import { withMarketLease } from '../transferLeaseApi';
+import { withTransferLease, withTransferLeases } from '../transferLeaseApi';
 
 const LEASE_ID = '12345678-1234-1234-1234-123456789abc';
 const LEASE_TOKEN = 'ab'.repeat(32);
@@ -55,7 +55,7 @@ describe('server lease retention lifecycle', () => {
       throw new Error(`unexpected lease request: ${options.method} ${path}`);
     });
 
-    const result = await withMarketLease(
+    const result = await withTransferLease(
       4663,
       '0x000000000000000000000000000000000000beef',
       async (guard) => {
@@ -78,11 +78,54 @@ describe('server lease retention lifecycle', () => {
     await retentionCompleted;
     expect(completed).toBe(true);
     expect(mocks.apiRequest).toHaveBeenLastCalledWith(
-      `/api/market-leases/${LEASE_ID}`,
+      `/api/transfer-leases/${LEASE_ID}`,
       expect.objectContaining({
         method: 'DELETE',
-        headers: { 'X-Market-Lease-Token': LEASE_TOKEN },
+        headers: { 'X-Transfer-Lease-Token': LEASE_TOKEN },
       }),
     );
+  });
+
+  it('acquires a wallet batch in one request and releases every lease in parallel', async () => {
+    const addresses = [
+      '0x00000000000000000000000000000000000000a1',
+      '0x00000000000000000000000000000000000000b2',
+    ];
+    mocks.apiRequest.mockImplementation(async (path: string, options: RequestInit = {}) => {
+      if (path.endsWith('/batch-acquire')) {
+        return {
+          data: {
+            leases: addresses.map((address, index) => ({
+              address,
+              leaseId: index === 0 ? LEASE_ID : '87654321-4321-4321-4321-cba987654321',
+              leaseToken: index === 0 ? LEASE_TOKEN : 'cd'.repeat(32),
+              expiresAt: new Date(Date.now() + 90_000).toISOString(),
+              leaseDurationMs: 90_000,
+              heartbeatIntervalMs: 20_000,
+            })),
+          },
+        };
+      }
+      if (options.method === 'DELETE') return { data: undefined };
+      throw new Error(`unexpected lease request: ${options.method} ${path}`);
+    });
+
+    const result = await withTransferLeases(4663, addresses, async guards => {
+      expect(guards.size).toBe(2);
+      for (const address of addresses) guards.get(address.toLowerCase())!.assertActive();
+      return 'batch-finished';
+    });
+
+    expect(result).toBe('batch-finished');
+    expect(mocks.apiRequest).toHaveBeenCalledTimes(3);
+    expect(mocks.apiRequest).toHaveBeenNthCalledWith(
+      1,
+      '/api/transfer-leases/batch-acquire',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ chainId: 4663, addresses }),
+      }),
+    );
+    expect(mocks.apiRequest.mock.calls.slice(1).every(([, options]) => options.method === 'DELETE')).toBe(true);
   });
 });

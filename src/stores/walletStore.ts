@@ -82,6 +82,20 @@ function normalizePrivateKey(value: string): `0x${string}` | null {
   return `0x${hex.toLowerCase()}` as `0x${string}`;
 }
 
+function matchingPrivateKeyForAddress(value: string | undefined, address: string): `0x${string}` | null {
+  if (!value) return null;
+  const normalizedPrivateKey = normalizePrivateKey(value);
+  if (!normalizedPrivateKey) return null;
+  try {
+    const account = privateKeyToAccount(normalizedPrivateKey);
+    return account.address.toLowerCase() === address.trim().toLowerCase()
+      ? normalizedPrivateKey
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeWallet(wallet: LocalWallet): LocalWallet {
   return {
     ...wallet,
@@ -210,6 +224,7 @@ export const useWalletStore = defineStore('wallet', {
       symbol: string;
       name: string;
       decimals: number;
+      chainId: number;
     } | null,
     // 全局资金池查询状态（跨页面共享）
     poolQueryState: {
@@ -1013,8 +1028,14 @@ export const useWalletStore = defineStore('wallet', {
     // ============ 目标代币相关操作 ============
 
     // 设置目标代币
-    setTargetToken(token: { address: string; symbol: string; name: string; decimals: number }) {
-      this.targetToken = token;
+    setTargetToken(token: {
+      address: string;
+      symbol: string;
+      name: string;
+      decimals: number;
+      chainId: number;
+    }) {
+      this.targetToken = { ...token };
     },
 
     // 清除目标代币
@@ -1473,6 +1494,9 @@ export const useWalletStore = defineStore('wallet', {
           batch.totalNativeBalance = undefined;
           batch.totalTokenBalance = undefined;
           batch.totalAsterBalance = undefined;
+        }
+        if (this.targetToken && this.targetToken.chainId !== chainId) {
+          this.targetToken = null;
         }
       }
       this.currentChainId = chainId;
@@ -3159,7 +3183,22 @@ export const useWalletStore = defineStore('wallet', {
         onProgress?: (results: BatchTransferResult[]) => void;
       }
     ): Promise<BatchTransferResult[]> {
-      console.log(`开始批量转账，模式: ${mode}，代币类型: ${tokenType}，转全部余额: ${options?.transferAllBalance}`);
+      // Freeze every caller-owned input before the first await. In particular,
+      // Vue refs and caller maps must not be able to change ownership, asset or
+      // signing decisions after validation has begun.
+      const executionSourceAddresses = sourceAddresses.map(address => String(address).trim());
+      const executionTargetAddresses = targetAddresses.map(address => String(address).trim());
+      const executionAmount = amount;
+      const executionTokenType = tokenType;
+      const executionMode = mode;
+      const executionOptions = {
+        privateKeyMap: { ...(options?.privateKeyMap || {}) },
+        transferAllBalance: options?.transferAllBalance === true,
+        intervalMs: options?.intervalMs,
+        onProgress: options?.onProgress,
+      };
+
+      console.log(`开始批量转账，模式: ${executionMode}，代币类型: ${executionTokenType}，转全部余额: ${executionOptions.transferAllBalance}`);
 
       // Freeze all chain-sensitive execution inputs before the first await. A global
       // network switch clears targetToken and changes the effective RPC; neither is
@@ -3174,23 +3213,75 @@ export const useWalletStore = defineStore('wallet', {
             symbol: this.targetToken.symbol,
             name: this.targetToken.name,
             decimals: this.targetToken.decimals,
+            chainId: this.targetToken.chainId,
           }
         : null;
       const nativeSymbol = executionChainConfig.nativeCurrency.symbol;
 
-      if (tokenType === 'token') {
+      if (executionTargetAddresses.length === 0) {
+        throw new Error('至少需要从钱包列表选择一个目标钱包');
+      }
+      if (executionMode === 'oneToMany' && executionSourceAddresses.length !== 1) {
+        throw new Error('一对多模式下源钱包必须只有1个');
+      }
+      if (executionMode === 'manyToOne' && executionTargetAddresses.length !== 1) {
+        throw new Error('多对一模式下目标钱包必须只有1个');
+      }
+      if (
+        executionMode === 'manyToMany' &&
+        executionSourceAddresses.length !== executionTargetAddresses.length
+      ) {
+        throw new Error('多对多模式下源钱包和目标钱包数量必须相等');
+      }
+
+      // Fail closed before the ownership/key/lease boundary. Token metadata is
+      // chain-bound: an address and decimals snapshot read on a previous network
+      // must never be paired with the current network's RPC.
+      if (executionTokenType === 'token') {
         if (
           !executionTargetToken ||
           !/^0x[0-9a-fA-F]{40}$/.test(executionTargetToken.address) ||
           !Number.isInteger(executionTargetToken.decimals) ||
           executionTargetToken.decimals < 0 ||
-          executionTargetToken.decimals > 255
+          executionTargetToken.decimals > 255 ||
+          !Number.isInteger(executionTargetToken.chainId) ||
+          executionTargetToken.chainId <= 0
         ) {
-          throw new Error('目标 ERC20 代币信息无效，请重新查询代币后再转账');
+          throw new Error('目标 ERC20 代币信息无效，请在当前网络重新查询代币后再转账');
+        }
+        if (executionTargetToken.chainId !== executionChainId) {
+          throw new Error(
+            `目标 ERC20 代币属于链 ID ${executionTargetToken.chainId}，与当前执行链 ID ${executionChainId} 不一致，请在当前网络重新查询代币后再转账`,
+          );
         }
       }
 
-      if (tokenType === 'aster' && executionChainId !== 56 && executionChainId !== 97) {
+      // UI selection is not a security boundary. Revalidate only the one-to-many
+      // source at the Store/API boundary: it must actually belong to a loaded
+      // wallet batch, then (in server mode) still belong to the current account.
+      // Target addresses remain intentionally external-capable in every mode.
+      if (executionMode === 'oneToMany') {
+        const sourceKey = executionSourceAddresses[0].toLowerCase();
+        const belongsToWalletBatch = this.walletBatches.some(batch => (
+          batch.wallets.some(wallet => wallet.address.trim().toLowerCase() === sourceKey)
+        ));
+        if (!belongsToWalletBatch) {
+          throw new Error('一对多源钱包必须从当前账号的钱包批次选择');
+        }
+        const sourceOwnership = await this.validateTransferOwnership(
+          executionSourceAddresses,
+          [],
+        );
+        if (!sourceOwnership.valid) {
+          const preview = (sourceOwnership.missingAddresses || [])
+            .slice(0, 3)
+            .map(address => `${address.slice(0, 10)}...`)
+            .join('、');
+          throw new Error(`一对多源钱包必须从当前账号的钱包批次选择${preview ? `；列表外地址：${preview}` : ''}`);
+        }
+      }
+
+      if (executionTokenType === 'aster' && executionChainId !== 56 && executionChainId !== 97) {
         throw new Error(`ASTER 仅支持 BSC，${executionChainConfig.name} 上只能转账 ${nativeSymbol} 或目标 ERC20 代币`);
       }
       const publicClient = createPublicClient({
@@ -3200,31 +3291,25 @@ export const useWalletStore = defineStore('wallet', {
       // 根据模式构建转账任务
       let tasks: { sourceAddr: string; targetAddr: string }[] = [];
 
-      if (mode === 'oneToMany') {
+      if (executionMode === 'oneToMany') {
         // 一对多：一个源钱包向多个目标钱包转账
-        if (sourceAddresses.length !== 1) {
-          throw new Error('一对多模式下源钱包必须只有1个');
-        }
-        const sourceAddr = sourceAddresses[0];
-        for (const targetAddr of targetAddresses) {
+        const sourceAddr = executionSourceAddresses[0];
+        for (const targetAddr of executionTargetAddresses) {
           tasks.push({ sourceAddr, targetAddr });
         }
-      } else if (mode === 'manyToOne') {
+      } else if (executionMode === 'manyToOne') {
         // 多对一：多个源钱包向一个目标钱包转账
-        if (targetAddresses.length !== 1) {
-          throw new Error('多对一模式下目标钱包必须只有1个');
-        }
-        const targetAddr = targetAddresses[0];
-        for (const sourceAddr of sourceAddresses) {
+        const targetAddr = executionTargetAddresses[0];
+        for (const sourceAddr of executionSourceAddresses) {
           tasks.push({ sourceAddr, targetAddr });
         }
-      } else if (mode === 'manyToMany') {
+      } else if (executionMode === 'manyToMany') {
         // 多对多：源钱包和目标钱包一一对应
-        if (sourceAddresses.length !== targetAddresses.length) {
-          throw new Error('多对多模式下源钱包和目标钱包数量必须相等');
-        }
-        for (let i = 0; i < sourceAddresses.length; i++) {
-          tasks.push({ sourceAddr: sourceAddresses[i], targetAddr: targetAddresses[i] });
+        for (let i = 0; i < executionSourceAddresses.length; i++) {
+          tasks.push({
+            sourceAddr: executionSourceAddresses[i],
+            targetAddr: executionTargetAddresses[i],
+          });
         }
       }
 
@@ -3245,18 +3330,18 @@ export const useWalletStore = defineStore('wallet', {
           }
         }
       }
-      if (options?.privateKeyMap) {
-        for (const [address, privateKey] of Object.entries(options.privateKeyMap)) {
+      if (executionOptions.privateKeyMap) {
+        for (const [address, privateKey] of Object.entries(executionOptions.privateKeyMap)) {
           batchKeyMap[address.toLowerCase()] = privateKey;
         }
       }
 
-      const transferAsset = tokenType === 'native'
+      const transferAsset = executionTokenType === 'native'
         ? {
             kind: 'native' as const,
             symbol: nativeSymbol,
           }
-        : tokenType === 'aster'
+        : executionTokenType === 'aster'
           ? {
               kind: 'erc20' as const,
               address: ASTER_TOKEN_ADDRESS as `0x${string}`,
@@ -3273,30 +3358,46 @@ export const useWalletStore = defineStore('wallet', {
       // 一对多走独立的单源交易流水线：整批预检、一次性分配连续 nonce、
       // 本地签名后按 nonce 顺序快速广播，最后并行确认。这里提前 return，
       // 因而不会进入下面旧的逐笔等待和自动重试路径。
-      if (mode === 'oneToMany') {
-        const sourceAddress = sourceAddresses[0];
-        const privateKey = batchKeyMap[sourceAddress.toLowerCase()];
+      if (executionMode === 'oneToMany') {
+        const sourceAddress = executionSourceAddresses[0];
+        if (ENABLE_LOGIN && !walletApi.isLoggedIn()) {
+          throw new Error('登录状态已失效，已停止一对多转账；请重新登录后再执行');
+        }
+
+        const sourceKey = sourceAddress.toLowerCase();
+        let privateKey = matchingPrivateKeyForAddress(batchKeyMap[sourceKey], sourceAddress);
         if (!privateKey) {
-          throw new Error(`地址 ${sourceAddress.slice(0, 10)}... 未找到私钥`);
+          // The eager login-time decrypt is only a cache. A transient failure
+          // there must not make a legitimate batch wallet unusable, so fetch
+          // only this frozen source address and keep the result local to the run.
+          const fetchedKeys = await this.getPrivateKeysForAddresses([sourceAddress]);
+          for (const candidate of fetchedKeys) {
+            if (candidate.address.trim().toLowerCase() !== sourceKey) continue;
+            const matchingKey = matchingPrivateKeyForAddress(candidate.privateKey, sourceAddress);
+            if (matchingKey) {
+              privateKey = matchingKey;
+              break;
+            }
+          }
+        }
+        if (!privateKey) {
+          throw new Error(`地址 ${sourceAddress.slice(0, 10)}... 未找到与源钱包地址匹配的私钥`);
         }
 
         const runTransfer = (leaseGuard?: TransferLeaseGuard) => executeOneToManyTransfer({
           chain: executionChainConfig,
           rpcUrl: executionRpcUrl,
           sourceAddress,
-          targetAddresses,
+          targetAddresses: executionTargetAddresses,
           privateKey,
-          amount,
+          amount: executionAmount,
           asset: transferAsset,
-          transferAllBalance: options?.transferAllBalance,
-          intervalMs: options?.intervalMs,
+          transferAllBalance: executionOptions.transferAllBalance,
+          intervalMs: executionOptions.intervalMs,
           leaseGuard,
-          onProgress: options?.onProgress,
+          onProgress: executionOptions.onProgress,
         });
 
-        if (ENABLE_LOGIN && !walletApi.isLoggedIn()) {
-          throw new Error('登录状态已失效，已停止一对多转账；请重新登录后再执行');
-        }
         if (shouldUseServerMode()) {
           return withTransferLease(
             executionChainId,
@@ -3311,7 +3412,7 @@ export const useWalletStore = defineStore('wallet', {
       // Robinhood 还错误地发送 legacy gasPrice 交易，也没有源钱包全局锁。
       // 现在按源钱包分组：同一源的连续 nonce 交给已验证的一对多流水线，
       // 不同源钱包有界并发；每个源都在完整预检、签名、广播和确认期间持锁。
-      if (mode === 'manyToMany' || mode === 'manyToOne') {
+      if (executionMode === 'manyToMany' || executionMode === 'manyToOne') {
         type IndexedTask = { sourceAddr: string; targetAddr: string; index: number };
         const groupedTasks = new Map<string, IndexedTask[]>();
         tasks.forEach((taskItem, index) => {
@@ -3323,12 +3424,12 @@ export const useWalletStore = defineStore('wallet', {
 
         const orderedResults = new Array<BatchTransferResult>(tasks.length);
         const groups = [...groupedTasks.values()];
-        const intervalMs = Math.max(0, options?.intervalMs ?? 0);
+        const intervalMs = Math.max(0, executionOptions.intervalMs ?? 0);
 
         const publishProgress = () => {
-          if (!options?.onProgress) return;
+          if (!executionOptions.onProgress) return;
           try {
-            options.onProgress(orderedResults.filter(Boolean).map(result => ({ ...result })));
+            executionOptions.onProgress(orderedResults.filter(Boolean).map(result => ({ ...result })));
           } catch (error) {
             console.warn('Failed to publish multi-source transfer progress:', error);
           }
@@ -3352,7 +3453,7 @@ export const useWalletStore = defineStore('wallet', {
             return;
           }
 
-          if (options?.transferAllBalance && group.length !== 1) {
+          if (executionOptions.transferAllBalance && group.length !== 1) {
             for (const item of group) {
               orderedResults[item.index] = {
                 source: item.sourceAddr,
@@ -3380,9 +3481,9 @@ export const useWalletStore = defineStore('wallet', {
             sourceAddress,
             targetAddresses: group.map(item => item.targetAddr),
             privateKey,
-            amount,
+            amount: executionAmount,
             asset: transferAsset,
-            transferAllBalance: options?.transferAllBalance,
+            transferAllBalance: executionOptions.transferAllBalance,
             intervalMs: 0,
             leaseGuard,
             onProgress: onGroupProgress,
@@ -3438,7 +3539,7 @@ export const useWalletStore = defineStore('wallet', {
         return orderedResults;
       }
 
-      throw new Error(`不支持的批量转账模式: ${String(mode)}`);
+      throw new Error(`不支持的批量转账模式: ${String(executionMode)}`);
     },
 
     // 测试合约连接

@@ -7,9 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:batch-transfer": "vitest run src/services/__tests__/oneToManyTransferService.test.ts",
-    "test:batch-sell": "vitest run src/stores/__tests__/taskStore.batchSell.test.ts src/services/__tests__/manualBatchSellService.test.ts",
-    "test:transactions": "vitest run src/services/__tests__/oneToManyTransferService.test.ts src/stores/__tests__/taskStore.batchSell.test.ts src/services/__tests__/manualBatchSellService.test.ts src/services/__tests__/tradingService.finality.test.ts src/services/__tests__/fourMemeService.fastSlippage.test.ts src/services/__tests__/fourMemeService.crossRpcFinality.test.ts src/services/__tests__/unresolvedTransactionGuard.test.ts src/services/__tests__/transferLeaseApi.test.ts"
+    "test:batch-transfer": "vitest run src/services/__tests__/oneToManyTransferService.test.ts src/services/__tests__/batchTransferRetryPlan.test.ts src/services/__tests__/transferAssetContext.test.ts src/stores/__tests__/walletStore.batchTransfer.test.ts",
+    "test:batch-sell": "vitest run src/stores/__tests__/taskStore.batchSell.test.ts src/services/__tests__/manualBatchSellService.test.ts src/services/__tests__/taskRoundAllocator.test.ts",
+    "test:transactions": "vitest run src/services/__tests__/oneToManyTransferService.test.ts src/services/__tests__/batchTransferRetryPlan.test.ts src/services/__tests__/transferAssetContext.test.ts src/stores/__tests__/walletStore.batchTransfer.test.ts src/stores/__tests__/taskStore.batchSell.test.ts src/services/__tests__/manualBatchSellService.test.ts src/services/__tests__/tradingService.finality.test.ts src/services/__tests__/fourMemeService.fastSlippage.test.ts src/services/__tests__/fourMemeService.crossRpcFinality.test.ts src/services/__tests__/unresolvedTransactionGuard.test.ts src/services/__tests__/transferLeaseApi.test.ts src/services/__tests__/taskRuntimeApi.test.ts src/services/__tests__/robinhoodSellBroadcastBarrier.test.ts src/services/__tests__/taskRoundAllocator.test.ts"
   },
   "dependencies": {
     "@walletconnect/ethereum-provider": "^2.21.8",

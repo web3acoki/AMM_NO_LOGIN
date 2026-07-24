@@ -2,10 +2,10 @@ import { formatEther, type Address } from 'viem';
 import {
   PONS_FACTORY,
   PONS_LAUNCHPAD_ABI,
-  ROBINHOOD_HTTP_RPCS,
   createPonsPublicClient,
   readAndValidatePonsLaunchedToken,
 } from './ponsService';
+import { getRuntimeRobinhoodRpcUrl } from './robinhoodRpcConfig';
 import type { MigrationEvent, MigrationLog } from './migrationService';
 import { uniswapV3FactoryAbi } from '../viem/abis/uniswapV3';
 
@@ -38,7 +38,7 @@ export class PonsGraduationService {
   private onMigrationDetected: PonsGraduationHandler | null = null;
   private onLog: ((log: MigrationLog) => void) | null = null;
 
-  constructor(httpRpcUrl: string = ROBINHOOD_HTTP_RPCS[0], pollInterval = 3000) {
+  constructor(httpRpcUrl: string = getRuntimeRobinhoodRpcUrl(), pollInterval = 3000) {
     this.publicClient = createPonsPublicClient(httpRpcUrl);
     this.pollInterval = Math.max(1000, pollInterval);
   }

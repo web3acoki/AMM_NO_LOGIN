@@ -10,7 +10,6 @@ import {
   type TradeResult,
 } from './tradingService';
 import {
-  withMarketLease,
   withTransferLease,
   type TransferLeaseGuard,
 } from './transferLeaseApi';
@@ -58,7 +57,6 @@ export type ManualBatchSellDependencies = {
   tradingService?: TradingServiceLike;
   loginEnabled?: boolean;
   isLoggedIn?: () => boolean;
-  marketLease?: typeof withMarketLease;
   walletLease?: typeof withTransferLease;
   checkUnresolved?: typeof checkUnresolvedTransaction;
   markUnresolved?: typeof markUnresolvedTransaction;
@@ -105,7 +103,7 @@ async function withLocalLease<T>(
   key: string,
   callback: (guard: TransferLeaseGuard) => Promise<T>,
 ): Promise<T> {
-  if (localLeaseKeys.has(key)) throw new Error('另一个交易任务正在占用相同的钱包或代币市场');
+  if (localLeaseKeys.has(key)) throw new Error('另一个交易任务正在占用相同的钱包');
   localLeaseKeys.add(key);
   let retainedUntil: Promise<unknown> | null = null;
   let released = false;
@@ -157,12 +155,13 @@ async function monitorUntilSettled(
   }
 }
 
-async function findBlockedWallet(
+async function findBlockedWallets(
   options: ExecuteManualBatchSellOptions,
   wallets: ManualBatchSellWallet[],
   publicClient: PublicClientLike,
-): Promise<{ wallet: string; message: string } | undefined> {
+): Promise<Map<string, { wallet: string; message: string }>> {
   const check = options.dependencies?.checkUnresolved ?? checkUnresolvedTransaction;
+  const blocked = new Map<string, { wallet: string; message: string }>();
   for (const wallet of wallets) {
     try {
       const unresolved = await check({
@@ -170,18 +169,25 @@ async function findBlockedWallet(
         walletAddress: wallet.address,
         rpcUrl: options.rpcUrl,
       });
-      if (unresolved.blocked) return { wallet: wallet.address, message: unresolved.message };
+      if (unresolved.blocked) {
+        blocked.set(wallet.address.toLowerCase(), {
+          wallet: wallet.address,
+          message: unresolved.message,
+        });
+        continue;
+      }
       if (unresolved.reason !== 'none') resetNonceForAddress(wallet.address, options.chainId);
     } catch (error: any) {
-      return {
+      blocked.set(wallet.address.toLowerCase(), {
         wallet: wallet.address,
         message: `无法核对上一笔交易状态: ${error?.message || '未知错误'}`,
-      };
+      });
     }
   }
 
-  for (let offset = 0; offset < wallets.length; offset += NONCE_PREFLIGHT_CONCURRENCY) {
-    const chunk = wallets.slice(offset, offset + NONCE_PREFLIGHT_CONCURRENCY);
+  const nonceCandidates = wallets.filter(wallet => !blocked.has(wallet.address.toLowerCase()));
+  for (let offset = 0; offset < nonceCandidates.length; offset += NONCE_PREFLIGHT_CONCURRENCY) {
+    const chunk = nonceCandidates.slice(offset, offset + NONCE_PREFLIGHT_CONCURRENCY);
     const checks = await Promise.allSettled(chunk.map(async wallet => {
       const address = wallet.address as `0x${string}`;
       const [latestNonce, pendingNonce] = await Promise.all([
@@ -195,24 +201,29 @@ async function findBlockedWallet(
       const result = checks[index];
       const wallet = chunk[index].address;
       if (result.status === 'rejected') {
-        return {
+        blocked.set(wallet.toLowerCase(), {
           wallet,
           message: `无法读取 latest/pending nonce: ${result.reason?.message || 'RPC 请求失败'}`,
-        };
+        });
+        continue;
       }
       if (result.value.pendingNonce > result.value.latestNonce) {
-        return {
+        blocked.set(wallet.toLowerCase(), {
           wallet,
           message: `已有 ${result.value.pendingNonce - result.value.latestNonce} 笔链上待确认前序交易`,
-        };
+        });
+        continue;
       }
       if (result.value.pendingNonce < result.value.latestNonce) {
-        return { wallet, message: 'RPC 返回的 pending nonce 小于 latest nonce，状态不一致' };
+        blocked.set(wallet.toLowerCase(), {
+          wallet,
+          message: 'RPC 返回的 pending nonce 小于 latest nonce，状态不一致',
+        });
       }
     }
   }
 
-  return undefined;
+  return blocked;
 }
 
 export async function executeManualBatchSell(
@@ -254,7 +265,6 @@ export async function executeManualBatchSell(
   const dependencies = options.dependencies;
   const loginEnabled = dependencies?.loginEnabled ?? ENABLE_LOGIN;
   const isLoggedIn = dependencies?.isLoggedIn ?? walletApi.isLoggedIn;
-  const marketLease = dependencies?.marketLease ?? withMarketLease;
   const walletLease = dependencies?.walletLease ?? withTransferLease;
   const sleep = dependencies?.sleep ?? ((milliseconds: number) => new Promise<void>(resolve => {
     const timer = globalThis.setTimeout(resolve, milliseconds);
@@ -270,46 +280,41 @@ export async function executeManualBatchSell(
     options.routerAddress,
   );
 
-  const runMarket = <T>(callback: (guard: TransferLeaseGuard) => Promise<T>) => {
-    if (loginEnabled) {
-      if (!isLoggedIn()) throw new Error('登录状态已失效，已停止批量卖出；请重新登录');
-      return marketLease(options.chainId, options.tokenAddress, callback);
-    }
-    return withLocalLease(
-      `market:${options.chainId}:${options.tokenAddress.toLowerCase()}`,
-      callback,
-    );
-  };
   const runWallet = <T>(walletAddress: string, callback: (guard: TransferLeaseGuard) => Promise<T>) => {
     if (loginEnabled) return walletLease(options.chainId, walletAddress, callback);
     return withLocalLease(`wallet:${options.chainId}:${walletAddress.toLowerCase()}`, callback);
   };
 
   try {
-    await runMarket(async marketGuard => {
-      marketGuard.assertActive();
-      const blocked = await findBlockedWallet(options, wallets, publicClient);
-      if (blocked) {
-        const message = `${blocked.wallet.slice(0, 10)}... ${blocked.message}；整批 0 笔发送`;
-        results.forEach(result => {
-          result.status = 'not_sent';
-          result.error = message;
-        });
-        publish();
-        return;
-      }
-
+    if (loginEnabled && !isLoggedIn()) {
+      throw new Error('登录状态已失效，已停止批量卖出；请重新登录');
+    }
+    await (async () => {
+      const blockedWallets = await findBlockedWallets(options, wallets, publicClient);
       for (let index = 0; index < wallets.length; index++) {
         const wallet = wallets[index];
-        const row = results[index];
+        const blocked = blockedWallets.get(wallet.address.toLowerCase());
+        if (!blocked) continue;
+        results[index].status = 'not_sent';
+        results[index].error = `${blocked.wallet.slice(0, 10)}... ${blocked.message}；只跳过该钱包，其他钱包继续`;
+      }
+      publish();
+
+      const executableWallets = wallets
+        .map((wallet, resultIndex) => ({ wallet, resultIndex }))
+        .filter(({ wallet }) => !blockedWallets.has(wallet.address.toLowerCase()));
+      if (executableWallets.length === 0) return;
+
+      for (let executionIndex = 0; executionIndex < executableWallets.length; executionIndex++) {
+        const { wallet, resultIndex } = executableWallets[executionIndex];
+        const row = results[resultIndex];
         row.status = 'processing';
         row.error = '正在读取最新余额、授权和池报价';
         publish();
 
-        let stopAfterCurrent = false;
         try {
           const tradeResult = await runWallet(wallet.address, async walletGuard => {
-            const leaseGuard = combineGuards(marketGuard, walletGuard);
+            const leaseGuard = combineGuards(walletGuard);
             const result = await tradingService.executeTrade({
               chainId: options.chainId,
               rpcUrl: options.rpcUrl,
@@ -356,7 +361,6 @@ export async function executeManualBatchSell(
                     sleep,
                   );
               walletGuard.retainUntil?.(settlement);
-              if (result.transactionKind !== 'approval') marketGuard.retainUntil?.(settlement);
             }
             return result;
           });
@@ -373,7 +377,6 @@ export async function executeManualBatchSell(
             row.success = false;
             row.status = tradeResult.status;
             row.error = tradeResult.error || '交易已广播但尚未完成链上确认';
-            stopAfterCurrent = tradeResult.transactionKind !== 'approval';
           } else {
             row.success = false;
             row.status = 'failed';
@@ -386,19 +389,10 @@ export async function executeManualBatchSell(
         }
         publish();
 
-        if (stopAfterCurrent) {
-          for (let remaining = index + 1; remaining < results.length; remaining++) {
-            results[remaining].status = 'not_sent';
-            results[remaining].error = '前一笔卖出仍在待确认或状态未知，为避免旧池价和 nonce 冲突，本笔未发送';
-          }
-          publish();
-          break;
-        }
-
         const intervalMs = Math.max(0, options.intervalMs ?? 0);
-        if (intervalMs > 0 && index < wallets.length - 1) await sleep(intervalMs);
+        if (intervalMs > 0 && executionIndex < executableWallets.length - 1) await sleep(intervalMs);
       }
-    });
+    })();
   } catch (error: any) {
     const message = error?.message || '无法取得批量卖出交易锁';
     for (const result of results) {

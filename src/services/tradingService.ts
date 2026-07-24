@@ -1,4 +1,14 @@
-import { createPublicClient, createWalletClient, http, parseEther, parseUnits, formatEther, formatUnits } from 'viem';
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  parseEther,
+  parseUnits,
+  formatEther,
+  formatUnits,
+  encodeFunctionData,
+  keccak256,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { bsc, bscTestnet } from 'viem/chains';
 import { pancakeV2RouterAbi } from '../viem/abis/pancakeV2';
@@ -6,13 +16,17 @@ import { erc20Abi } from '../viem/abis/erc20';
 import { WBNB_ADDRESSES, USDT_ADDRESSES, USDC_ADDRESSES, ASTER_TOKEN_ADDRESS, ASTER_DECIMALS } from '../constants';
 import { parseBlockchainError } from '../utils/errorParser';
 import { robinhood } from '../viem/chains/robinhood';
-import { ROBINHOOD_WETH_ADDRESS, UNISWAP_V3_ROBINHOOD_ADDRESSES } from '../constants';
+import {
+  ROBINHOOD_WETH_ADDRESS,
+  UNISWAP_V3_ROBINHOOD_ADDRESSES,
+} from '../constants';
 import { UniswapV3Service, applySlippageBps } from './uniswapV3Service';
 import {
   WALLET_PENDING_PREDECESSOR_CODE,
   createWalletPendingPredecessorError,
   isWalletPendingPredecessorError,
 } from './pendingNonceGuard';
+import type { RobinhoodSellBroadcastParticipant } from './robinhoodSellBroadcastBarrier';
 
 // 获取链配置
 function getChainConfig(chainId: number) {
@@ -53,12 +67,29 @@ export interface TradeParams {
     assertActive: () => void;
   };
   onTransactionHash?: (txHash: string, kind: 'approval' | 'trade') => void;
+  /**
+   * Automatic Robinhood tasks can return as soon as the RPC accepts a
+   * transaction with a deterministic hash.  Confirmation then continues in
+   * the background while the wallet lease remains retained.  Manual actions
+   * and every existing call site keep the safer blocking default.
+   */
+  awaitConfirmation?: boolean;
+  /**
+   * Automatic Robinhood rounds prepare and sign every wallet first, then
+   * release all raw transactions in one cross-task JSON-RPC batch.
+   */
+  robinhoodBroadcastParticipant?: RobinhoodSellBroadcastParticipant;
 }
+
+export type TradeFinalityResult = {
+  status: 'confirmed' | 'pending' | 'failed' | 'unknown';
+  error?: string;
+};
 
 // 交易结果接口
 export interface TradeResult {
   success: boolean;
-  status?: 'confirmed' | 'pending' | 'failed' | 'unknown';
+  status?: 'broadcast' | TradeFinalityResult['status'];
   code?: string;
   /** The exact write whose outcome is unresolved; never infer this from an older hash callback. */
   transactionKind?: 'approval' | 'trade';
@@ -66,7 +97,23 @@ export interface TradeResult {
   amountIn?: string;
   amountOut?: string;
   error?: string;
+  /** Present only when status=broadcast; it never submits or retries a write. */
+  settlement?: Promise<TradeFinalityResult>;
 }
+
+export const ZERO_TOKEN_BALANCE_CODE = 'ZERO_TOKEN_BALANCE';
+
+type RobinhoodFeeEstimate = {
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+};
+
+// The live FEATHER sell used about 135k gas per wallet. A 350k ceiling leaves
+// ample headroom for SwapRouter02/token variation while avoiding a separate
+// eth_estimateGas round trip for every wallet. Unused gas is not charged.
+const ROBINHOOD_V3_SELL_GAS_LIMIT = 350_000n;
+const ROBINHOOD_V3_BUY_GAS_LIMIT = 350_000n;
+const ROBINHOOD_APPROVAL_GAS_LIMIT = 100_000n;
 
 // 全局nonce管理器（追踪每个钱包的pending nonce）
 const nonceManager: Map<string, number> = new Map();
@@ -143,14 +190,44 @@ export function resetNonceForAddress(address: string, chainId?: number) {
 }
 
 // 交易服务类
+const robinhoodBroadcastClients = new Map<string, any>();
+
+function getSharedRobinhoodBroadcastClient(rpcUrl: string): any {
+  const cached = robinhoodBroadcastClients.get(rpcUrl);
+  if (cached) return cached;
+  const client = createPublicClient({
+    chain: robinhood,
+    // Every TradingService on this page reuses this exact client. Calls released
+    // by the task cohort in the same JavaScript turn therefore become one HTTP
+    // JSON-RPC array instead of one request per task.
+    transport: http(rpcUrl, {
+      batch: { batchSize: 100, wait: 10 },
+      retryCount: 0,
+    }),
+  });
+  robinhoodBroadcastClients.set(rpcUrl, client);
+  return client;
+}
+
 export class TradingService {
   private chainId: number;
   private rpcUrl: string;
   private routerAddress: `0x${string}`;
   private publicClient: any;
+  private robinhoodBroadcastClient?: any;
   private chainConfig: any;
   private tokenDecimalsCache = new Map<string, Promise<number>>();
   private v3PoolValidationCache = new Map<string, Promise<void>>();
+  private v3MaxApprovalCache = new Set<string>();
+  private v3ApprovalCheckCache = new Map<
+    string,
+    Promise<{ ready: boolean; allowance?: bigint; error?: string }>
+  >();
+  private robinhoodWarmup?: Promise<void>;
+  private robinhoodFeeEstimate?: {
+    expiresAt: number;
+    promise: Promise<RobinhoodFeeEstimate>;
+  };
 
   constructor(chainId: number, rpcUrl: string, routerAddress: string) {
     if (!rpcUrl) throw new Error('RPC URL 不能为空');
@@ -163,8 +240,79 @@ export class TradingService {
     this.chainConfig = getChainConfig(chainId);
     this.publicClient = createPublicClient({
       chain: this.chainConfig,
-      transport: http(rpcUrl)
+      // A Robinhood task launches every selected wallet concurrently. Without
+      // JSON-RPC batching, balance/allowance/quote/nonce reads arrive as several
+      // HTTP waves before the first sell can be broadcast. The official endpoint
+      // supports batch requests, so coalesce each wave while preserving an
+      // authoritative, per-wallet read immediately before its write.
+      transport: http(rpcUrl, chainId === 4663
+        ? { batch: { batchSize: 100, wait: 10 } }
+        : undefined),
     });
+    if (chainId === 4663) {
+      this.robinhoodBroadcastClient = getSharedRobinhoodBroadcastClient(rpcUrl);
+    }
+  }
+
+  /**
+   * Open the configured read and broadcast HTTP/TLS paths before the first
+   * signed transaction is ready. rpc_modules is used as a harmless capability
+   * probe on the broadcast client. This
+   * method never signs or submits a transaction and failed probes are not
+   * cached, allowing a later task tick to try again.
+   */
+  async warmupConnections(): Promise<void> {
+    if (this.chainId !== 4663) return;
+    if (this.robinhoodWarmup) return this.robinhoodWarmup;
+
+    const request = (async () => {
+      const results = await Promise.allSettled([
+        this.publicClient.getBlockNumber(),
+        this.robinhoodBroadcastClient
+          ? this.robinhoodBroadcastClient.request({ method: 'rpc_modules' })
+          : Promise.reject(new Error('Robinhood broadcast client is not initialized')),
+      ]);
+      if (results.every(result => result.status === 'rejected')) {
+        throw new Error('Robinhood read RPC and broadcast client warmup both failed');
+      }
+    })();
+
+    this.robinhoodWarmup = request;
+    try {
+      await request;
+    } catch (error) {
+      if (this.robinhoodWarmup === request) this.robinhoodWarmup = undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * Move token-invariant V3 reads out of the sell button's critical path.
+   * This is safe to run while wallets still have a zero token balance because
+   * it only validates the pool and caches immutable token decimals.
+   */
+  async warmupV3SellPreparation(
+    tokenAddress: `0x${string}`,
+    fee = 10000,
+  ): Promise<void> {
+    if (this.chainId !== 4663) return;
+    const v3 = new UniswapV3Service(this.publicClient, {
+      routerAddress: this.routerAddress,
+      defaultFee: fee,
+    });
+    await Promise.all([
+      this.warmupConnections(),
+      this.assertV3PoolAvailable(v3, tokenAddress, fee),
+      this.getTokenDecimals(tokenAddress),
+    ]);
+  }
+
+  private v3ApprovalKey(
+    tokenAddress: `0x${string}`,
+    ownerAddress: `0x${string}`,
+    spenderAddress: `0x${string}`,
+  ): string {
+    return `${tokenAddress.toLowerCase()}:${ownerAddress.toLowerCase()}:${spenderAddress.toLowerCase()}`;
   }
 
   // 获取WBNB地址
@@ -222,7 +370,7 @@ export class TradingService {
     txHash: `0x${string}`,
     actionText: string,
     timeout = 120000
-  ): Promise<{ status: 'confirmed' | 'pending' | 'failed' | 'unknown'; error?: string }> {
+  ): Promise<TradeFinalityResult> {
     try {
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash, timeout });
       if (receipt.status === 'success') return { status: 'confirmed' };
@@ -278,14 +426,21 @@ export class TradingService {
     ownerAddress: `0x${string}`,
     spenderAddress: `0x${string}`,
     amount: bigint,
-    params: TradeParams
+    params: TradeParams,
+    localAccount?: ReturnType<typeof privateKeyToAccount>,
+    knownAllowance?: bigint,
   ): Promise<TradeResult | null> {
+    const approvalKey = this.v3ApprovalKey(tokenAddress, ownerAddress, spenderAddress);
+    if (this.chainId === 4663 && this.v3MaxApprovalCache.has(approvalKey)) return null;
+
     let approvalHash: `0x${string}` | undefined;
     let reservedNonce: number | undefined;
     let submitAttempted = false;
     try {
-      // 检查当前授权额度
-      const allowance = await this.publicClient.readContract({
+      // The task startup barrier can pass the allowance it just read. Reusing
+      // that authoritative value removes a duplicate RPC wave before every
+      // first-time approval. Direct trade callers still perform the read here.
+      const allowance = knownAllowance ?? await this.publicClient.readContract({
         address: tokenAddress,
         abi: erc20Abi,
         functionName: 'allowance',
@@ -294,31 +449,61 @@ export class TradingService {
 
       console.log(`当前授权额度: ${formatEther(allowance)}, 需要: ${formatEther(amount)}`);
 
+      // Only a practically unlimited allowance is safe to cache between task
+      // rounds. An exact/finite allowance may be consumed by the next swap.
+      const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
+      if (this.chainId === 4663 && allowance >= maxUint128) {
+        this.v3MaxApprovalCache.add(approvalKey);
+      }
+
       // 如果授权额度不足，进行授权
       if (allowance < amount) {
         console.log('授权额度不足，正在授权...');
 
-        params.leaseGuard?.assertActive();
-        // 获取最新的 nonce
-        const nonce = await this.getLatestNonce(ownerAddress);
-        reservedNonce = nonce;
-
         // 授权最大值
         const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
 
-        params.leaseGuard?.assertActive();
-        submitAttempted = true;
-        const sentApprovalHash = await walletClient.writeContract({
-          address: tokenAddress,
-          abi: erc20Abi,
-          functionName: 'approve',
-          args: [spenderAddress, maxApproval],
-          nonce: nonce
-        }) as `0x${string}`;
-        approvalHash = sentApprovalHash;
+        let sentApprovalHash: `0x${string}`;
+        if (this.chainId === 4663) {
+          if (!localAccount) throw new Error('Robinhood 鎺堟潈缂哄皯鏈湴绛惧悕璐︽埛');
+          params.leaseGuard?.assertActive();
+          const preparation = await this.reserveRobinhoodNonceAndFee(ownerAddress);
+          const nonce = preparation.nonce;
+          reservedNonce = nonce;
+          const signed = await this.prepareRobinhoodRawTransaction(localAccount, {
+            to: tokenAddress,
+            data: encodeFunctionData({
+              abi: erc20Abi,
+              functionName: 'approve',
+              args: [spenderAddress, maxApproval],
+            }),
+            value: 0n,
+            gas: ROBINHOOD_APPROVAL_GAS_LIMIT,
+          }, nonce, params, preparation.fees);
+          approvalHash = signed.hash;
+          params.leaseGuard?.assertActive();
+          submitAttempted = true;
+          await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+          sentApprovalHash = signed.hash;
+        } else {
+          params.leaseGuard?.assertActive();
+          // 获取最新的 nonce
+          const nonce = await this.getLatestNonce(ownerAddress);
+          reservedNonce = nonce;
+          params.leaseGuard?.assertActive();
+          submitAttempted = true;
+          sentApprovalHash = await walletClient.writeContract({
+            address: tokenAddress,
+            abi: erc20Abi,
+            functionName: 'approve',
+            args: [spenderAddress, maxApproval],
+            nonce: nonce
+          }) as `0x${string}`;
+          approvalHash = sentApprovalHash;
+        }
         this.notifyTransactionHash(params, sentApprovalHash, 'approval');
 
-        console.log(`授权交易已发送: ${sentApprovalHash}, nonce: ${nonce}`);
+        console.log(`授权交易已发送: ${sentApprovalHash}, nonce: ${reservedNonce}`);
 
         // 等待授权交易确认
         const finality = await this.waitForFinality(sentApprovalHash, '授权');
@@ -331,6 +516,7 @@ export class TradingService {
             error: finality.error,
           };
         }
+        if (this.chainId === 4663) this.v3MaxApprovalCache.add(approvalKey);
         console.log('授权成功');
       }
 
@@ -344,6 +530,10 @@ export class TradingService {
       }
       if (reservedNonce !== undefined && !submitAttempted) {
         resetNonceForAddress(ownerAddress, this.chainId);
+        // A local hash only proves that signing completed.  If the lease was
+        // lost before sendRawTransaction started, nothing was broadcast and it
+        // must not be presented as an unknown on-chain approval.
+        approvalHash = undefined;
       }
       return {
         success: false,
@@ -353,6 +543,101 @@ export class TradingService {
         error: approvalHash
           ? `授权交易已广播，但状态未知：${parseBlockchainError(error)}`
           : `授权失败: ${parseBlockchainError(error)}`,
+      };
+    }
+  }
+
+  /**
+   * Robinhood sell-task startup barrier. All wallets call this concurrently on
+   * the shared TradingService, so their balance and allowance reads are sent as
+   * JSON-RPC batches. Any missing approval is broadcast and confirmed before the
+   * first synchronized sell round starts.
+   */
+  async checkV3SellApproval(
+    tokenAddress: `0x${string}`,
+    walletAddress: `0x${string}`,
+  ): Promise<{ ready: boolean; allowance?: bigint; error?: string }> {
+    if (this.chainId !== 4663) return { ready: false, error: '卖出预授权仅支持 Robinhood Chain' };
+    const approvalKey = this.v3ApprovalKey(tokenAddress, walletAddress, this.routerAddress);
+    if (this.v3MaxApprovalCache.has(approvalKey)) return { ready: true };
+    const pending = this.v3ApprovalCheckCache.get(approvalKey);
+    if (pending) return pending;
+
+    const request = (async () => {
+      try {
+        const allowance = await this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [walletAddress, this.routerAddress],
+        }) as bigint;
+        const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
+        if (allowance >= maxUint128) {
+          this.v3MaxApprovalCache.add(approvalKey);
+          return { ready: true };
+        }
+        return { ready: false, allowance };
+      } catch (error: any) {
+        return { ready: false, error: parseBlockchainError(error) };
+      }
+    })();
+    this.v3ApprovalCheckCache.set(approvalKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.v3ApprovalCheckCache.get(approvalKey) === request) {
+        this.v3ApprovalCheckCache.delete(approvalKey);
+      }
+    }
+  }
+
+  async ensureV3SellApproval(params: TradeParams, knownAllowance?: bigint): Promise<TradeResult> {
+    if (this.chainId !== 4663) {
+      return { success: false, status: 'failed', error: '卖出预授权仅支持 Robinhood Chain' };
+    }
+
+    const normalizedKey = params.privateKey.startsWith('0x')
+      ? params.privateKey
+      : `0x${params.privateKey}`;
+    const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+    if (account.address.toLowerCase() !== params.walletAddress.toLowerCase()) {
+      return { success: false, status: 'failed', error: '私钥与任务钱包地址不匹配' };
+    }
+
+    const tokenAddress = params.tokenAddress as `0x${string}`;
+    const approvalKey = this.v3ApprovalKey(tokenAddress, account.address, this.routerAddress);
+    if (this.v3MaxApprovalCache.has(approvalKey)) {
+      return { success: true, status: 'confirmed' };
+    }
+    const walletClient = createWalletClient({
+      account,
+      chain: robinhood,
+      transport: http(this.rpcUrl),
+    });
+
+    try {
+      // Force a practically unlimited approval even when the wallet currently
+      // has no token balance. Mixed buy/sell tasks must not discover their first
+      // missing approval only after a buy has populated the wallet.
+      const maxUint128 = BigInt('0xffffffffffffffffffffffffffffffff');
+      const approvalResult = await this.checkAndApprove(
+        walletClient,
+        tokenAddress,
+        account.address,
+        this.routerAddress,
+        maxUint128,
+        params,
+        account,
+        knownAllowance,
+      );
+      return approvalResult ?? { success: true, status: 'confirmed' };
+    } catch (error: any) {
+      const predecessor = this.pendingPredecessorResult(error);
+      if (predecessor) return predecessor;
+      return {
+        success: false,
+        status: 'failed',
+        error: parseBlockchainError(error),
       };
     }
   }
@@ -392,6 +677,18 @@ export class TradingService {
       functionName: 'balanceOf',
       args: [walletAddress]
     }) as bigint;
+  }
+
+  /**
+   * Read-only balance access for task-level sell coverage reconciliation.
+   * Keeping the read on the task-scoped service reuses its transport and avoids
+   * creating one public client per wallet.
+   */
+  async readTokenBalance(
+    tokenAddress: `0x${string}`,
+    walletAddress: `0x${string}`,
+  ): Promise<bigint> {
+    return this.getTokenBalance(tokenAddress, walletAddress);
   }
 
   // 获取原生币余额
@@ -1435,6 +1732,126 @@ export class TradingService {
     return overrides;
   }
 
+  /**
+   * All wallets in one Robinhood round must use the same fee snapshot.  Calling
+   * walletClient.sendTransaction for every wallet makes viem prepare every
+   * transaction through a separate HTTP transport (fee lookup + estimateGas),
+   * which the public RPC throttles into a several-second, wallet-by-wallet
+   * queue.  Keep a short-lived shared promise so a concurrent round performs
+   * one fee lookup while still refreshing quickly when the base fee changes.
+   */
+  private async getRobinhoodFeeEstimate(): Promise<RobinhoodFeeEstimate> {
+    const now = Date.now();
+    const cached = this.robinhoodFeeEstimate;
+    if (cached && now < cached.expiresAt) return cached.promise;
+
+    const promise = (async () => {
+      const estimate = await this.publicClient.estimateFeesPerGas({ type: 'eip1559' });
+      if (typeof estimate?.maxFeePerGas !== 'bigint') {
+        throw new Error('Robinhood RPC 未返回有效的 EIP-1559 maxFeePerGas');
+      }
+      return {
+        maxFeePerGas: estimate.maxFeePerGas,
+        maxPriorityFeePerGas: typeof estimate.maxPriorityFeePerGas === 'bigint'
+          ? estimate.maxPriorityFeePerGas
+          : 0n,
+      };
+    })();
+
+    this.robinhoodFeeEstimate = { expiresAt: now + 1_000, promise };
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.robinhoodFeeEstimate?.promise === promise) {
+        this.robinhoodFeeEstimate = undefined;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Nonce safety and fee discovery are independent reads. Resolve them in one
+   * wave and release a nonce reservation if fee discovery fails, so callers can
+   * safely overlap this preparation with the live V3 quote.
+   */
+  private async reserveRobinhoodNonceAndFee(
+    address: `0x${string}`,
+  ): Promise<{ nonce: number; fees: RobinhoodFeeEstimate }> {
+    const [nonceResult, feeResult] = await Promise.allSettled([
+      this.getLatestNonce(address),
+      this.getRobinhoodFeeEstimate(),
+    ]);
+
+    if (nonceResult.status === 'rejected') throw nonceResult.reason;
+    if (feeResult.status === 'rejected') {
+      resetNonceForAddress(address, this.chainId);
+      throw feeResult.reason;
+    }
+    return { nonce: nonceResult.value, fees: feeResult.value };
+  }
+
+  /**
+   * Prepare through the shared batched PublicClient, sign locally, and return
+   * the deterministic hash before the write is submitted.  Concurrent wallets
+   * therefore produce one JSON-RPC estimateGas batch followed by one
+   * eth_sendRawTransaction batch instead of N independent viem preparation
+   * pipelines.  No retry is performed: the precomputed hash is used for
+   * read-only reconciliation if the submit response is lost.
+   */
+  private async prepareRobinhoodRawTransaction(
+    account: ReturnType<typeof privateKeyToAccount>,
+    request: { to: `0x${string}`; data?: `0x${string}`; value?: bigint; gas?: bigint },
+    nonce: number,
+    params: TradeParams,
+    preparedFees?: RobinhoodFeeEstimate,
+  ): Promise<{ serializedTransaction: `0x${string}`; hash: `0x${string}` }> {
+    params.leaseGuard?.assertActive();
+    const explicitGas = params.gasLimit && params.gasLimit > 0
+      ? BigInt(Math.floor(params.gasLimit))
+      : request.gas;
+    const [fees, estimatedGas] = await Promise.all([
+      preparedFees ?? this.getRobinhoodFeeEstimate(),
+      explicitGas !== undefined
+        ? Promise.resolve(explicitGas)
+        : this.publicClient.estimateGas({
+          account: account.address,
+          to: request.to,
+          data: request.data,
+          value: request.value ?? 0n,
+        }),
+    ]);
+
+    params.leaseGuard?.assertActive();
+    const serializedTransaction = await account.signTransaction({
+      chainId: robinhood.id,
+      type: 'eip1559',
+      to: request.to,
+      data: request.data,
+      value: request.value ?? 0n,
+      nonce,
+      gas: estimatedGas,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+    });
+    return {
+      serializedTransaction,
+      hash: keccak256(serializedTransaction),
+    };
+  }
+
+  private async broadcastRobinhoodRawTransaction(
+    serializedTransaction: `0x${string}`,
+    expectedHash: `0x${string}`,
+  ): Promise<void> {
+    if (!this.robinhoodBroadcastClient) {
+      throw new Error('Robinhood broadcast client is not initialized');
+    }
+    const acceptedHash = await this.robinhoodBroadcastClient.sendRawTransaction({ serializedTransaction }) as `0x${string}`;
+    if (acceptedHash.toLowerCase() !== expectedHash.toLowerCase()) {
+      throw new Error(`Robinhood RPC 返回的交易哈希与本地签名不一致（本地 ${expectedHash}，节点 ${acceptedHash}）`);
+    }
+  }
+
   private async assertV3PoolAvailable(
     v3: UniswapV3Service,
     tokenAddress: `0x${string}`,
@@ -1493,12 +1910,16 @@ export class TradingService {
       routerAddress: this.routerAddress,
       defaultFee: fee,
     });
-    const transactionOverrides = this.getTransactionOverrides(params);
 
     try {
       // Pool 地址、token metadata、fee tier 都是整批不变量。手工批卖复用同一个
       // TradingService，只校验一次；每个钱包的 Quoter 调用仍读取最新池状态。
-      await this.assertV3PoolAvailable(v3, tokenAddress, fee);
+      // Pool validation, token metadata and wallet balance are independent
+      // read-only calls.  Start the shared pool validation immediately and
+      // join it with the direction-specific balance reads below.  The old
+      // serial order (pool -> decimals -> balance) added multiple full RPC
+      // round trips before a concurrent Robinhood batch could even quote.
+      const poolReady = this.assertV3PoolAvailable(v3, tokenAddress, fee);
 
       if (params.mode === 'pump') {
         if (params.spendToken !== 'ETH') {
@@ -1509,7 +1930,10 @@ export class TradingService {
         const amountIn = parseEther(amountText);
         if (amountIn <= 0n) return { success: false, error: '买入金额必须大于 0' };
 
-        const nativeBalance = await this.getNativeBalance(account.address);
+        const [, nativeBalance] = await Promise.all([
+          poolReady,
+          this.getNativeBalance(account.address),
+        ]);
         if (nativeBalance <= amountIn) {
           return {
             success: false,
@@ -1534,19 +1958,47 @@ export class TradingService {
         params.leaseGuard?.assertActive();
         const nonce = await this.getLatestNonce(account.address);
         reservedNonce = nonce;
-        params.leaseGuard?.assertActive();
-        submitAttempted = true;
-        txHash = await walletClient.sendTransaction({
-          account,
-          chain: robinhood,
+        const signed = await this.prepareRobinhoodRawTransaction(account, {
           to: request.to,
           data: request.data,
           value: request.value,
-          nonce,
-          ...transactionOverrides,
-        });
+          gas: ROBINHOOD_V3_BUY_GAS_LIMIT,
+        }, nonce, params);
+        txHash = signed.hash;
+        params.leaseGuard?.assertActive();
+        const broadcast = async () => {
+          params.leaseGuard?.assertActive();
+          submitAttempted = true;
+          await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+        };
+        if (params.robinhoodBroadcastParticipant) {
+          await params.robinhoodBroadcastParticipant.arrive(
+            broadcast,
+            () => {
+              if (!submitAttempted) {
+                resetNonceForAddress(account.address, this.chainId);
+                reservedNonce = undefined;
+                txHash = undefined;
+              }
+            },
+            () => params.leaseGuard?.assertActive(),
+          );
+        } else {
+          await broadcast();
+        }
         this.notifyTransactionHash(params, txHash, 'trade');
-        const finality = await this.waitForFinality(txHash, 'Uniswap V3 买入');
+        const settlement = this.waitForFinality(txHash, 'Uniswap V3 买入');
+        if (params.awaitConfirmation === false) {
+          return {
+            success: true,
+            status: 'broadcast',
+            transactionKind: 'trade',
+            txHash,
+            amountIn: formatEther(amountIn),
+            settlement,
+          };
+        }
+        const finality = await settlement;
         if (finality.status !== 'confirmed') {
           return { success: false, status: finality.status, transactionKind: 'trade', txHash, error: finality.error };
         }
@@ -1565,9 +2017,19 @@ export class TradingService {
         return { success: false, error: 'Robinhood Chain 目前只支持卖出换回 ETH' };
       }
 
-      const tokenDecimals = await this.getTokenDecimals(tokenAddress);
-      const balance = await this.getTokenBalance(tokenAddress, account.address);
-      if (balance <= 0n) return { success: false, error: '代币余额为 0' };
+      const [, tokenDecimals, balance] = await Promise.all([
+        poolReady,
+        this.getTokenDecimals(tokenAddress),
+        this.getTokenBalance(tokenAddress, account.address),
+      ]);
+      if (balance <= 0n) {
+        return {
+          success: false,
+          status: 'failed',
+          code: ZERO_TOKEN_BALANCE_CODE,
+          error: '代币余额为 0',
+        };
+      }
 
       let amountIn: bigint;
       if (params.balancePercent !== undefined) {
@@ -1603,15 +2065,29 @@ export class TradingService {
         this.routerAddress,
         amountIn,
         params,
+        account,
       );
       if (approvalResult) return approvalResult;
 
-      const quote = await v3.quoteExactInputSingle({
-        tokenIn: tokenAddress,
-        tokenOut: ROBINHOOD_WETH_ADDRESS,
-        amountIn,
-        fee,
-      });
+      // The quote and wallet nonce/fee reads do not depend on one another.
+      // Waiting for them serially was the largest remaining part of the
+      // pre-approved sell path. allSettled ensures a completed nonce
+      // reservation is always visible to the catch block if quoting fails.
+      const [quoteResult, preparationResult] = await Promise.allSettled([
+        v3.quoteExactInputSingle({
+          tokenIn: tokenAddress,
+          tokenOut: ROBINHOOD_WETH_ADDRESS,
+          amountIn,
+          fee,
+        }),
+        this.reserveRobinhoodNonceAndFee(account.address),
+      ]);
+      if (preparationResult.status === 'fulfilled') {
+        reservedNonce = preparationResult.value.nonce;
+      }
+      if (quoteResult.status === 'rejected') throw quoteResult.reason;
+      if (preparationResult.status === 'rejected') throw preparationResult.reason;
+      const quote = quoteResult.value;
       const amountOutMinimum = applySlippageBps(quote.amountOut, slippageBps);
       const deadline = BigInt(Math.floor(Date.now() / 1000) + (params.deadline ?? 1200));
       const request = v3.buildTokenToNativeSellTransaction({
@@ -1623,21 +2099,49 @@ export class TradingService {
         fee,
       });
       params.leaseGuard?.assertActive();
-      const nonce = await this.getLatestNonce(account.address);
-      reservedNonce = nonce;
-      params.leaseGuard?.assertActive();
-      submitAttempted = true;
-      txHash = await walletClient.sendTransaction({
-        account,
-        chain: robinhood,
+      const { nonce, fees } = preparationResult.value;
+      const signed = await this.prepareRobinhoodRawTransaction(account, {
         to: request.to,
         data: request.data,
         value: 0n,
-        nonce,
-        ...transactionOverrides,
-      });
+        gas: ROBINHOOD_V3_SELL_GAS_LIMIT,
+      }, nonce, params, fees);
+      txHash = signed.hash;
+      params.leaseGuard?.assertActive();
+      const broadcast = async () => {
+        params.leaseGuard?.assertActive();
+        submitAttempted = true;
+        await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
+      };
+      if (params.robinhoodBroadcastParticipant) {
+        await params.robinhoodBroadcastParticipant.arrive(
+          broadcast,
+          () => {
+            if (!submitAttempted) {
+              resetNonceForAddress(account.address, this.chainId);
+              reservedNonce = undefined;
+              txHash = undefined;
+            }
+          },
+          () => params.leaseGuard?.assertActive(),
+        );
+      } else {
+        await broadcast();
+      }
       this.notifyTransactionHash(params, txHash, 'trade');
-      const finality = await this.waitForFinality(txHash, 'Uniswap V3 卖出');
+      const settlement = this.waitForFinality(txHash, 'Uniswap V3 卖出');
+      if (params.awaitConfirmation === false) {
+        return {
+          success: true,
+          status: 'broadcast',
+          transactionKind: 'trade',
+          txHash,
+          amountIn: formatUnits(amountIn, tokenDecimals),
+          amountOut: formatEther(quote.amountOut),
+          settlement,
+        };
+      }
+      const finality = await settlement;
       if (finality.status !== 'confirmed') {
         return { success: false, status: finality.status, transactionKind: 'trade', txHash, error: finality.error };
       }
@@ -1657,6 +2161,9 @@ export class TradingService {
       }
       if (reservedNonce !== undefined && !submitAttempted) {
         resetNonceForAddress(account.address, this.chainId);
+        // Signing is not broadcasting.  A lease failure between those two
+        // operations must remain a clean failure with a reusable nonce.
+        txHash = undefined;
       }
       return {
         success: false,
@@ -1714,4 +2221,3 @@ export class TradingService {
 export function createTradingService(chainId: number, rpcUrl: string, routerAddress: string): TradingService {
   return new TradingService(chainId, rpcUrl, routerAddress);
 }
-

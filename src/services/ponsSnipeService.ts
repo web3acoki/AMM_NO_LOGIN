@@ -8,10 +8,10 @@ import { erc20Abi } from '../viem/abis/erc20';
 import {
   PONS_FACTORY,
   PONS_LAUNCHPAD_ABI,
-  ROBINHOOD_HTTP_RPCS,
   ROBINHOOD_WSS_RPCS,
   createPonsPublicClient,
 } from './ponsService';
+import { getRuntimeRobinhoodRpcUrl } from './robinhoodRpcConfig';
 import { createTradingService } from './tradingService';
 import { UniswapV3Service } from './uniswapV3Service';
 import type {
@@ -110,7 +110,7 @@ export class PonsSnipeService {
 
   constructor(task: SnipeTaskConfig, httpRpcUrl?: string, wssRpcUrl?: string) {
     this.task = task;
-    this.httpRpcUrl = httpRpcUrl || task.customHttpRpc || ROBINHOOD_HTTP_RPCS[0];
+    this.httpRpcUrl = httpRpcUrl || task.customHttpRpc || getRuntimeRobinhoodRpcUrl();
     this.wssRpcUrl = wssRpcUrl || task.customWssRpc || ROBINHOOD_WSS_RPCS[0];
     this.publicClient = createPonsPublicClient(this.httpRpcUrl);
   }

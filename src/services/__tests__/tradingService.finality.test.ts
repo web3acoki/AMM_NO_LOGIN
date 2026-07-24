@@ -1,14 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Address, Hash, Hex } from 'viem';
+import { keccak256, type Address, type Hash, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { WALLET_PENDING_PREDECESSOR_CODE } from '../pendingNonceGuard';
 
 const mocks = vi.hoisted(() => ({
+  httpTransport: vi.fn(),
   publicClient: {
     readContract: vi.fn(),
     getBalance: vi.fn(),
     getTransactionCount: vi.fn(),
+    getBlockNumber: vi.fn(),
+    estimateFeesPerGas: vi.fn(),
+    estimateGas: vi.fn(),
     waitForTransactionReceipt: vi.fn(),
+  },
+  sequencerClient: {
+    request: vi.fn(),
+    sendRawTransaction: vi.fn(),
   },
   walletClient: {
     sendTransaction: vi.fn(),
@@ -25,9 +33,13 @@ vi.mock('viem', async (importOriginal) => {
   const actual = await importOriginal<typeof import('viem')>();
   return {
     ...actual,
-    createPublicClient: vi.fn(() => mocks.publicClient),
+    createPublicClient: vi.fn(({ transport }: { transport?: { url?: string; config?: { retryCount?: number } } }) => (
+      transport?.config?.retryCount === 0
+        ? mocks.sequencerClient
+        : mocks.publicClient
+    )),
     createWalletClient: vi.fn(() => mocks.walletClient),
-    http: vi.fn(() => ({})),
+    http: mocks.httpTransport,
   };
 });
 
@@ -46,13 +58,13 @@ vi.mock('../uniswapV3Service', () => ({
 
 import { createTradingService, resetNonceForAddress } from '../tradingService';
 import { UNISWAP_V3_ROBINHOOD_ADDRESSES } from '../../constants';
+import { robinhood } from '../../viem/chains/robinhood';
 
 const TOKEN = '0x000000000000000000000000000000000000beef' as Address;
 const PRIVATE_KEY_A = `0x${'1'.padStart(64, '0')}` as Hex;
 const PRIVATE_KEY_B = `0x${'2'.padStart(64, '0')}` as Hex;
 const PRIVATE_KEY_C = `0x${'3'.padStart(64, '0')}` as Hex;
 const HASH_A = `0x${'aa'.repeat(32)}` as Hash;
-const HASH_C = `0x${'cc'.repeat(32)}` as Hash;
 
 function installReadContractDefaults() {
   mocks.publicClient.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
@@ -90,6 +102,16 @@ function robinhoodSellParams(privateKey: Hex, onTransactionHash?: (hash: string,
   };
 }
 
+function robinhoodBuyParams(privateKey: Hex) {
+  const sell = robinhoodSellParams(privateKey);
+  return {
+    ...sell,
+    amount: 0.0001,
+    mode: 'pump' as const,
+    balancePercent: undefined,
+  };
+}
+
 function bscSellParams(privateKey: Hex) {
   return {
     chainId: 56,
@@ -118,9 +140,20 @@ function bscBuyParams(privateKey: Hex, onTransactionHash?: (hash: string, kind: 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.httpTransport.mockImplementation((url: string, config?: unknown) => ({ url, config }));
   installReadContractDefaults();
   mocks.publicClient.getTransactionCount.mockResolvedValue(7);
   mocks.publicClient.getBalance.mockResolvedValue(10n ** 18n);
+  mocks.publicClient.getBlockNumber.mockResolvedValue(123n);
+  mocks.sequencerClient.request.mockResolvedValue({ rpc: '1.0' });
+  mocks.publicClient.estimateFeesPerGas.mockResolvedValue({
+    maxFeePerGas: 90_000_000n,
+    maxPriorityFeePerGas: 0n,
+  });
+  mocks.publicClient.estimateGas.mockResolvedValue(220_000n);
+  mocks.sequencerClient.sendRawTransaction.mockImplementation(
+    async ({ serializedTransaction }: { serializedTransaction: Hex }) => keccak256(serializedTransaction),
+  );
   mocks.publicClient.waitForTransactionReceipt.mockResolvedValue({
     status: 'success',
     transactionHash: HASH_A,
@@ -148,6 +181,330 @@ beforeEach(() => {
 });
 
 describe('TradingService broadcast finality', () => {
+  it('warms the Robinhood read and broadcast clients once without submitting a transaction', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    await Promise.all([service.warmupConnections(), service.warmupConnections()]);
+
+    expect(mocks.publicClient.getBlockNumber).toHaveBeenCalledTimes(1);
+    expect(mocks.sequencerClient.request).toHaveBeenCalledTimes(1);
+    expect(mocks.sequencerClient.request).toHaveBeenCalledWith({ method: 'rpc_modules' });
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it('enables JSON-RPC batching for concurrent Robinhood preparation reads', () => {
+    const rpcUrl = 'http://robinhood-batch.test';
+    createTradingService(
+      4663,
+      rpcUrl,
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    createTradingService(
+      4663,
+      rpcUrl,
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    expect(mocks.httpTransport).toHaveBeenCalledWith(rpcUrl, {
+      batch: { batchSize: 100, wait: 10 },
+    });
+    expect(mocks.httpTransport).toHaveBeenCalledWith(rpcUrl, {
+      batch: { batchSize: 100, wait: 10 },
+      retryCount: 0,
+    });
+    const broadcastTransports = mocks.httpTransport.mock.calls.filter(([, config]) => (
+      config?.retryCount === 0
+    ));
+    expect(broadcastTransports).toHaveLength(1);
+  });
+
+  it('caches a verified maximum sell allowance so the first trade does not reread it', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const params = robinhoodSellParams(PRIVATE_KEY_A);
+
+    await expect(service.checkV3SellApproval(TOKEN, params.walletAddress)).resolves.toEqual({ ready: true });
+    const result = await service.executeTrade(params);
+
+    expect(result.success).toBe(true);
+    const allowanceReads = mocks.publicClient.readContract.mock.calls
+      .filter(([request]) => request.functionName === 'allowance');
+    expect(allowanceReads).toHaveLength(1);
+  });
+
+  it('reuses an in-flight sell approval read between page warmup and task start', async () => {
+    let releaseAllowance!: (allowance: bigint) => void;
+    const allowance = new Promise<bigint>(resolve => {
+      releaseAllowance = resolve;
+    });
+    mocks.publicClient.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === 'allowance') return allowance;
+      throw new Error(`unexpected readContract call: ${functionName}`);
+    });
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const walletAddress = privateKeyToAccount(PRIVATE_KEY_A).address;
+
+    const warmup = service.checkV3SellApproval(TOKEN, walletAddress);
+    const startCheck = service.checkV3SellApproval(TOKEN, walletAddress);
+    await vi.waitFor(() => {
+      expect(mocks.publicClient.readContract).toHaveBeenCalledTimes(1);
+    });
+    releaseAllowance((1n << 256n) - 1n);
+
+    await expect(Promise.all([warmup, startCheck])).resolves.toEqual([
+      { ready: true },
+      { ready: true },
+    ]);
+  });
+
+  it('starts Robinhood pool, decimals and sell-balance reads in the same preparation wave', async () => {
+    let releasePool!: (value: { liquidity: bigint }) => void;
+    const pendingPool = new Promise<{ liquidity: bigint }>(resolve => {
+      releasePool = resolve;
+    });
+    mocks.getPool.mockReturnValueOnce(pendingPool);
+
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const execution = service.executeTrade(robinhoodSellParams(PRIVATE_KEY_A));
+
+    await vi.waitFor(() => {
+      const functions = mocks.publicClient.readContract.mock.calls
+        .map(([request]) => request.functionName);
+      expect(functions).toContain('decimals');
+      expect(functions).toContain('balanceOf');
+    });
+
+    // The pool is deliberately unresolved here. Seeing both ERC-20 reads
+    // proves they no longer wait behind a separate pool-validation round trip.
+    expect(mocks.getPool).toHaveBeenCalledTimes(1);
+    releasePool({ liquidity: 1n });
+    await expect(execution).resolves.toMatchObject({ success: true });
+  });
+
+  it('warms immutable V3 sell metadata without reading a wallet balance or submitting a write', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    await service.warmupV3SellPreparation(TOKEN, 10_000);
+
+    expect(mocks.getPool).toHaveBeenCalledTimes(1);
+    expect(mocks.publicClient.readContract.mock.calls
+      .filter(([request]) => request.functionName === 'decimals')).toHaveLength(1);
+    expect(mocks.publicClient.readContract.mock.calls
+      .filter(([request]) => request.functionName === 'balanceOf')).toHaveLength(0);
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it('overlaps the live quote with nonce and fee preparation before signing the sell', async () => {
+    let releaseQuote!: (value: { amountOut: bigint }) => void;
+    const pendingQuote = new Promise<{ amountOut: bigint }>(resolve => {
+      releaseQuote = resolve;
+    });
+    mocks.quoteExactInputSingle.mockReturnValueOnce(pendingQuote);
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const execution = service.executeTrade(robinhoodSellParams(PRIVATE_KEY_A));
+    await vi.waitFor(() => {
+      expect(mocks.quoteExactInputSingle).toHaveBeenCalledTimes(1);
+      expect(mocks.publicClient.getTransactionCount).toHaveBeenCalledTimes(2);
+      expect(mocks.publicClient.estimateFeesPerGas).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+
+    releaseQuote({ amountOut: 10n ** 15n });
+    await expect(execution).resolves.toMatchObject({ success: true, status: 'confirmed' });
+    expect(mocks.publicClient.estimateGas).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('pre-approves a zero-balance wallet so a later first sell has no inline approval', async () => {
+    mocks.publicClient.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === 'allowance') return 0n;
+      if (functionName === 'balanceOf') return 0n;
+      if (functionName === 'decimals') return 18;
+      throw new Error(`unexpected readContract call: ${functionName}`);
+    });
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const params = robinhoodSellParams(PRIVATE_KEY_A);
+
+    const approvalCheck = await service.checkV3SellApproval(TOKEN, params.walletAddress);
+    expect(approvalCheck).toEqual({ ready: false, allowance: 0n });
+    await expect(service.ensureV3SellApproval(params, approvalCheck.allowance)).resolves.toMatchObject({
+      success: true,
+      status: 'confirmed',
+    });
+
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.walletClient.writeContract).not.toHaveBeenCalled();
+    const balanceReads = mocks.publicClient.readContract.mock.calls
+      .filter(([request]) => request.functionName === 'balanceOf');
+    expect(balanceReads).toHaveLength(0);
+    const allowanceReads = mocks.publicClient.readContract.mock.calls
+      .filter(([request]) => request.functionName === 'allowance');
+    expect(allowanceReads).toHaveLength(1);
+  });
+
+  it('signs and submits concurrent first-time approvals in one shared Sequencer wave', async () => {
+    mocks.publicClient.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === 'allowance') return 0n;
+      throw new Error(`unexpected readContract call: ${functionName}`);
+    });
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const [first, second] = await Promise.all([
+      service.ensureV3SellApproval(robinhoodSellParams(PRIVATE_KEY_A)),
+      service.ensureV3SellApproval(robinhoodSellParams(PRIVATE_KEY_B)),
+    ]);
+
+    expect(first).toMatchObject({ success: true, status: 'confirmed' });
+    expect(second).toMatchObject({ success: true, status: 'confirmed' });
+    expect(mocks.publicClient.estimateFeesPerGas).toHaveBeenCalledTimes(1);
+    expect(mocks.publicClient.estimateGas).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(mocks.walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  it('uses Robinhood fast block time for receipt polling', () => {
+    expect(robinhood.blockTime).toBe(100);
+  });
+
+  it('uses a conservative fixed gas ceiling for Robinhood buys instead of a slow estimate wave', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    await expect(service.executeTrade(robinhoodBuyParams(PRIVATE_KEY_A))).resolves.toMatchObject({
+      success: true,
+      status: 'confirmed',
+    });
+
+    expect(mocks.publicClient.estimateGas).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a deterministic Robinhood hash before receipt confirmation when requested', async () => {
+    let confirm!: (receipt: { status: 'success'; transactionHash: Hex }) => void;
+    const receipt = new Promise<{ status: 'success'; transactionHash: Hex }>(resolve => {
+      confirm = resolve;
+    });
+    mocks.publicClient.waitForTransactionReceipt.mockReturnValueOnce(receipt);
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'broadcast',
+      transactionKind: 'trade',
+    });
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(result.settlement).toBeInstanceOf(Promise);
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.walletClient.sendTransaction).not.toHaveBeenCalled();
+
+    confirm({ status: 'success', transactionHash: HASH_A });
+    await expect(result.settlement).resolves.toEqual({ status: 'confirmed' });
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one fee snapshot and broadcasts concurrent wallets as raw transactions', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const [first, second] = await Promise.all([
+      service.executeTrade({
+        ...robinhoodSellParams(PRIVATE_KEY_A),
+        awaitConfirmation: false,
+      }),
+      service.executeTrade({
+        ...robinhoodSellParams(PRIVATE_KEY_B),
+        awaitConfirmation: false,
+      }),
+    ]);
+
+    expect(first.status).toBe('broadcast');
+    expect(second.status).toBe('broadcast');
+    expect(first.txHash).not.toBe(second.txHash);
+    expect(mocks.publicClient.estimateFeesPerGas).toHaveBeenCalledTimes(1);
+    expect(mocks.publicClient.estimateGas).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(mocks.walletClient.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('treats a lease loss after signing as unsent and releases the reserved nonce', async () => {
+    let assertions = 0;
+    const leaseGuard = {
+      assertActive: vi.fn(() => {
+        assertions++;
+        if (assertions === 4) throw new Error('lease expired before broadcast');
+      }),
+    };
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+
+    const cancelled = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      leaseGuard,
+    });
+
+    expect(cancelled).toMatchObject({ success: false, status: 'failed' });
+    expect(cancelled.txHash).toBeUndefined();
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+
+    const retried = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+    });
+    expect(retried).toMatchObject({ success: true, status: 'broadcast' });
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('returns pending with the original Robinhood hash and callback after receipt timeout', async () => {
     const timeout = new Error('Timed out while waiting for transaction receipt');
     timeout.name = 'WaitForTransactionReceiptTimeoutError';
@@ -161,16 +518,16 @@ describe('TradingService broadcast finality', () => {
 
     const result = await service.executeTrade(robinhoodSellParams(PRIVATE_KEY_A, onTransactionHash));
 
-    expect(mocks.walletClient.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
     expect(mocks.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
     expect(onTransactionHash).toHaveBeenCalledTimes(1);
-    expect(onTransactionHash).toHaveBeenCalledWith(HASH_A, 'trade');
+    expect(onTransactionHash).toHaveBeenCalledWith(result.txHash, 'trade');
     expect(result).toMatchObject({
       success: false,
       status: 'pending',
       transactionKind: 'trade',
-      txHash: HASH_A,
     });
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(result.error).toContain('禁止自动重发');
   });
 
@@ -234,7 +591,6 @@ describe('TradingService broadcast finality', () => {
   });
 
   it('keeps an unknown receipt hash and performs no second send or hidden retry', async () => {
-    mocks.walletClient.sendTransaction.mockResolvedValueOnce(HASH_C);
     mocks.publicClient.waitForTransactionReceipt.mockRejectedValueOnce(new Error('receipt RPC disconnected'));
     const onTransactionHash = vi.fn();
     const service = createTradingService(
@@ -245,19 +601,21 @@ describe('TradingService broadcast finality', () => {
 
     const result = await service.executeTrade(robinhoodSellParams(PRIVATE_KEY_C, onTransactionHash));
 
-    expect(mocks.walletClient.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.walletClient.sendTransaction).not.toHaveBeenCalled();
     expect(mocks.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
     expect(onTransactionHash).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       success: false,
       status: 'unknown',
       transactionKind: 'trade',
-      txHash: HASH_C,
     });
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(onTransactionHash).toHaveBeenCalledWith(result.txHash, 'trade');
     expect(result.error).toContain('禁止自动重发');
   });
 
-  it('labels a hashless trade submit failure as trade after a confirmed approval', async () => {
+  it('preserves the locally signed trade hash when submit response is lost after approval', async () => {
     mocks.publicClient.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
       if (functionName === 'decimals') return 18;
       if (functionName === 'balanceOf') return 10n ** 18n;
@@ -270,7 +628,9 @@ describe('TradingService broadcast finality', () => {
       .mockResolvedValueOnce(8)
       .mockResolvedValueOnce(8);
     mocks.walletClient.writeContract.mockResolvedValueOnce(HASH_A);
-    mocks.walletClient.sendTransaction.mockRejectedValueOnce(new Error('submit response lost'));
+    mocks.sequencerClient.sendRawTransaction
+      .mockImplementationOnce(async ({ serializedTransaction }: { serializedTransaction: Hex }) => keccak256(serializedTransaction))
+      .mockRejectedValueOnce(new Error('submit response lost'));
     const onTransactionHash = vi.fn();
     const service = createTradingService(
       4663,
@@ -281,14 +641,14 @@ describe('TradingService broadcast finality', () => {
     const result = await service.executeTrade(robinhoodSellParams(PRIVATE_KEY_C, onTransactionHash));
 
     expect(onTransactionHash).toHaveBeenCalledTimes(1);
-    expect(onTransactionHash).toHaveBeenCalledWith(HASH_A, 'approval');
-    expect(mocks.walletClient.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(onTransactionHash).toHaveBeenCalledWith(expect.stringMatching(/^0x[0-9a-f]{64}$/), 'approval');
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       success: false,
       status: 'unknown',
       transactionKind: 'trade',
     });
-    expect(result.txHash).toBeUndefined();
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
   it('refuses to stack a new trade behind an existing pending nonce', async () => {
@@ -311,6 +671,6 @@ describe('TradingService broadcast finality', () => {
     });
     expect(result.txHash).toBeUndefined();
     expect(result.error).toContain('待确认前序交易');
-    expect(mocks.walletClient.sendTransaction).not.toHaveBeenCalled();
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
   });
 });

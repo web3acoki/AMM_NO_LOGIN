@@ -1,5 +1,6 @@
 import {
   createPublicClient,
+  decodeEventLog,
   encodeFunctionData,
   formatEther,
   formatUnits,
@@ -105,6 +106,8 @@ type PlannedTransaction = {
   serializedTransaction: Hex;
   expectedHash: Hash;
   amount: string;
+  tokenAddress?: Address;
+  transferUnits: bigint;
 };
 
 const activeFallbackLocks = new Set<string>();
@@ -316,6 +319,41 @@ async function resolveReceipt(
         replacementReason === 'repriced'
       )
     ) {
+      if (plan.tokenAddress) {
+        const hasExactTransferEvidence = (receipt.logs ?? []).some((log: any) => {
+          if (String(log.address).toLowerCase() !== plan.tokenAddress!.toLowerCase()) return false;
+          try {
+            const decoded = decodeEventLog({
+              abi: erc20Abi,
+              data: log.data,
+              topics: log.topics,
+              strict: true,
+            });
+            if (decoded.eventName !== 'Transfer') return false;
+            const args = decoded.args as { from: Address; to: Address; value: bigint };
+            return args.from.toLowerCase() === plan.source.toLowerCase()
+              && args.to.toLowerCase() === plan.target.toLowerCase()
+              && args.value === plan.transferUnits;
+          } catch {
+            return false;
+          }
+        });
+
+        if (!hasExactTransferEvidence) {
+          return {
+            source: plan.source,
+            target: plan.target,
+            hash: resolvedHash,
+            nonce: plan.nonce,
+            success: false,
+            status: 'unknown',
+            retryable: false,
+            amount: plan.amount,
+            error: '交易回执成功，但未发现来源、目标和金额完全匹配的 ERC20 Transfer 事件；未计为转账成功，请按哈希人工核对且不要重复发送',
+          };
+        }
+      }
+
       return {
         source: plan.source,
         target: plan.target,
@@ -605,6 +643,8 @@ async function executeLocked(
       serializedTransaction,
       expectedHash: keccak256(serializedTransaction),
       amount: plannedAmountText,
+      tokenAddress,
+      transferUnits,
     });
   }
 
@@ -756,6 +796,9 @@ export async function executeOneToManyTransfer(
   const seenTargets = new Set<string>();
   for (const target of targets) {
     const normalized = target.toLowerCase();
+    if (normalized === source.toLowerCase()) {
+      throw new Error(`目标地址 ${target} 与源钱包相同，不会产生实际转账；本次未发送任何交易`);
+    }
     if (seenTargets.has(normalized)) {
       throw new Error(`目标地址列表中存在重复地址 ${target}，为避免重复付款，本次未发送任何交易`);
     }

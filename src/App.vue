@@ -54,6 +54,7 @@ import { useChainStore } from './stores/chainStore';
 import { useDexStore } from './stores/dexStore';
 import { getServerConfig } from './services/configApi';
 import { setPremiumSellRpc } from './services/fourMemeService';
+import { setRuntimeRobinhoodRpcUrl } from './services/robinhoodRpcConfig';
 
 const walletStore = useWalletStore();
 const taskStore = useTaskStore();
@@ -82,6 +83,11 @@ async function loadServerConfig() {
     const bscPremiumRpc = config.premiumRpcUrlsByChain?.[56] || config.premiumRpcUrl;
     if (bscPremiumRpc) {
       setPremiumSellRpc(bscPremiumRpc);
+    }
+    const robinhoodRpc = config.premiumRpcUrlsByChain?.[4663];
+    if (robinhoodRpc) {
+      setRuntimeRobinhoodRpcUrl(robinhoodRpc);
+      chainStore.setRuntimeRpc(4663, robinhoodRpc, 'Robinhood 高速节点');
     }
   } catch (error) {
     console.error('加载服务端配置失败:', error);

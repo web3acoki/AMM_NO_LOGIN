@@ -71,7 +71,6 @@
                 </div>
               </div>
             </div>
-
             <div class="row">
               <!-- 金额区间最小值 -->
               <div class="col-md-6 mb-3">
@@ -129,6 +128,18 @@
                   <i class="bi bi-infinity me-1"></i>持续运行直到手动停止
                 </div>
               </div>
+            </div>
+            <div
+              v-if="isRobinhoodPureSellAll"
+              class="alert alert-info py-2"
+            >
+              <i class="bi bi-shield-check me-1"></i>
+              <span v-if="formData.stopType === 'none' || formData.stopType === 'count' || formData.stopType === 'amount'">
+                纯卖出清仓会逐钱包复核目标代币余额；只有全部钱包均确认余额为 0 才自动完成，次数或金额不会提前结束剩余钱包。
+              </span>
+              <span v-else>
+                当前时间/价格/市值条件仍会硬停止任务，触发时可能尚有钱包未清仓。
+              </span>
             </div>
 
             <div class="row">
@@ -353,6 +364,12 @@ const walletAddressCount = computed(() => {
     .filter(addr => /^0x[0-9a-fA-F]{40}$/.test(addr));
   return addresses.length;
 });
+const isRobinhoodPureSellAll = computed(() => (
+  isRobinhood.value
+  && formData.value.buyThreadCount === 0
+  && formData.value.sellThreadCount > 0
+  && formData.value.sellAll
+));
 
 // 金额单位标签（根据底池类型变化）
 const amountUnitLabel = computed(() => {

@@ -22,6 +22,24 @@ export type ChainItem = {
   explorerUrl?: string;
 };
 
+function normalizeRpcUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Resolve a preset RPC that actually belongs to the selected chain. Vue may
+ * publish a v-model chain change before the accompanying change handler has
+ * updated rpcUrl; falling back here prevents that short-lived mixed state from
+ * sending Robinhood contract reads to the previous chain's RPC.
+ */
+export function resolvePresetRpcUrl(chain: ChainItem, requestedRpcUrl: string): string {
+  const requested = normalizeRpcUrl(requestedRpcUrl);
+  const matchingOption = chain.rpcOptions.find(
+    option => normalizeRpcUrl(option.url) === requested,
+  );
+  return matchingOption?.url || chain.rpcOptions[0]?.url || chain.rpc;
+}
+
 export type SupportedDexProtocol = 'pancake-v2' | 'uniswap-v3' | 'okx-swap';
 
 export const useChainStore = defineStore('chain', {
@@ -91,8 +109,9 @@ export const useChainStore = defineStore('chain', {
     },
     // 实际使用的RPC URL（优先使用自定义节点）
     effectiveRpcUrl: (state) => {
-      const isSupported = state.chains.some(c => c.id === state.selectedChainId);
-      return isSupported ? (state.customRpcUrl || state.rpcUrl) : '';
+      const chain = state.chains.find(c => c.id === state.selectedChainId);
+      if (!chain) return '';
+      return state.customRpcUrl || resolvePresetRpcUrl(chain, state.rpcUrl);
     },
     isSupportedChain: (state) => (chainId: number) => {
       return state.chains.some(chain => chain.id === chainId);
@@ -105,12 +124,36 @@ export const useChainStore = defineStore('chain', {
         throw new Error(`Unsupported chain ID: ${chainId}`);
       }
       this.selectedChainId = chain.id;
-      this.rpcUrl = chain.rpc;
+      this.rpcUrl = resolvePresetRpcUrl(chain, chain.rpc);
       this.customRpcUrl = '';
+    },
+    ensureSelectedChainRpc() {
+      const chain = this.chains.find(item => item.id === this.selectedChainId);
+      if (!chain) {
+        throw new Error(`Unsupported chain ID: ${this.selectedChainId}`);
+      }
+      this.rpcUrl = resolvePresetRpcUrl(chain, this.rpcUrl);
+      return this.customRpcUrl || this.rpcUrl;
     },
     setCustomRpc(url: string) {
       this.customRpcUrl = url;
       console.log('自定义RPC已设置:', url || '(已清除，使用默认节点)');
+    },
+    setRuntimeRpc(chainId: number, url: string, name = '高速节点') {
+      const chain = this.chains.find(item => item.id === chainId);
+      if (!chain) {
+        throw new Error(`Unsupported chain ID: ${chainId}`);
+      }
+      const normalized = normalizeRpcUrl(url);
+      const remainingOptions = chain.rpcOptions.filter(
+        option => normalizeRpcUrl(option.url) !== normalized,
+      );
+      chain.rpc = url;
+      chain.rpcOptions = [{ name, url }, ...remainingOptions];
+      if (this.selectedChainId === chainId) {
+        this.rpcUrl = url;
+        this.customRpcUrl = '';
+      }
     },
     clearCustomRpc() {
       this.customRpcUrl = '';
@@ -118,4 +161,3 @@ export const useChainStore = defineStore('chain', {
     },
   },
 });
-

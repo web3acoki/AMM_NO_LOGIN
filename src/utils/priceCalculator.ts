@@ -408,7 +408,7 @@ export class PriceCalculator {
               }).catch(() => null) as string | null;
 
               if (t0) {
-                token0Addr = t0;
+                token0Addr = getAddress(t0);
                 token1Addr = t0.toLowerCase() === normalizedTokenAddress.toLowerCase()
                   ? normalizedQuoteToken
                   : normalizedTokenAddress;

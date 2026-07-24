@@ -174,6 +174,18 @@
           </div>
         </div>
       </div>
+      <div
+        v-if="isRobinhood && buyThreadCount === 0 && sellThreadCount > 0 && sellAll"
+        class="alert alert-info py-2 small"
+      >
+        <i class="bi bi-shield-check me-1"></i>
+        <span v-if="stopType === 'none' || stopType === 'count' || stopType === 'amount'">
+          纯卖出清仓会逐钱包复核目标代币余额；只有全部所选钱包均确认余额为 0 才自动完成，次数或金额不会让剩余钱包提前掉队。
+        </span>
+        <span v-else>
+          纯卖出清仓会逐钱包复核余额；但当前时间/价格/市值条件仍是硬停止条件，触发时可能尚有钱包未清仓。
+        </span>
+      </div>
 
       <!-- 交易间隔和买卖线程数 -->
       <div class="row g-2 mb-3">

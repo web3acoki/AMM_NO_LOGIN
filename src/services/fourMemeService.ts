@@ -285,7 +285,7 @@ export class FourMemeService {
       }
 
       // Buy and sell intentionally use different RPCs. Do not release the
-      // wallet/market lease until the other execution endpoint has observed
+      // wallet/operation guard until the other execution endpoint has observed
       // the same receipt, otherwise its stale nonce/balance/curve state can
       // corrupt the next operation in a mixed round. This only reads; it never
       // resubmits or replaces a transaction.

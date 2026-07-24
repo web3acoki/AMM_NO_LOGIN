@@ -23,6 +23,7 @@ import {
   ROBINHOOD_WETH_ADDRESS,
   UNISWAP_V3_ROBINHOOD_ADDRESSES,
 } from '../constants';
+import { getRuntimeRobinhoodRpcUrl } from './robinhoodRpcConfig';
 
 const Q192 = 2n ** 192n;
 
@@ -154,6 +155,7 @@ export function createRobinhoodPublicClient(rpcUrl?: string) {
   const transport = rpcUrl
     ? http(rpcUrl)
     : fallback([
+        http(getRuntimeRobinhoodRpcUrl()),
         http(ROBINHOOD_OFFICIAL_RPC_URL),
         http(ROBINHOOD_ARROW_RPC_URL),
       ]);

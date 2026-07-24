@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   decodeFunctionData,
   defineChain,
+  encodeAbiParameters,
+  encodeEventTopics,
   getAddress,
   keccak256,
   parseEther,
@@ -351,6 +353,57 @@ describe('one-to-many source pipeline', () => {
     expect(decoded.args).toEqual([target, parseEther('2')]);
   });
 
+  it('counts an ERC20 transfer as confirmed only when the receipt proves the exact movement', async () => {
+    const [target] = targets(1);
+    const amount = parseEther('2');
+    const { client } = createMockClient();
+    client.waitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hash }) => ({
+      status: 'success' as const,
+      transactionHash: hash,
+      logs: [{
+        address: TOKEN,
+        topics: encodeEventTopics({
+          abi: erc20Abi,
+          eventName: 'Transfer',
+          args: { from: SOURCE, to: target },
+        }),
+        data: encodeAbiParameters([{ type: 'uint256' }], [amount]),
+      }],
+    }));
+
+    const [result] = await executeOneToManyTransfer(nativeOptions([target], client, {
+      amount: 2,
+      asset: {
+        kind: 'erc20',
+        address: TOKEN,
+        symbol: 'TEST',
+        decimals: 18,
+      },
+    }));
+
+    expect(result.status).toBe('confirmed');
+    expect(result.success).toBe(true);
+  });
+
+  it('does not report ERC20 success when a successful receipt has no matching Transfer event', async () => {
+    const [target] = targets(1);
+    const { client } = createMockClient();
+    const [result] = await executeOneToManyTransfer(nativeOptions([target], client, {
+      amount: 2,
+      asset: {
+        kind: 'erc20',
+        address: TOKEN,
+        symbol: 'TEST',
+        decimals: 18,
+      },
+    }));
+
+    expect(result.status).toBe('unknown');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('未发现来源、目标和金额完全匹配');
+    expect(result.hash).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
   it('preserves an 18-decimal native amount exactly from input to signed value', async () => {
     const exactAmount = '0.123456789012345678';
     const { client, serializedTransactions } = createMockClient();
@@ -435,6 +488,14 @@ describe('one-to-many source pipeline', () => {
     const [target] = targets(1);
     await expect(executeOneToManyTransfer(nativeOptions([target, target], client)))
       .rejects.toThrow('存在重复地址');
+    expect(client.estimateGas).not.toHaveBeenCalled();
+    expect(client.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a self-transfer before any RPC call because it cannot move wallet funds', async () => {
+    const { client } = createMockClient();
+    await expect(executeOneToManyTransfer(nativeOptions([SOURCE], client)))
+      .rejects.toThrow('与源钱包相同');
     expect(client.estimateGas).not.toHaveBeenCalled();
     expect(client.sendRawTransaction).not.toHaveBeenCalled();
   });

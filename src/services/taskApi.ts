@@ -15,6 +15,8 @@ export interface TaskServerData {
   stats: TaskStats;
   currentBuyWalletIndex: number;
   currentSellWalletIndex: number;
+  runtimeActive?: boolean;
+  runtimeId?: string;
   createdAt?: string;
   updatedAt?: string;
 }

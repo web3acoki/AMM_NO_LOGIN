@@ -325,8 +325,8 @@ function rowClass(status: ManualBatchSellStatus): string {
   return '';
 }
 
-// 安全批量卖出：整批 pending nonce 预检后，逐钱包读取最新池价并等待
-// 最终回执。进度会在点击后立即呈现，第一笔不再等待所有钱包预授权。
+// 安全批量卖出：每个钱包立即核对 receipt/latest/pending；真实 pending
+// 只跳过该钱包，其余钱包继续按最新池价执行。
 async function executeBatchSell() {
   if (!canExecute.value) return;
 
@@ -374,7 +374,7 @@ async function executeBatchSell() {
     if (confirmed === sellResults.value.length) {
       alert(`批量卖出完成！已确认 ${confirmed} 笔`);
     } else if (pending > 0) {
-      alert(`批量卖出已停止\n\n已确认: ${confirmed} 笔\n待确认/待核对: ${pending} 笔\n未完成: ${notCompleted} 笔\n\n已有哈希的交易不会自动重发。`);
+      alert(`批量卖出已完成处理\n\n已确认: ${confirmed} 笔\n待确认/待核对: ${pending} 笔\n未完成: ${notCompleted} 笔\n\n待确认钱包不会自动重发，其他钱包已继续处理。`);
     } else {
       const firstError = sellResults.value.find(result => result.error)?.error || '未知错误';
       alert(`批量卖出结束\n\n已确认: ${confirmed} 笔\n未完成: ${notCompleted} 笔\n\n原因: ${firstError}`);
