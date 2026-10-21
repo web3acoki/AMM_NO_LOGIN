@@ -78,6 +78,11 @@ export type ExecuteOneToManyTransferOptions = {
     assertActive: () => void;
   };
   onProgress?: (results: OneToManyTransferResult[]) => void;
+  /**
+   * Runs after signing has produced a deterministic hash but before the RPC
+   * write. Rejecting this promise prevents the transaction from being sent.
+   */
+  onBeforeBroadcast?: (result: OneToManyTransferResult) => Promise<void>;
   dependencies?: OneToManyTransferDependencies;
 };
 
@@ -705,6 +710,10 @@ async function executeLocked(
       error: '交易已开始提交到节点，已预先保留本地签名哈希，请勿重复转账',
     });
     publishProgress();
+    if (options.onBeforeBroadcast) {
+      await options.onBeforeBroadcast({ ...resultByIndex.get(plan.index)! });
+    }
+    options.leaseGuard?.assertActive();
 
     try {
       const returnedHash = await publicClient.sendRawTransaction({

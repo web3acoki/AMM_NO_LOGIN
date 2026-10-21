@@ -223,6 +223,53 @@ describe('TradingService broadcast finality', () => {
     expect(broadcastTransports).toHaveLength(1);
   });
 
+  it('awaits durable trade-hash persistence before the sequencer write', async () => {
+    let releasePersistence!: () => void;
+    const persistenceGate = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    const onBeforeTransactionBroadcast = vi.fn(async (hash: string, kind: string) => {
+      expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(kind).toBe('trade');
+      await persistenceGate;
+    });
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const execution = service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      onBeforeTransactionBroadcast,
+    });
+
+    await vi.waitFor(() => expect(onBeforeTransactionBroadcast).toHaveBeenCalledTimes(1));
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+    releasePersistence();
+    await expect(execution).resolves.toMatchObject({ success: true, status: 'broadcast' });
+    expect(mocks.sequencerClient.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not broadcast a trade when durable hash persistence rejects', async () => {
+    const service = createTradingService(
+      4663,
+      'http://robinhood.test',
+      UNISWAP_V3_ROBINHOOD_ADDRESSES.swapRouter02,
+    );
+    const result = await service.executeTrade({
+      ...robinhoodSellParams(PRIVATE_KEY_A),
+      awaitConfirmation: false,
+      onBeforeTransactionBroadcast: async () => {
+        throw new Error('server persistence unavailable');
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, status: 'failed' });
+    expect(result.txHash).toBeUndefined();
+    expect(mocks.sequencerClient.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it('caches a verified maximum sell allowance so the first trade does not reread it', async () => {
     const service = createTradingService(
       4663,

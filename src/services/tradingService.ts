@@ -73,6 +73,14 @@ export interface TradeParams {
   };
   onTransactionHash?: (txHash: string, kind: 'approval' | 'trade') => void;
   /**
+   * Runs after signing has produced a deterministic hash but before the RPC
+   * write. Durable workflows use this as a persistence barrier.
+   */
+  onBeforeTransactionBroadcast?: (
+    txHash: string,
+    kind: 'approval' | 'trade',
+  ) => Promise<void>;
+  /**
    * Automatic Robinhood tasks can return as soon as the RPC accepts a
    * transaction with a deterministic hash.  Confirmation then continues in
    * the background while the wallet lease remains retained.  Manual actions
@@ -525,6 +533,7 @@ export class TradingService {
             gas: ROBINHOOD_APPROVAL_GAS_LIMIT,
           }, nonce, params, preparation.fees);
           approvalHash = signed.hash;
+          await params.onBeforeTransactionBroadcast?.(signed.hash, 'approval');
           params.leaseGuard?.assertActive();
           submitAttempted = true;
           await this.broadcastRobinhoodRawTransaction(signed.serializedTransaction, signed.hash);
@@ -2011,6 +2020,7 @@ export class TradingService {
           gas: ROBINHOOD_V3_BUY_GAS_LIMIT,
         }, nonce, params);
         txHash = signed.hash;
+        await params.onBeforeTransactionBroadcast?.(signed.hash, 'trade');
         params.leaseGuard?.assertActive();
         const broadcast = async () => {
           params.leaseGuard?.assertActive();
@@ -2154,6 +2164,7 @@ export class TradingService {
         gas: ROBINHOOD_V3_SELL_GAS_LIMIT,
       }, nonce, params, fees);
       txHash = signed.hash;
+      await params.onBeforeTransactionBroadcast?.(signed.hash, 'trade');
       params.leaseGuard?.assertActive();
       const broadcast = async () => {
         params.leaseGuard?.assertActive();

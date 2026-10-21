@@ -25,7 +25,7 @@
             </div>
           </div>
         </div>
-        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,SnipePanel,CreateTokenPanel,MigrationSellPanel">
+        <keep-alive include="WalletManagePanel,BatchTransferPanel,TaskManagePanel,OneBuySellPanel,SnipePanel,CreateTokenPanel,MigrationSellPanel,IntegrationSettingsPanel,DexScreenerPanel">
           <component :is="currentComponent" />
         </keep-alive>
       </section>
@@ -43,11 +43,14 @@ import NetworkSelector from './components/market/NetworkSelector.vue';
 import WalletManagePanel from './components/panels/WalletManagePanel.vue';
 import BatchTransferPanel from './components/panels/BatchTransferPanel.vue';
 import TaskManagePanel from './components/panels/TaskManagePanel.vue';
+import OneBuySellPanel from './components/panels/OneBuySellPanel.vue';
 import UserManagement from './components/panels/UserManagement.vue';
 import AnalysisPanel from './components/panels/AnalysisPanel.vue';
 import SnipePanel from './components/panels/SnipePanel.vue';
 import CreateTokenPanel from './components/panels/CreateTokenPanel.vue';
 import MigrationSellPanel from './components/panels/MigrationSellPanel.vue';
+import IntegrationSettingsPanel from './components/panels/IntegrationSettingsPanel.vue';
+import DexScreenerPanel from './components/panels/DexScreenerPanel.vue';
 import { useWalletStore } from './stores/walletStore';
 import { useTaskStore } from './stores/taskStore';
 import { useChainStore } from './stores/chainStore';
@@ -94,7 +97,9 @@ async function loadServerConfig() {
   }
 }
 
-const activePanel = ref<'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken' | 'migration'>('wallet');
+type PanelKey = 'users' | 'wallet' | 'transfer' | 'task' | 'oneBuySell' | 'analysis' | 'snipe' | 'createToken' | 'migration' | 'integrations' | 'dexscreener';
+
+const activePanel = ref<PanelKey>('wallet');
 const sidebarCollapsed = ref(false);
 const currentUser = ref<any>(null);
 const isAuthenticated = ref(false);
@@ -105,19 +110,33 @@ const displayUsername = computed(() => {
   return currentUser.value?.username || DEFAULT_USERNAME;
 });
 
-const sidebarItems = [
-  { key: 'wallet', label: '钱包管理', icon: '💰' },
-  { key: 'transfer', label: '批量转账', icon: '💸' },
-  { key: 'task', label: '任务管理', icon: '📋' },
-  { key: 'snipe', label: '代币狙击', icon: '🎯' },
-  { key: 'migration', label: '迁移卖出', icon: '🔄' },
-  { key: 'createToken', label: '创建代币1.0.4', icon: '📈' },
-  { key: 'users', label: '用户管理', icon: '👥' },
-  { key: 'analysis', label: '分析面板', icon: '📈' }
-];
+const isAdmin = computed(() => ['admin', 'super_admin'].includes(currentUser.value?.role?.name));
+
+const sidebarItems = computed(() => {
+  const items = [
+    { key: 'wallet', label: '钱包管理', icon: '💰' },
+    { key: 'transfer', label: '批量转账', icon: '💸' },
+    { key: 'task', label: '任务管理', icon: '📋' },
+    { key: 'oneBuySell', label: '一买一卖', icon: '🔁' },
+    { key: 'snipe', label: '代币狙击', icon: '🎯' },
+    { key: 'migration', label: '迁移卖出', icon: '🔄' },
+    { key: 'createToken', label: '创建代币1.0.4', icon: '📈' },
+    { key: 'users', label: '用户管理', icon: '👥' },
+    { key: 'analysis', label: '分析面板', icon: '📈' }
+  ];
+  if (isAdmin.value) {
+    items.splice(
+      7,
+      0,
+      { key: 'dexscreener', label: 'Dexscreener', icon: '📊' },
+      { key: 'integrations', label: '平台集成', icon: '🔐' }
+    );
+  }
+  return items;
+});
 
 const currentTitle = computed(() => {
-  const item = sidebarItems.find((entry) => entry.key === activePanel.value);
+  const item = sidebarItems.value.find((entry) => entry.key === activePanel.value);
   return item ? item.label : '面板';
 });
 
@@ -126,9 +145,12 @@ const currentComponent = computed(() => {
     case 'wallet': return WalletManagePanel;
     case 'transfer': return BatchTransferPanel;
     case 'task': return TaskManagePanel;
+    case 'oneBuySell': return OneBuySellPanel;
     case 'snipe': return SnipePanel;
     case 'migration': return MigrationSellPanel;
     case 'createToken': return CreateTokenPanel;
+    case 'integrations': return IntegrationSettingsPanel;
+    case 'dexscreener': return DexScreenerPanel;
     case 'users': return UserManagement;
     case 'analysis': return AnalysisPanel;
     default: return WalletManagePanel;
@@ -136,7 +158,7 @@ const currentComponent = computed(() => {
 });
 
 const handleSelect = (key: string) => {
-  activePanel.value = key as 'users' | 'wallet' | 'transfer' | 'task' | 'analysis' | 'snipe' | 'createToken' | 'migration';
+  activePanel.value = key as PanelKey;
 };
 
 const loadSession = async () => {

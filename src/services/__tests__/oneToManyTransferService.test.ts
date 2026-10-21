@@ -527,8 +527,9 @@ describe('one-to-many source pipeline', () => {
       leaseGuard: {
         assertActive() {
           guardChecks += 1;
-          // Initial guard + final nonce guard + two accepted broadcasts.
-          if (guardChecks > 4) throw new Error('源钱包全局锁已丢失');
+          // Initial/final nonce guards plus pre-persist and pre-broadcast
+          // checks for two accepted writes.
+          if (guardChecks > 6) throw new Error('源钱包全局锁已丢失');
         },
       },
     }));
@@ -536,5 +537,39 @@ describe('one-to-many source pipeline', () => {
     expect(client.sendRawTransaction).toHaveBeenCalledTimes(2);
     expect(results.slice(0, 2).every(result => result.status === 'confirmed')).toBe(true);
     expect(results.slice(2).every(result => result.status === 'not_sent')).toBe(true);
+  });
+
+  it('awaits durable hash persistence before broadcasting a sweep', async () => {
+    const { client } = createMockClient();
+    let releasePersistence!: () => void;
+    const persistenceGate = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    const beforeBroadcast = vi.fn(async (result) => {
+      expect(result.hash).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(result.status).toBe('unknown');
+      await persistenceGate;
+    });
+    const execution = executeOneToManyTransfer(nativeOptions(targets(1), client, {
+      transferAllBalance: true,
+      onBeforeBroadcast: beforeBroadcast,
+    }));
+
+    await vi.waitFor(() => expect(beforeBroadcast).toHaveBeenCalledTimes(1));
+    expect(client.sendRawTransaction).not.toHaveBeenCalled();
+    releasePersistence();
+    await execution;
+    expect(client.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not broadcast when durable hash persistence rejects', async () => {
+    const { client } = createMockClient();
+    await expect(executeOneToManyTransfer(nativeOptions(targets(1), client, {
+      transferAllBalance: true,
+      onBeforeBroadcast: async () => {
+        throw new Error('server persistence unavailable');
+      },
+    }))).rejects.toThrow('server persistence unavailable');
+    expect(client.sendRawTransaction).not.toHaveBeenCalled();
   });
 });
